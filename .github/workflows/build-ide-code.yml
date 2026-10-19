@@ -1,24 +1,22 @@
-# Build IDE Code — Linux desktop packages (AppImage + .deb)
+# Build IDE Code — desktop packages (Linux AppImage + .deb, Windows installer)
 #
 # Strategy (VSCodium-style, adapted to this fork):
 #   1. npm ci (root + build/) with the exact Node version from .nvmrc
+#      (--ignore-scripts to skip native-keymap vs Node 24 build failure;
+#      @types/node restored explicitly afterwards)
 #   2. Compile our built-in extension extensions/ide-agent with its own tsc
 #      (the build's hardcoded extension-compilation list does NOT include it;
 #      packaging scans extensions/*/package.json via glob, so the compiled
 #      out/ dir gets bundled automatically by the gulp packaging tasks)
-#   3. `npm run gulp vscode-linux-x64`            -> .build/linux/VSCode-linux-x64
-#   4. `npm run gulp vscode-linux-<arch>-prepare-deb <arch>-build-deb` -> .deb
-#   5. appimagetool on the packaged dir          -> .AppImage
+#   3. Linux: `npm run gulp vscode-linux-x64` -> AppImage + .deb
+#      Windows: `npm run gulp vscode-win32-x64` -> NSIS installer (.exe)
 #
 # Triggers: manual (workflow_dispatch) or pushing a v* tag.
-# Windows/macOS: the gulp tasks exist (vscode-win32-x64, vscode-darwin-x64,
-# vscode-darwin-arm64); add jobs later following the same shape.
 #
 # NOT needed: no secrets, no certs, no Apple/Windows signing for these
-# artifacts (unsigned; Windows SmartScreen / macOS Gatekeeper will warn —
-# expected for a first alpha).
+# artifacts (unsigned; Windows SmartScreen will warn — expected for a first alpha).
 
-name: Build IDE Code (Linux)
+name: Build IDE Code
 
 on:
   workflow_dispatch:
@@ -89,11 +87,13 @@ jobs:
           set -e
           # --ignore-scripts: skip native module builds (e.g. native-keymap
           # fails against Node 24 headers); they are rebuilt for Electron
-          # during packaging.
+          # during packaging. Then restore @types/node explicitly since the
+          # skipped postinstall would normally ensure types are set up.
           for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
             [ "$i" -eq 5 ] && { echo "npm ci (root) failed 5 times" >&2; exit 1; }
             echo "npm ci (root) failed, retry $i/5"; sleep 10;
           }; done
+          npm install --no-save @types/node@24.x
         env:
           npm_config_arch: ${{ env.NPM_ARCH }}
           VSCODE_ARCH: ${{ env.VSCODE_ARCH }}
@@ -170,5 +170,96 @@ jobs:
           path: |
             .build/linux/deb/amd64/deb/*.deb
             dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+  build-windows-x64:
+    name: Windows x64 (installer)
+    runs-on: windows-2022
+    timeout-minutes: 240
+    env:
+      VSCODE_ARCH: x64
+      NPM_ARCH: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            build/package-lock.json
+            extensions/ide-agent/package-lock.json
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build/ dependencies
+        working-directory: build
+        shell: bash
+        run: |
+          set -e
+          for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
+            [ "$i" -eq 5 ] && { echo "npm ci (build) failed 5 times" >&2; exit 1; }
+            echo "npm ci (build) failed, retry $i/5"; sleep 10;
+          }; done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install root dependencies
+        shell: bash
+        run: |
+          set -e
+          # --ignore-scripts: skip native module builds (native-keymap fails
+          # against Node 24 headers); rebuilt for Electron during packaging.
+          for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
+            [ "$i" -eq 5 ] && { echo "npm ci (root) failed 5 times" >&2; exit 1; }
+            echo "npm ci (root) failed, retry $i/5"; sleep 10;
+          }; done
+          npm install --no-save @types/node@24.x
+        env:
+          npm_config_arch: x64
+          VSCODE_ARCH: x64
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile ide-agent extension
+        shell: bash
+        run: |
+          set -e
+          npm --prefix extensions/ide-agent ci
+          npm --prefix extensions/ide-agent run compile
+          test -f extensions/ide-agent/out/extension.js
+
+      - name: Package Electron app (VSCode-win32-x64)
+        shell: bash
+        run: |
+          set -e
+          npm run gulp vscode-win32-x64
+          test -f .build/win32-x64/IDE\ Code.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Windows installer
+        shell: bash
+        run: |
+          set -e
+          npm run gulp vscode-win32-x64-inno-updates
+          ls -la .build/win32-x64/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ide-code-windows-x64
+          path: .build/win32-x64/*Setup*.exe
           if-no-files-found: error
           retention-days: 14
