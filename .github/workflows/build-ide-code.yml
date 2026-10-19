@@ -74,7 +74,10 @@ jobs:
         working-directory: build
         run: |
           set -e
-          for i in 1 2 3 4 5; do npm ci && break || {
+          # --ignore-scripts: skip native module builds (e.g. native-keymap
+          # fails against Node 24 headers); they are rebuilt for Electron
+          # during packaging.
+          for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
             [ "$i" -eq 5 ] && { echo "npm ci (build) failed 5 times" >&2; exit 1; }
             echo "npm ci (build) failed, retry $i/5"; sleep 10;
           }; done
@@ -84,7 +87,10 @@ jobs:
       - name: Install root dependencies
         run: |
           set -e
-          for i in 1 2 3 4 5; do npm ci && break || {
+          # --ignore-scripts: skip native module builds (e.g. native-keymap
+          # fails against Node 24 headers); they are rebuilt for Electron
+          # during packaging.
+          for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
             [ "$i" -eq 5 ] && { echo "npm ci (root) failed 5 times" >&2; exit 1; }
             echo "npm ci (root) failed, retry $i/5"; sleep 10;
           }; done
