@@ -40,6 +40,16 @@ export interface ComposerUiConfig {
   cmdPFilePicker: boolean;
 }
 
+/** DETAIL-CHAT §5 (P1, verified live on Cursor 3.25.9): submit-slot morph icons.
+    Empty composer → mic ("Start voice chat"); non-empty → arrow-up
+    ("Send message"). Inline SVG (never emoji). The same constants are baked
+    into the webview script via JSON.stringify so the morph reuses identical
+    markup instead of duplicating the paths. */
+const SUBMIT_ICON_VOICE =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="1" width="4" height="8" rx="2"/><path d="M4 7.2a4 4 0 0 0 8 0"/><path d="M8 11.2v3"/></svg>';
+const SUBMIT_ICON_SEND =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13.5v-11"/><path d="M3.5 7 8 2.5 12.5 7"/></svg>';
+
 const DEFAULT_UI_CONFIG: ComposerUiConfig = {
   textSizeScale: 1,
   conversationDensity: "compact-all-grouped",
@@ -212,8 +222,11 @@ export function createComposer(
   .chip button { background: transparent; border: none; color: inherit; cursor: pointer; font-size: 14px; padding: 0; min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; }
   #composer { display: flex; gap: 6px; position: relative; }
   #input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); border-radius: 6px; padding: 6px; font-family: inherit; font-size: 12px; resize: none; }
-  #send { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+  #send { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; min-width: 40px; }
   #send.hidden { display: none; }
+  /* DETAIL-CHAT §5: the submit slot is an icon button that morphs with the
+     composer content (mic = voice chat, arrow-up = send). */
+  #send svg { width: 15px; height: 15px; display: block; flex: none; }
   #stop { display: none; background: transparent; color: var(--vscode-errorForeground); border: 1px solid var(--vscode-errorForeground); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
   #stop.visible { display: inline-block; }
   .md-code { background: var(--vscode-textCodeBlock-background); border-radius: 4px; padding: 8px; overflow: auto; font-size: 11px; margin: 4px 0; }
@@ -288,8 +301,12 @@ export function createComposer(
   <div id="chips"></div>
   <div id="composer">
     <textarea id="input" rows="2" aria-label="Chat input" placeholder="${escHtml(initialPlaceholder)}"></textarea>
-    <button id="send" title="Send (Enter)">Send</button>
-    <button id="stop" title="Stop the running turn">Stop</button>
+    <!-- DETAIL-CHAT §5 (P1): the submit slot morphs — empty composer shows
+         the voice-chat entry (aria-label="Start voice chat"), NOT a disabled
+         Send button. The webview script swaps label+icon as text is typed /
+         cleared (Cursor's ui-prompt-input-submit-button). -->
+    <button id="send" class="ui-prompt-input-submit-button" title="Start voice chat" aria-label="Start voice chat">${SUBMIT_ICON_VOICE}</button>
+    <button id="stop" title="Stop generation" aria-label="Stop generation">Stop</button>
     <div class="menu" id="mentionMenu"></div>
     <div class="menu" id="slashMenu"></div>
     <div id="ctxPop"></div>
@@ -358,32 +375,32 @@ export function createComposer(
   var MD_INLINE_PH = "\uE001";
   function inlineMd(s) {
     var codes = [];
-    s = s.replace(/\x60([^\x60\n]+)\x60/g, function (m, c) {
+    s = s.replace(/\\x60([^\\x60\\n]+)\\x60/g, function (m, c) {
       var i = codes.length;
       codes.push('<code>' + c + '</code>');
       return MD_INLINE_PH + i + MD_INLINE_PH;
     });
-    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+    s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*\\w])\\*([^*\\n]+)\\*/g, '$1<em>$2</em>');
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-    var phRe = new RegExp(MD_INLINE_PH + '(\d+)' + MD_INLINE_PH, 'g');
+    var phRe = new RegExp(MD_INLINE_PH + '(\\\\d+)' + MD_INLINE_PH, 'g');
     s = s.replace(phRe, function (m, i) { return codes[+i]; });
     return s;
   }
   function renderMarkdown(src) {
     var text = esc(String(src == null ? '' : src));
-    // 1. Extract fenced code blocks (\x60\x60\x60lang ... \x60\x60\x60), incl. unclosed ones.
+    // 1. Extract fenced code blocks (\\x60\\x60\\x60lang ... \\x60\\x60\\x60), incl. unclosed ones.
     var blocks = [];
-    text = text.replace(/\x60\x60\x60(\w*)\n?([\s\S]*?)(?:\x60\x60\x60|$)/g, function (m, lang, code) {
+    text = text.replace(/\\x60\\x60\\x60(\\w*)\\n?([\\s\\S]*?)(?:\\x60\\x60\\x60|$)/g, function (m, lang, code) {
       var i = blocks.length;
       blocks.push(
         '<pre class="md-code"><code' + (lang ? ' data-lang="' + lang + '"' : '') + '>' +
-        code.replace(/\n$/, '') + '</code></pre>');
+        code.replace(/\\n$/, '') + '</code></pre>');
       return MD_CODE_PH + i + MD_CODE_PH;
     });
     // 2. Block-level: headings, lists, blockquotes, paragraphs.
-    var mdLines = text.split('\n');
+    var mdLines = text.split('\\n');
     var html = '';
     var listOpen = false;
     var para = [];
@@ -391,22 +408,22 @@ export function createComposer(
       if (para.length) { html += '<p>' + para.map(inlineMd).join('<br>') + '</p>'; para = []; }
     }
     function closeList() { if (listOpen) { html += '</ul>'; listOpen = false; } }
-    var fenceLineRe = new RegExp('^' + MD_CODE_PH + '\d+' + MD_CODE_PH + '$');
+    var fenceLineRe = new RegExp('^' + MD_CODE_PH + '\\\\d+' + MD_CODE_PH + '$');
     for (var i = 0; i < mdLines.length; i++) {
       var line = mdLines[i];
       if (fenceLineRe.test(line)) { flushPara(); closeList(); html += line; continue; }
-      var h = line.match(/^(#{1,4})\s+(.*)$/);
+      var h = line.match(/^(#{1,4})\\s+(.*)$/);
       if (h) { flushPara(); closeList(); html += '<h' + h[1].length + '>' + inlineMd(h[2]) + '</h' + h[1].length + '>'; continue; }
-      var li = line.match(/^[-*]\s+(.*)$/);
+      var li = line.match(/^[-*]\\s+(.*)$/);
       if (li) { flushPara(); if (!listOpen) { html += '<ul>'; listOpen = true; } html += '<li>' + inlineMd(li[1]) + '</li>'; continue; }
-      var q = line.match(/^&gt;\s?(.*)$/);
+      var q = line.match(/^&gt;\\s?(.*)$/);
       if (q) { flushPara(); closeList(); html += '<blockquote>' + inlineMd(q[1]) + '</blockquote>'; continue; }
-      if (/^\s*$/.test(line)) { flushPara(); closeList(); continue; }
+      if (/^\\s*$/.test(line)) { flushPara(); closeList(); continue; }
       para.push(line);
     }
     flushPara(); closeList();
     // 3. Restore code blocks.
-    var blockRe = new RegExp(MD_CODE_PH + '(\d+)' + MD_CODE_PH, 'g');
+    var blockRe = new RegExp(MD_CODE_PH + '(\\\\d+)' + MD_CODE_PH, 'g');
     return html.replace(blockRe, function (m, i) { return blocks[+i]; });
   }
   function toolCallCardEl(tc) {
@@ -772,9 +789,9 @@ export function createComposer(
     if (at < 0) { return null; }
     if (at > 0) {
       var prev = upto[at - 1];
-      if (prev !== ' ' && prev !== '\t' && prev !== '\n' && prev !== '(') { return null; }
+      if (prev !== ' ' && prev !== '\\t' && prev !== '\\n' && prev !== '(') { return null; }
     }
-    var lineEnd = upto.indexOf('\n', at);
+    var lineEnd = upto.indexOf('\\n', at);
     var raw = (lineEnd === -1 ? upto : upto.slice(0, lineEnd)).slice(at + 1);
     if (raw.length > 120) { raw = raw.slice(0, 120); }
     return { at: at, query: raw };
@@ -782,7 +799,7 @@ export function createComposer(
 
   /* Query highlight on the menu label (spec §2 row rendering). */
   function highlightQuery(label, query) {
-    var q = String(query).trim().split(/\s+/).filter(Boolean)[0] || '';
+    var q = String(query).trim().split(/\\s+/).filter(Boolean)[0] || '';
     if (!q) { return esc(label); }
     var idx = String(label).toLowerCase().indexOf(q.toLowerCase());
     if (idx < 0) { return esc(label); }
@@ -875,6 +892,8 @@ export function createComposer(
       inputEl.selectionStart = inputEl.selectionEnd = trig.at + 1;
     }
     closeMenus();
+    // The mention insert changed the content → re-morph the submit slot.
+    updateSubmitButton();
     inputEl.focus();
   }
 
@@ -983,6 +1002,8 @@ export function createComposer(
   }
   function resetMenuSel() { menuSelIdx = 0; applyMenuSel(); }
   inputEl.addEventListener('input', function () {
+    // DETAIL-CHAT §5: every keystroke re-morphs the submit slot.
+    updateSubmitButton();
     var v = inputEl.value;
     if (detectMentionTrigger(v, inputEl.selectionStart)) {
       onMentionInput();
@@ -1076,10 +1097,10 @@ export function createComposer(
     for (var i = caret - 1; i >= 0; i--) {
       var ch = v[i];
       if (ch === '/') {
-        if (i === 0 || /\s/.test(v[i - 1])) { return i; }
+        if (i === 0 || /\\s/.test(v[i - 1])) { return i; }
         return -1;
       }
-      if (/\s/.test(ch)) { return -1; }
+      if (/\\s/.test(ch)) { return -1; }
     }
     return -1;
   }
@@ -1096,6 +1117,8 @@ export function createComposer(
     inputEl.selectionStart = inputEl.selectionEnd = np;
     slashState = null;
     closeMenus();
+    // The palette insert changed the content → re-morph the submit slot.
+    updateSubmitButton();
     inputEl.focus();
   }
 
@@ -1128,7 +1151,7 @@ export function createComposer(
     if (!cd) { return; }
     var text = cd.getData('text/plain') || cd.getData('text') || '';
     if (!text || text.charAt(0) !== '/') { return; }
-    var tok = /^\/([A-Za-z0-9_/-]+)/.exec(text);
+    var tok = /^\\/([A-Za-z0-9_/-]+)/.exec(text);
     if (!tok) { return; }
     var item = null;
     for (var i = 0; i < SLASH_ITEMS.length; i++) {
@@ -1142,7 +1165,7 @@ export function createComposer(
     var v = inputEl.value;
     var caret = inputEl.selectionStart == null ? v.length : inputEl.selectionStart;
     var end = inputEl.selectionEnd == null ? caret : inputEl.selectionEnd;
-    var rest = text.slice(tok[0].length).replace(/^\s+/, '');
+    var rest = text.slice(tok[0].length).replace(/^\\s+/, '');
     var insert = '/' + item.name + ' ' + rest;
     inputEl.value = v.slice(0, caret) + insert + v.slice(end);
     var np = caret + insert.length;
@@ -1391,11 +1414,42 @@ export function createComposer(
   // Enter-twice steer window (ms): two Enters this close while a turn runs
   // submit as "Send now" instead of queueing.
   var lastEnterAt = 0;
+  /* ---- submit-slot morph (DETAIL-CHAT §5, P1 — verified live on Cursor 3.25.9) ----
+     The slot is ONE button whose aria-label + icon morph with the composer
+     content; it is NOT a disabled Send button when empty:
+       input empty      → aria-label="Start voice chat" (realtime voice entry)
+       input non-empty  → aria-label="Send message"
+     (The running morph → Stop button is handled by setTurnRunning below.)
+     "Empty" = no non-whitespace text. Chips alone (e.g. an attached
+     selection with no text) keep the voice state — submit() refuses empty
+     text anyway, so the two stay consistent. */
+  var SUBMIT_ICON_VOICE = ${JSON.stringify(SUBMIT_ICON_VOICE)};
+  var SUBMIT_ICON_SEND = ${JSON.stringify(SUBMIT_ICON_SEND)};
+  function composerHasText() {
+    return inputEl.value.trim().length > 0;
+  }
+  function updateSubmitButton() {
+    if (turnRunning) { return; } // the Stop button owns the slot while a turn runs
+    if (composerHasText()) {
+      sendBtn.innerHTML = SUBMIT_ICON_SEND;
+      sendBtn.setAttribute('aria-label', 'Send message');
+      sendBtn.setAttribute('title', 'Send (Enter)');
+    } else {
+      sendBtn.innerHTML = SUBMIT_ICON_VOICE;
+      sendBtn.setAttribute('aria-label', 'Start voice chat');
+      sendBtn.setAttribute('title', 'Start voice chat');
+    }
+  }
   function setTurnRunning(running) {
     turnRunning = !!running;
     stopBtn.classList.toggle('visible', running);
     sendBtn.classList.toggle('hidden', running);
+    /* A finished turn re-morphs the slot to the current input content
+       (e.g. back to "Start voice chat" when the input is empty). */
+    if (!running) { updateSubmitButton(); }
   }
+  // Initial paint: the composer starts empty → voice-chat entry.
+  updateSubmitButton();
   stopBtn.addEventListener('click', function () {
     vscodeApi.postMessage({ type: 'stopTurn' });
   });
@@ -1485,8 +1539,8 @@ export function createComposer(
     if (!history.length) { return; }
     var val = inputEl.value;
     var caret = inputEl.selectionStart == null ? val.length : inputEl.selectionStart;
-    var firstNl = val.indexOf('\n');
-    var lastNl = val.lastIndexOf('\n');
+    var firstNl = val.indexOf('\\n');
+    var lastNl = val.lastIndexOf('\\n');
     var onFirstLine = firstNl === -1 || caret <= firstNl;
     var onLastLine = lastNl === -1 || caret > lastNl;
     // Only hijack the arrow when the caret is at the boundary line;
@@ -1504,6 +1558,8 @@ export function createComposer(
       inputEl.value = history[historyIdx];
     }
     inputEl.selectionStart = inputEl.selectionEnd = inputEl.value.length;
+    // History recall changes the content → re-morph the submit slot.
+    updateSubmitButton();
   }
   function submit(opts) {
     opts = opts || {};
@@ -1519,18 +1575,31 @@ export function createComposer(
     /* sendMode routes the message while a turn is running (Enter → default,
        Send button → manual, Alt+Enter → queue, Cmd/Ctrl+Enter or Enter-twice
        → sendNow = bypass the queue, delivered at the next opportunity). */
-    vscodeApi.postMessage({ type: 'submit', text: parts.join('\n\n'), fullContext: !!opts.fullContext, mentions: chips, sendMode: opts.sendMode || 'default' });
+    vscodeApi.postMessage({ type: 'submit', text: parts.join('\\n\\n'), fullContext: !!opts.fullContext, mentions: chips, sendMode: opts.sendMode || 'default' });
     history.push(text);
     resetHistoryNav();
     inputEl.value = '';
     chips = [];
     renderChips();
     closeMenus();
+    // The composer is empty again → morph the slot back to voice chat.
+    updateSubmitButton();
     // P1 (QA-FILE-01): show Stop while the turn runs; the host reports
     // {type:'turnState', running} when it starts and finishes.
     setTurnRunning(true);
   }
-  sendBtn.addEventListener('click', function () { submit({ fullContext: false, sendMode: 'manual' }); });
+  sendBtn.addEventListener('click', function () {
+    if (composerHasText()) {
+      submit({ fullContext: false, sendMode: 'manual' });
+    } else {
+      /* DETAIL-CHAT §5: empty-composer submit = the voice chat entry point.
+         GAP (honest): no realtime voice-chat infrastructure exists yet —
+         no mic capture, no speech-to-text, no voice session. The host
+         answers {type:'startVoiceChat'} with an informational "not
+         available" message. Do NOT fake a working voice session here. */
+      vscodeApi.postMessage({ type: 'startVoiceChat' });
+    }
+  });
   /* SETTINGS-PARITY (ide.composer.cmdPFilePicker2): Cmd/Ctrl+P opens the
      file picker in the composer, without typing '@'. */
   function openFilePicker() {
@@ -1616,6 +1685,8 @@ export function createComposer(
         renderChips();
         inputEl.value = '';
         closeMenus();
+        // New chat clears the draft → the slot morphs back to voice chat.
+        updateSubmitButton();
         ctxSources = null;
         renderCtx();
         resetHistoryNav();
@@ -1660,6 +1731,8 @@ export function createComposer(
         if (typeof msg.text === 'string') {
           inputEl.value = msg.text;
           resetHistoryNav();
+          // Prefilled text → the slot morphs to "Send message".
+          updateSubmitButton();
           inputEl.focus();
         }
         break;

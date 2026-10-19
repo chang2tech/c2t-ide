@@ -7,7 +7,11 @@ import { EngineModelInfo, ModelRef } from "./agentService";
  *   - persisted per workspace (workspaceState-backed store, injected by
  *     ComposerDataService — this module never imports vscode so it stays
  *     unit-testable under plain node:test),
- *   - "auto" (no explicit ref) means the engine default is used,
+ *   - "auto" (kind "auto", no explicit ref) means automatic routing — the
+ *     engine default is used; "cursor-default" (kind "cursor-default") is the
+ *     Cursor-parity virtual selector for Settings > Models > "Default Model"
+ *     (live value `cursor-default`); both resolve through the engine default
+ *     (see the engine-adapter seam),
  *   - changes fire onDidChangeModel, which ComposerDataService forwards as a
  *     `modelChanged` ComposerEvent so the webview's model button stays honest.
  *
@@ -17,11 +21,126 @@ import { EngineModelInfo, ModelRef } from "./agentService";
  * endpoints). This service only owns selection state; it never talks to the
  * engine itself.
  */
+/**
+ * P1 (DEV-MODEL-PICKER-ENTRIES, Cursor parity): first-class model-picker
+ * selection kinds. Cursor's composer model picker (detail-chat-2026-10-19 §4)
+ * has two virtual entries on top of the concrete engine catalog:
+ *
+ * - "Auto" — "Balanced quality and speed, recommended for most tasks"
+ *   (verbatim description from the live 3.25.9 capture). Automatic routing;
+ *   NOT a fixed model.
+ * - "Cursor Default" (live value `cursor-default`, observed in
+ *   Settings > Models > "Default Model" — "What model new agents use by
+ *   default", detail-settings-2026-10-19 §"Models").
+ *
+ * `kind` is optional so persisted pre-P1 selections (which only carried
+ * `ref`/`label`) keep working: no ref = auto, a ref = explicit.
+ */
+export type ModelSelectionKind = "auto" | "cursor-default" | "explicit";
+
 export interface ModelSelection {
-  /** Explicit model reference; absent = "auto" (engine default). */
+  /** Explicit model reference; absent = virtual selector (auto/cursor-default). */
   ref?: ModelRef;
   /** Human label shown in the composer model button. */
   label: string;
+  /** Selection kind; legacy persisted selections omit it (derived by selectionKind). */
+  kind?: ModelSelectionKind;
+}
+
+/** Wire values for the two virtual picker entries. */
+export const AUTO_MODEL_VALUE = "auto";
+export const CURSOR_DEFAULT_VALUE = "cursor-default";
+
+/** Verbatim picker entry for "Auto" (live capture, detail-chat-2026-10-19 §4). */
+export const AUTO_MODEL_LABEL = "Auto";
+export const AUTO_MODEL_DESCRIPTION = "Balanced quality and speed, recommended for most tasks";
+
+/** Picker entry for "Cursor Default" (live value `cursor-default`,
+ * detail-settings-2026-10-19). NOTE: the description below is INFERRED —
+ * the live capture only showed the setting's label/value, never the
+ * option's description text, and web docs don't carry it either. Marked
+ * UNKNOWN per the no-guessing rule; re-capture when quota allows. */
+export const CURSOR_DEFAULT_LABEL = "Cursor Default";
+export const CURSOR_DEFAULT_DESCRIPTION = "Use the default model for new agents";
+
+/** One row of the composer model picker (quickpick-agnostic). */
+export interface ModelPickerEntry {
+  /**
+   * Stable value: "auto" | "cursor-default" | ModelService.refToString(ref).
+   * This is what gets persisted/compared — never the label.
+   */
+  value: string;
+  /** Label shown in the picker. */
+  label: string;
+  /** Description shown under the label (Auto's is verbatim from Cursor). */
+  description?: string;
+  /** Present only for concrete engine models. */
+  ref?: ModelRef;
+}
+
+/** Derive the selection kind, including for legacy persisted selections. */
+export function selectionKind(selection: ModelSelection): ModelSelectionKind {
+  if (selection.kind === "cursor-default") return "cursor-default";
+  if (selection.kind === "explicit" || selection.ref) return "explicit";
+  return "auto";
+}
+
+/** Stable value for a selection (mirrors the picker's entry values). */
+export function selectionValue(selection: ModelSelection): string {
+  const kind = selectionKind(selection);
+  if (kind === "explicit" && selection.ref) {
+    return ModelService.refToString(selection.ref);
+  }
+  return kind === "cursor-default" ? CURSOR_DEFAULT_VALUE : AUTO_MODEL_VALUE;
+}
+
+/** Canonical "Auto" selection. */
+export function autoSelection(): ModelSelection {
+  return { kind: "auto", label: AUTO_MODEL_LABEL };
+}
+
+/** Canonical "Cursor Default" selection. */
+export function cursorDefaultSelection(): ModelSelection {
+  return { kind: "cursor-default", label: CURSOR_DEFAULT_LABEL };
+}
+
+/**
+ * P1 (DEV-MODEL-PICKER-ENTRIES): the full composer model-picker list —
+ * "Auto" and "Cursor Default" virtual entries followed by the
+ * enabled engine catalog (provider grouping happens in the quickpick).
+ *
+ * ORDER NOTE (UNKNOWN, do not treat as verified): the live 3.25.9 capture
+ * only ever showed "Auto" alone (account was at "Usage limit reached", so
+ * the full list never rendered). "Auto" is listed first to match the live
+ * composer trigger default ("Auto"); the relative order of "Cursor Default"
+ * vs "Auto" is UNVERIFIED — re-check against a quota-holding account.
+ */
+export function buildModelPickerEntries(
+  models: readonly EngineModelInfo[],
+  enabledModels: readonly string[],
+): ModelPickerEntry[] {
+  const entries: ModelPickerEntry[] = [
+    { value: AUTO_MODEL_VALUE, label: AUTO_MODEL_LABEL, description: AUTO_MODEL_DESCRIPTION },
+    {
+      value: CURSOR_DEFAULT_VALUE,
+      label: CURSOR_DEFAULT_LABEL,
+      description: CURSOR_DEFAULT_DESCRIPTION,
+    },
+  ];
+  for (const m of filterEnabledModels(models, enabledModels)) {
+    const ref: ModelRef = {
+      id: m.id,
+      providerID: m.providerID,
+      ...(m.variant ? { variant: m.variant } : {}),
+    };
+    entries.push({
+      value: ModelService.refToString(ref),
+      label: ModelService.labelFor(m),
+      description: m.name && m.name !== m.id ? m.id : undefined,
+      ref,
+    });
+  }
+  return entries;
 }
 
 /** Persistence behind the selection. Injected — vscode-backed in prod. */
@@ -41,7 +160,8 @@ export class InMemoryModelStore implements ModelSelectionStore {
   }
 }
 
-export const DEFAULT_MODEL_LABEL = "auto";
+/** Default selection label — matches Cursor's live composer trigger text ("Auto"). */
+export const DEFAULT_MODEL_LABEL = "Auto";
 
 export class ModelService {
   private selection: ModelSelection;
@@ -52,7 +172,7 @@ export class ModelService {
     this.selection =
       restored && typeof restored.label === "string" && restored.label.length > 0
         ? restored
-        : { label: DEFAULT_MODEL_LABEL };
+        : autoSelection();
   }
 
   getSelection(): ModelSelection {
@@ -154,8 +274,10 @@ export function filterEnabledModels(
 
 /**
  * M-09 / ide.cycleModel: the next enabled model after the current selection.
- * Wraps around; "auto" (no ref) or a now-disabled selection restarts from the
- * first enabled model. Returns undefined when no enabled model exists.
+ * Wraps around. The virtual selectors ("auto"/"cursor-default", no ref) are
+ * automatic — never a fixed model — so cycling from either restarts at the
+ * first enabled model; a now-disabled explicit selection does the same.
+ * Returns undefined when no enabled model exists.
  */
 export function nextEnabledModel(
   models: readonly EngineModelInfo[],

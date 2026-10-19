@@ -9,14 +9,25 @@
 import { describe, it } from "node:test";
 import * as assert from "node:assert";
 import {
+  AUTO_MODEL_DESCRIPTION,
+  AUTO_MODEL_LABEL,
+  AUTO_MODEL_VALUE,
+  CURSOR_DEFAULT_DESCRIPTION,
+  CURSOR_DEFAULT_LABEL,
+  CURSOR_DEFAULT_VALUE,
   DEFAULT_MODEL_LABEL,
   InMemoryModelStore,
   ModelService,
   ModelSelection,
   ModelSelectionStore,
+  autoSelection,
+  buildModelPickerEntries,
+  cursorDefaultSelection,
   filterEnabledModels,
   isModelEnabled,
   nextEnabledModel,
+  selectionKind,
+  selectionValue,
 } from "../modelService";
 
 function makeStore(saved?: ModelSelection): ModelSelectionStore & { saved?: ModelSelection } {
@@ -185,8 +196,7 @@ describe("M-04 enabled-models allowlist", () => {
   });
 });
 
-describe("ide.cycleModel order", () => {
-  const models = [
+describe("ide.cycleModel order", () => {  const models = [
     { id: "a", providerID: "p1", name: "A" },
     { id: "b", providerID: "p1", name: "B" },
     { id: "c", providerID: "p2", name: "C" },
@@ -212,5 +222,88 @@ describe("ide.cycleModel order", () => {
   it("returns undefined when nothing is enabled", () => {
     assert.strictEqual(nextEnabledModel(models, ["p9/zzz"], undefined), undefined);
     assert.strictEqual(nextEnabledModel([], [], undefined), undefined);
+  });
+});
+
+describe("P1 DEV-MODEL-PICKER-ENTRIES: Auto + Cursor Default picker entries", () => {
+  const models = [
+    { id: "a", providerID: "p1", name: "A" },
+    { id: "b", providerID: "p1", name: "B" },
+  ];
+
+  it("picker list starts with Auto and Cursor Default, verbatim labels/values/descriptions", () => {
+    const entries = buildModelPickerEntries(models, []);
+    assert.strictEqual(entries[0].value, AUTO_MODEL_VALUE);
+    assert.strictEqual(entries[0].value, "auto");
+    assert.strictEqual(entries[0].label, "Auto");
+    assert.strictEqual(entries[0].label, AUTO_MODEL_LABEL);
+    assert.strictEqual(entries[0].description, "Balanced quality and speed, recommended for most tasks");
+    assert.strictEqual(entries[0].description, AUTO_MODEL_DESCRIPTION);
+    assert.strictEqual(entries[0].ref, undefined);
+
+    assert.strictEqual(entries[1].value, CURSOR_DEFAULT_VALUE);
+    assert.strictEqual(entries[1].value, "cursor-default");
+    assert.strictEqual(entries[1].label, "Cursor Default");
+    assert.strictEqual(entries[1].label, CURSOR_DEFAULT_LABEL);
+    assert.strictEqual(entries[1].description, CURSOR_DEFAULT_DESCRIPTION);
+    assert.strictEqual(entries[1].ref, undefined);
+  });
+
+  it("engine models follow the two virtual entries, with wire-form values", () => {
+    const entries = buildModelPickerEntries(models, []);
+    assert.strictEqual(entries.length, 4);
+    assert.strictEqual(entries[2].value, "p1/a");
+    assert.strictEqual(entries[2].label, "A");
+    assert.deepStrictEqual(entries[2].ref, { id: "a", providerID: "p1" });
+    assert.strictEqual(entries[3].value, "p1/b");
+  });
+
+  it("disabled engine models are filtered but the virtual entries always stay", () => {
+    const entries = buildModelPickerEntries(models, ["p1/b"]);
+    assert.deepStrictEqual(
+      entries.map((e) => e.value),
+      ["auto", "cursor-default", "p1/b"],
+    );
+  });
+
+  it("autoSelection()/cursorDefaultSelection() build the canonical selections", () => {
+    assert.deepStrictEqual(autoSelection(), { kind: "auto", label: "Auto" });
+    assert.deepStrictEqual(cursorDefaultSelection(), { kind: "cursor-default", label: "Cursor Default" });
+  });
+});
+
+describe("selection kind + value (virtual selectors are automatic, not fixed models)", () => {
+  it("legacy persisted { label: 'auto' } (no kind/ref) is auto", () => {
+    assert.strictEqual(selectionKind({ label: "auto" }), "auto");
+    assert.strictEqual(selectionValue({ label: "auto" }), "auto");
+  });
+
+  it("legacy persisted explicit ref is explicit", () => {
+    const sel: ModelSelection = { ref: { id: "m", providerID: "p" }, label: "M" };
+    assert.strictEqual(selectionKind(sel), "explicit");
+    assert.strictEqual(selectionValue(sel), "p/m");
+  });
+
+  it("cursor-default selection round-trips through the store", () => {
+    const store = new InMemoryModelStore();
+    const svc = new ModelService(store);
+    svc.setSelection(cursorDefaultSelection());
+    const reloaded = new ModelService(store);
+    assert.strictEqual(selectionKind(reloaded.getSelection()), "cursor-default");
+    assert.strictEqual(selectionValue(reloaded.getSelection()), "cursor-default");
+    assert.strictEqual(reloaded.getSelection().label, "Cursor Default");
+    assert.strictEqual(reloaded.getSelection().ref, undefined);
+  });
+
+  it("cycling from cursor-default restarts at the first enabled model (automatic, not fixed)", () => {
+    const models = [
+      { id: "a", providerID: "p1", name: "A" },
+      { id: "b", providerID: "p1", name: "B" },
+    ];
+    // Both virtual selectors carry no ref — the cycler treats them as automatic.
+    assert.strictEqual(selectionValue(autoSelection()), "auto");
+    assert.strictEqual(selectionValue(cursorDefaultSelection()), "cursor-default");
+    assert.strictEqual(nextEnabledModel(models, [], cursorDefaultSelection().ref)?.id, "a");
+    assert.strictEqual(nextEnabledModel(models, [], autoSelection().ref)?.id, "a");
   });
 });

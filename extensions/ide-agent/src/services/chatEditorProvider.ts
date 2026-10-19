@@ -109,6 +109,10 @@ type WebviewMessage =
   | { type: "approvalResolve"; approvalId: string; optionId: string }
   | { type: "webviewReady" }
   | { type: "stopTurn" }
+  // DETAIL-CHAT §5 (P1): empty-composer submit morphs to "Start voice chat".
+  // No realtime voice infrastructure exists yet (mic capture, speech-to-text,
+  // voice session) — the host answers honestly instead of faking a session.
+  | { type: "startVoiceChat" }
   | { type: "restoreCheckpoint"; bubbleId: string }
   | { type: "newTab" }
   | { type: "switchTab"; tabId: string }
@@ -414,6 +418,16 @@ class ChatEditorHost implements vscode.Disposable {
         break;
       case "stopTurn":
         composer.abort();
+        break;
+      // DETAIL-CHAT §5 (P1): the empty-composer submit slot morphs to
+      // "Start voice chat". GAP (honest): no realtime voice-chat
+      // infrastructure exists yet (no mic capture, no speech-to-text,
+      // no voice session), so clicking it shows an informational
+      // message instead of pretending to start a session.
+      case "startVoiceChat":
+        void vscode.window.showInformationMessage(
+          "IDE Agent: voice chat is not available in this build yet.",
+        );
         break;
       case "restoreCheckpoint":
         if (typeof message.bubbleId === "string") {

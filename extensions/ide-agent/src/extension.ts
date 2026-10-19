@@ -57,7 +57,20 @@ import { attachPendingSelection } from "./services/inlinePromptSelection";
 import { MentionService, MentionChip, isMentionChip, FileAttachment } from "./services/mentionService";
 import { SubmitSendMode } from "./services/composerDataService";
 import { EngineModelInfo, ModelRef } from "./services/agentService";
-import { ModelSelection, ModelService, filterEnabledModels, isModelEnabled, nextEnabledModel } from "./services/modelService";
+import {
+  AUTO_MODEL_VALUE,
+  CURSOR_DEFAULT_VALUE,
+  ModelSelection,
+  ModelService,
+  autoSelection,
+  buildModelPickerEntries,
+  cursorDefaultSelection,
+  filterEnabledModels,
+  isModelEnabled,
+  nextEnabledModel,
+  selectionKind,
+  selectionValue,
+} from "./services/modelService";
 import { HookService } from "./hooks/hookService";
 import { BrowserTabManager } from "./browser/browserTab";
 import { browserCaptureDir, screenshotFilename } from "./browser/chromium";
@@ -165,6 +178,7 @@ const COMMANDS: ScaffoldCommand[] = [
   { id: "ide.terminalAiCommand", title: "Generate Terminal Command with AI", does: "describe a task and prefill the chat to generate a terminal command" },
   { id: "ide.searchConversations", title: "Search Conversations", does: "search across agent conversations" },
   { id: "ide.openSettings", title: "Open IDE Agent Settings", does: "open the IDE Agent settings UI" },
+  { id: "ide.openDocs", title: "Open IDE Code Documentation", does: "open the IDE Code docs in the external browser (Cursor Docs-nav parity)" },
   { id: "ide.terminalRunBackground", title: "Run Command in Background", does: "run a shell command in the background IDE Agent terminal with output streaming to chat" },
 ];
 
@@ -380,6 +394,17 @@ export function activate(context: vscode.ExtensionContext): void {
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
             void vscode.commands.executeCommand("workbench.action.openSettings", "@ext:ide-code.ide-agent");
+          }),
+        );
+        break;
+      case "ide.openDocs":
+        // IDE-CODE: Settings IA parity (Cursor "Docs" nav item opens
+        // cursor.com/docs externally — it is a nav link, not a section).
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void vscode.env.openExternal(
+              vscode.Uri.parse("https://github.com/chang2tech/c2t-ide"),
+            );
           }),
         );
         break;
@@ -963,7 +988,10 @@ function getEnabledModels(): string[] {
 async function reconcileSelectionWithAllowlist(composer: ComposerDataService): Promise<boolean> {
   const allowlist = getEnabledModels();
   const current = composer.models.getSelection();
-  if (!current.ref || isModelEnabled(current.ref, allowlist)) {
+  // Virtual selectors ("auto"/"cursor-default") are automatic, never a fixed
+  // model, so they can never be "disabled" by the allowlist — only an
+  // explicit ref needs the check.
+  if (selectionKind(current) !== "explicit" || (current.ref && isModelEnabled(current.ref, allowlist))) {
     return false;
   }
   const adapter = composer.getEngineAdapter();
@@ -986,7 +1014,7 @@ async function reconcileSelectionWithAllowlist(composer: ComposerDataService): P
       );
     }
   }
-  composer.models.setSelection({ label: "auto" });
+  composer.models.setSelection(autoSelection());
   return true;
 }
 
@@ -1061,47 +1089,25 @@ export async function pickModel(composer: ComposerDataService): Promise<void> {
   if (!models) return;
   const adapter = composer.getEngineAdapter();
   const enabledModels = getEnabledModels();
-  const enabled = filterEnabledModels(models, enabledModels);
-  const disabledCount = models.length - enabled.length;
+  const disabledCount = models.length - filterEnabledModels(models, enabledModels).length;
 
   const current = composer.models.getSelection();
+  const currentValue = selectionValue(current);
   interface ModelPickItem extends vscode.QuickPickItem {
+    /** Picker entry value: "auto" | "cursor-default" | ref wire form. */
+    value: string;
     ref?: ModelRef;
   }
-  const items: ModelPickItem[] = [
-    {
-      label: "auto (engine default)",
-      description: current.ref ? undefined : "(current)",
-      ref: undefined,
-    },
-  ];
-  const byProvider = new Map<string, EngineModelInfo[]>();
-  for (const m of enabled) {
-    const list = byProvider.get(m.providerID);
-    if (list) {
-      list.push(m);
-    } else {
-      byProvider.set(m.providerID, [m]);
-    }
-  }
-  for (const provider of [...byProvider.keys()].sort()) {
-    items.push({ label: provider, kind: vscode.QuickPickItemKind.Separator });
-    const list = byProvider.get(provider)!;
-    list.sort((a, b) => ModelService.labelFor(a).localeCompare(ModelService.labelFor(b)));
-    for (const m of list) {
-      const ref: ModelRef = {
-        id: m.id,
-        providerID: m.providerID,
-        ...(m.variant ? { variant: m.variant } : {}),
-      };
-      items.push({
-        label: ModelService.labelFor(m),
-        description: m.name && m.name !== m.id ? m.id : undefined,
-        detail: ModelService.refEquals(current.ref, ref) ? "(current)" : undefined,
-        ref,
-      });
-    }
-  }
+  // P1 (DEV-MODEL-PICKER-ENTRIES): entries come from buildModelPickerEntries —
+  // "Auto" + "Cursor Default" virtual selectors first (Cursor parity), then
+  // the enabled engine catalog.
+  const items: ModelPickItem[] = buildModelPickerEntries(models, enabledModels).map((e) => ({
+    label: e.label,
+    description: e.description,
+    detail: e.value === currentValue ? "(current)" : undefined,
+    value: e.value,
+    ...(e.ref ? { ref: e.ref } : {}),
+  }));
 
   const picked = await vscode.window.showQuickPick(items, {
     placeHolder:
@@ -1114,12 +1120,20 @@ export async function pickModel(composer: ComposerDataService): Promise<void> {
   if (!picked) {
     return;
   }
-  const label = picked.ref ? picked.label : "auto";
-  const selection: ModelSelection = picked.ref ? { ref: picked.ref, label } : { label: "auto" };
+  // Virtual selectors resolve to the engine default (the adapter treats
+  // ref undefined = automatic; the selection KIND stays distinct so the
+  // button/label honestly shows what the user picked). Cursor's server-side
+  // "Auto" smart routing has no local equivalent — honest gap, see report.
+  const selection: ModelSelection =
+    picked.value === CURSOR_DEFAULT_VALUE
+      ? cursorDefaultSelection()
+      : picked.value === AUTO_MODEL_VALUE || !picked.ref
+        ? autoSelection()
+        : { kind: "explicit", ref: picked.ref, label: picked.label };
   // Switch on the engine FIRST; persist + notify the webview only on success,
   // so the composer never shows a model the engine rejected.
   try {
-    await adapter.setModel!(picked.ref);
+    await adapter.setModel!(selection.ref);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     void vscode.window.showErrorMessage(`IDE Agent: the engine rejected the model switch — ${message}.`);
@@ -1127,12 +1141,13 @@ export async function pickModel(composer: ComposerDataService): Promise<void> {
   }
   composer.models.setSelection(selection);
   void vscode.window.showInformationMessage(
-    picked.ref
-      ? `IDE Agent: model set to "${label}". Applies to new turns immediately.`
-      : 'IDE Agent: model set to auto (engine default) for new turns; existing sessions keep their model until a new chat.',
+    selection.ref
+      ? `IDE Agent: model set to "${selection.label}". Applies to new turns immediately.`
+      : selectionKind(selection) === "cursor-default"
+        ? 'IDE Agent: model set to Cursor Default for new turns; existing sessions keep their model until a new chat.'
+        : 'IDE Agent: model set to Auto for new turns; existing sessions keep their model until a new chat.',
   );
 }
-
 /**
  * M-09 (real): cycle to the next ENABLED model.
  *
@@ -1141,6 +1156,11 @@ export async function pickModel(composer: ComposerDataService): Promise<void> {
  * and persists the selection — the composer header model button and the
  * status bar item update via the modelChanged event. Switching happens on the
  * engine first so the UI never shows a model the engine rejected.
+ *
+ * P1 (DEV-MODEL-PICKER-ENTRIES): the virtual selectors ("auto"/"cursor-default")
+ * are automatic — never a fixed model — so cycling from either (or from a
+ * now-disabled explicit selection) restarts at the first enabled model; the
+ * cycle order covers concrete models only.
  */
 async function cycleModel(composer: ComposerDataService): Promise<void> {
   const models = await loadEngineModels(composer, "the model cycler");
@@ -1968,6 +1988,10 @@ type WebviewMessage =
   | { type: "approvalResolve"; approvalId: string; optionId: string }
   | { type: "webviewReady" }
   | { type: "stopTurn" }
+  // DETAIL-CHAT §5 (P1): empty-composer submit morphs to "Start voice chat".
+  // No realtime voice infrastructure exists yet (mic capture, speech-to-text,
+  // voice session) — the host answers honestly instead of faking a session.
+  | { type: "startVoiceChat" }
   // Cursor parity: per-human-message Restore button → checkout_to_message.
   | { type: "restoreCheckpoint"; bubbleId: string }
   // Doc-gap B8: chat tab bar controls.
@@ -2279,6 +2303,16 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           // P1 (QA-FILE-01): Stop button → abort the running turn.
           case "stopTurn":
             this.composer.abort();
+            break;
+          // DETAIL-CHAT §5 (P1): the empty-composer submit slot morphs to
+          // "Start voice chat". GAP (honest): no realtime voice-chat
+          // infrastructure exists yet (no mic capture, no speech-to-text,
+          // no voice session), so clicking it shows an informational
+          // message instead of pretending to start a session.
+          case "startVoiceChat":
+            void vscode.window.showInformationMessage(
+              "IDE Agent: voice chat is not available in this build yet.",
+            );
             break;
           // Cursor parity: per-message Restore button (no confirmation).
           case "restoreCheckpoint":

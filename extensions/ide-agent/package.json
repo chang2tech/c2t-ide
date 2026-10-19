@@ -10,7 +10,7 @@
   "contributes": {
     "chatParticipants": [
       {
-        "description": "AI pair programmer (scaffold \u2014 engine wiring pending)",
+        "description": "AI pair programmer (scaffold — engine wiring pending)",
         "fullName": "IDE Agent",
         "id": "ide.agent",
         "isSticky": true,
@@ -71,7 +71,7 @@
       {
         "category": "IDE Agent",
         "command": "ide.manageModels",
-        "title": "Manage Models\u2026"
+        "title": "Manage Models…"
       },
       {
         "category": "IDE Agent",
@@ -131,7 +131,7 @@
       {
         "category": "IDE Agent",
         "command": "ide.openAddContextMenu",
-        "title": "Add Context\u2026"
+        "title": "Add Context…"
       },
       {
         "category": "IDE Agent",
@@ -155,7 +155,7 @@
       },
       {
         "command": "ide.deleteWorktree",
-        "title": "Delete Worktree\u2026"
+        "title": "Delete Worktree…"
       },
       {
         "command": "ide.listWorktrees",
@@ -174,7 +174,7 @@
       {
         "category": "IDE Agent",
         "command": "ide.restoreCheckpoint",
-        "title": "Restore Checkpoint\u2026"
+        "title": "Restore Checkpoint…"
       },
       {
         "category": "IDE Agent",
@@ -368,7 +368,7 @@
       {
         "category": "IDE Tab",
         "command": "ide.pickTabModel",
-        "title": "Pick Tab Model\u2026"
+        "title": "Pick Tab Model…"
       },
       {
         "category": "IDE Tab",
@@ -414,247 +414,315 @@
         "command": "ide.setMultitaskMode",
         "title": "Open Chat in Multitask Mode",
         "category": "IDE Agent"
+      },
+      {
+        "command": "ide.openDocs",
+        "title": "Open IDE Code Documentation",
+        "category": "IDE Agent"
       }
     ],
-    "configuration": {
-      "properties": {
-        "ide.window.openAgentsWindowOnStartup": {
-          "type": "boolean",
-          "default": false,
-          "description": "Open the Agents Window instead of the default window on startup.",
-          "scope": "application"
-        },
-        "ide.tab.disabledLanguages": {
-          "default": [
-            "markdown"
-          ],
-          "description": "Language IDs where Tab completion is disabled.",
-          "type": "array"
-        },
-        "ide.tab.enablePartialAccepts": {
-          "default": true,
-          "description": "Allow partial (next-word) accepts of Tab completions via Ctrl+Right.",
-          "type": "boolean"
-        },
-        "ide.tab.enabled": {
-          "default": true,
-          "description": "Enable IDE Tab inline completions.",
-          "type": "boolean"
-        },
-        "ide.browser.chromiumPath": {
-          "default": "",
-          "description": "Path to a Chrome/Chromium (or chrome-headless-shell) executable used by the in-IDE browser tab. When empty, well-known install locations are probed.",
-          "type": "string"
-        },
-        "ide.terminal.toolbarOnSelection": {
-          "default": true,
-          "description": "Show the Add to Chat button when selecting text in the terminal.",
-          "type": "boolean",
-          "scope": "window"
-        },
-        "ide.chat.openAsEditorTabs": {
-          "default": true,
-          "description": "Open chats as editor tabs instead of the legacy stacked sidebar view (Cursor \"Open Chat as Editor Tabs\" parity).",
-          "type": "boolean",
-          "scope": "window"
-        },
-        "ide.tab.ignorePatterns": {
-          "default": [],
-          "description": "Glob patterns of files Tab completion ignores (analog of .cursorignore).",
-          "type": "array"
-        },
-        "ide.tab.maxConcurrentRequests": {
-          "default": 4,
-          "description": "Max concurrent in-flight Tab requests; oldest is evicted.",
-          "type": "number"
-        },
-        "ide.tab.model": {
-          "default": "",
-          "description": "Tab model id (empty = server default). Change via the \"IDE Agent: Select Tab Model\" command or the Tab status bar item.",
-          "type": "string"
-        },
-        "ide.tab.promptDisableCopilot": {
-          "default": true,
-          "description": "Offer to disable GitHub Copilot on first Tab suggestion.",
-          "type": "boolean"
-        },
-        "ide.tab.telemetryEnabled": {
-          "default": true,
-          "description": "Record Tab session events and fate locally (privacy gate).",
-          "type": "boolean"
-        },
-        "ide.agent.engineMode": {
-          "type": "string",
-          "enum": [
-            "stub",
-            "sidecar"
-          ],
-          "default": "stub",
-          "description": "Agent engine backend: 'stub' runs the scripted demo engine, 'sidecar' spawns the real ide-code engine as a sidecar process.",
-          "scope": "machine"
-        },
-        "ide.agent.enginePath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to the ide-code engine checkout (empty = auto-detect ~/workspace/ide-code). Used when ide.agent.engineMode is 'sidecar'.",
-          "scope": "machine"
-        },
-        "ide.agent.approvalShadowMode": {
-          "type": "boolean",
-          "default": false,
-          "description": "Approval shadow mode (Cursor smartModeClassifierShadowMode parity): approval evaluation runs and is logged but does not enforce \u2014 approvals auto-resolve as approve-once so turns are never blocked. For evaluation only.",
-          "scope": "machine"
-        },
-        "ide.agent.enabledModels": {
-          "type": "array",
-          "items": {
-            "type": "string"
+    "configuration": [
+      {
+        "title": "IDE Code › General",
+        "order": 10,
+        "properties": {
+          "ide.chat.openAsEditorTabs": {
+            "default": true,
+            "description": "Open chats as editor tabs instead of the legacy stacked sidebar view (Cursor \"Open Chat as Editor Tabs\" parity).",
+            "type": "boolean",
+            "scope": "window"
           },
-          "default": [],
-          "description": "Models enabled for agent turns, as \"providerID/modelID[#variant]\" entries (see IDE Agent: Manage Models\u2026). Empty (default) = every model the engine reports is enabled. Non-empty = exact allowlist: only listed models appear in the picker and the model cycler. Manage via the \"IDE Agent: Manage Models\u2026\" command instead of editing raw strings.",
-          "scope": "window"
-        },
-        "ide.agent.terminal.enableAiChecks": {
-          "type": "boolean",
-          "default": true,
-          "description": "Allow AI features (@Terminal mentions, the terminal Cmd+K prompt) to read terminal output. Mirrors Cursor's terminal.enableAiChecks.",
-          "scope": "window"
-        },
-        "ide.agent.terminal.maxBufferChars": {
-          "type": "number",
-          "default": 20000,
-          "description": "Maximum characters of terminal output attached as chat context by @Terminal.",
-          "scope": "window"
-        },
-        "ide.composer.runMode": {
-          "type": "string",
-          "enum": [
-            "autoReview",
-            "allowlist",
-            "runEverything"
-          ],
-          "default": "autoReview",
-          "description": "Agent tool approval mode (Cursor's Run Modes). autoReview: ask before each tool call. allowlist: auto-approve safe read-only tools (read, grep, web search...), ask for the rest. runEverything: approve everything without asking \u2014 use with care."
-        },
-        "ide.composer.shouldChimeAfterChatFinishes": {
-          "type": "boolean",
-          "default": false,
-          "description": "Play a sound when a chat response is completed. Mirrors cursor.composer.shouldChimeAfterChatFinishes."
-        },
-        "ide.composer.customChimeSoundPath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to a custom sound file (mp3, wav, ogg) to play when the agent finishes responding. Leave empty to use the default sound. Mirrors cursor.composer.customChimeSoundPath."
-        },
-        "ide.composer.textSizeScale": {
-          "type": "number",
-          "enum": [
-            0.85,
-            1,
-            1.15,
-            1.3
-          ],
-          "default": 1,
-          "description": "Text size scale (relative to base) of AI chat messages. Mirrors cursor.composer.textSizeScale."
-        },
-        "ide.composer.conversationDensity": {
-          "type": "string",
-          "enum": [
-            "compact-all-grouped",
-            "compact-ungrouped",
-            "detailed"
-          ],
-          "default": "compact-all-grouped",
-          "description": "Controls how shell and edit-file tool calls are displayed and grouped in agent conversations. Mirrors cursor.composer.conversationDensity."
-        },
-        "ide.composer.codeBlockWordWrap": {
-          "type": "boolean",
-          "default": false,
-          "description": "Wrap long lines in agent chat code blocks. Mirrors cursor.composer.codeBlockWordWrap."
-        },
-        "ide.composer.queueMessageDefaultBehavior": {
-          "type": "string",
-          "enum": [
-            "send",
-            "stop-and-send",
-            "queue"
-          ],
-          "default": "send",
-          "description": "Default behavior of sending a message (Enter) while the agent is streaming. send: deliver at the next opportune time. stop-and-send: stop the agent immediately and send. queue: queue after the current turn finishes. Mirrors cursor.composer.queueMessageDefaultBehavior."
-        },
-        "ide.composer.queueManualSendBehavior": {
-          "type": "string",
-          "enum": [
-            "send",
-            "stop-and-send",
-            "queue"
-          ],
-          "default": "stop-and-send",
-          "description": "Behavior of manually sending a message (Send button / Cmd+Enter) while the agent is streaming. Mirrors cursor.composer.queueManualSendBehavior."
-        },
-        "ide.composer.shouldAutoSaveNonAgent": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically save open files when a chat turn completes. Mirrors cursor.composer.shouldAutoSaveNonAgent."
-        },
-        "ide.composer.showEmptyStateTips": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show rotating tips on the empty chat screen. Mirrors cursor.composer.showEmptyStateTips."
-        },
-        "ide.composer.cmdPFilePicker2": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable Cmd+P / Ctrl+P shortcut for the file picker in the chat input. Mirrors cursor.composer.cmdPFilePicker2."
-        },
-        "ide.general.privacyMode": {
-          "type": "boolean",
-          "default": true,
-          "description": "Privacy Mode: disable telemetry and keep all processing local. IDE Code is local-first, so this is on by default."
-        },
-        "ide.general.leakDetectionEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Warn before sending a chat message that looks like it contains a secret (API keys, tokens, private keys)."
-        },
-        "ide.general.fontSmoothingAntialiased": {
-          "type": "boolean",
-          "default": true,
-          "description": "Use grayscale antialiased text rendering in the chat view for thinner, crisper text. Mirrors cursor.general.fontSmoothingAntialiased_v2."
-        },
-        "ide.general.globalCursorIgnoreList": {
-          "type": "array",
-          "items": {
-            "type": "string"
+          "ide.composer.conversationDensity": {
+            "type": "string",
+            "enum": [
+              "compact-all-grouped",
+              "compact-ungrouped",
+              "detailed"
+            ],
+            "default": "compact-all-grouped",
+            "description": "Controls how shell and edit-file tool calls are displayed and grouped in agent conversations. Mirrors cursor.composer.conversationDensity."
           },
-          "default": [],
-          "description": "Global list of files to always ignore in IDE features, across all workspaces. Glob patterns \u2014 same effect as adding them to a .cursorignore file in every workspace. Mirrors cursor.general.globalCursorIgnoreList."
-        },
-        "ide.tab.suggestionDelayMs": {
-          "type": "number",
-          "default": 25,
-          "minimum": 0,
-          "maximum": 1000,
-          "description": "Delay in milliseconds before requesting a Tab suggestion after you stop typing."
-        },
-        "ide.tab.suggestionWhileCommenting": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show Tab suggestions while typing inside comments. When off, no suggestion is offered on comment lines."
-        },
-        "ide.cmdk.useThemedDiffBackground": {
-          "type": "boolean",
-          "default": true,
-          "description": "Use themed background colors for inline diffs. Mirrors cursor.cmdk.useThemedDiffBackground2."
-        },
-        "ide.agent.terminal.notifyOnApproval": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show an OS-level notification when the agent needs tool approval while the IDE window is in the background."
+          "ide.composer.showEmptyStateTips": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show rotating tips on the empty chat screen. Mirrors cursor.composer.showEmptyStateTips."
+          },
+          "ide.window.openAgentsWindowOnStartup": {
+            "type": "boolean",
+            "default": false,
+            "description": "Open the Agents Window instead of the default window on startup.",
+            "scope": "application"
+          },
+          "ide.composer.shouldChimeAfterChatFinishes": {
+            "type": "boolean",
+            "default": false,
+            "description": "Play a sound when a chat response is completed. Mirrors cursor.composer.shouldChimeAfterChatFinishes."
+          },
+          "ide.composer.customChimeSoundPath": {
+            "type": "string",
+            "default": "",
+            "description": "Path to a custom sound file (mp3, wav, ogg) to play when the agent finishes responding. Leave empty to use the default sound. Mirrors cursor.composer.customChimeSoundPath."
+          },
+          "ide.agent.terminal.notifyOnApproval": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show an OS-level notification when the agent needs tool approval while the IDE window is in the background."
+          },
+          "ide.general.privacyMode": {
+            "type": "boolean",
+            "default": true,
+            "description": "Privacy Mode: disable telemetry and keep all processing local. IDE Code is local-first, so this is on by default."
+          },
+          "ide.general.leakDetectionEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Warn before sending a chat message that looks like it contains a secret (API keys, tokens, private keys)."
+          },
+          "ide.general.globalCursorIgnoreList": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Global list of files to always ignore in IDE features, across all workspaces. Glob patterns — same effect as adding them to a .cursorignore file in every workspace. Mirrors cursor.general.globalCursorIgnoreList."
+          },
+          "ide.general.fontSmoothingAntialiased": {
+            "type": "boolean",
+            "default": true,
+            "description": "Use grayscale antialiased text rendering in the chat view for thinner, crisper text. Mirrors cursor.general.fontSmoothingAntialiased_v2."
+          },
+          "ide.composer.cmdPFilePicker2": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable Cmd+P / Ctrl+P shortcut for the file picker in the chat input. Mirrors cursor.composer.cmdPFilePicker2."
+          }
         }
       },
-      "title": "IDE Agent"
-    },
+      {
+        "title": "IDE Code › Profile",
+        "order": 20,
+        "properties": {}
+      },
+      {
+        "title": "IDE Code › Appearance",
+        "order": 30,
+        "properties": {
+          "ide.composer.textSizeScale": {
+            "type": "number",
+            "enum": [
+              0.85,
+              1,
+              1.15,
+              1.3
+            ],
+            "default": 1,
+            "description": "Text size scale (relative to base) of AI chat messages. Mirrors cursor.composer.textSizeScale."
+          },
+          "ide.composer.codeBlockWordWrap": {
+            "type": "boolean",
+            "default": false,
+            "description": "Wrap long lines in agent chat code blocks. Mirrors cursor.composer.codeBlockWordWrap."
+          },
+          "ide.cmdk.useThemedDiffBackground": {
+            "type": "boolean",
+            "default": true,
+            "description": "Use themed background colors for inline diffs. Mirrors cursor.cmdk.useThemedDiffBackground2."
+          }
+        }
+      },
+      {
+        "title": "IDE Code › Plan & Usage",
+        "order": 40,
+        "properties": {}
+      },
+      {
+        "title": "IDE Code › Agents",
+        "order": 50,
+        "properties": {
+          "ide.composer.runMode": {
+            "type": "string",
+            "enum": [
+              "autoReview",
+              "allowlist",
+              "runEverything"
+            ],
+            "default": "autoReview",
+            "description": "Agent tool approval mode (Cursor's Run Modes). autoReview: ask before each tool call. allowlist: auto-approve safe read-only tools (read, grep, web search...), ask for the rest. runEverything: approve everything without asking — use with care."
+          },
+          "ide.agent.approvalShadowMode": {
+            "type": "boolean",
+            "default": false,
+            "description": "Approval shadow mode (Cursor smartModeClassifierShadowMode parity): approval evaluation runs and is logged but does not enforce — approvals auto-resolve as approve-once so turns are never blocked. For evaluation only.",
+            "scope": "machine"
+          },
+          "ide.composer.queueMessageDefaultBehavior": {
+            "type": "string",
+            "enum": [
+              "send",
+              "stop-and-send",
+              "queue"
+            ],
+            "default": "send",
+            "description": "Default behavior of sending a message (Enter) while the agent is streaming. send: deliver at the next opportune time. stop-and-send: stop the agent immediately and send. queue: queue after the current turn finishes. Mirrors cursor.composer.queueMessageDefaultBehavior."
+          },
+          "ide.composer.queueManualSendBehavior": {
+            "type": "string",
+            "enum": [
+              "send",
+              "stop-and-send",
+              "queue"
+            ],
+            "default": "stop-and-send",
+            "description": "Behavior of manually sending a message (Send button / Cmd+Enter) while the agent is streaming. Mirrors cursor.composer.queueManualSendBehavior."
+          },
+          "ide.composer.shouldAutoSaveNonAgent": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically save open files when a chat turn completes. Mirrors cursor.composer.shouldAutoSaveNonAgent."
+          },
+          "ide.agent.terminal.enableAiChecks": {
+            "type": "boolean",
+            "default": true,
+            "description": "Allow AI features (@Terminal mentions, the terminal Cmd+K prompt) to read terminal output. Mirrors Cursor's terminal.enableAiChecks.",
+            "scope": "window"
+          },
+          "ide.agent.terminal.maxBufferChars": {
+            "type": "number",
+            "default": 20000,
+            "description": "Maximum characters of terminal output attached as chat context by @Terminal.",
+            "scope": "window"
+          },
+          "ide.terminal.toolbarOnSelection": {
+            "default": true,
+            "description": "Show the Add to Chat button when selecting text in the terminal.",
+            "type": "boolean",
+            "scope": "window"
+          }
+        }
+      },
+      {
+        "title": "IDE Code › Cloud Agents",
+        "order": 60,
+        "properties": {}
+      },
+      {
+        "title": "IDE Code › Models",
+        "order": 70,
+        "properties": {
+          "ide.agent.enabledModels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Models enabled for agent turns, as \"providerID/modelID[#variant]\" entries (see IDE Agent: Manage Models…). Empty (default) = every model the engine reports is enabled. Non-empty = exact allowlist: only listed models appear in the picker and the model cycler. Manage via the \"IDE Agent: Manage Models…\" command instead of editing raw strings.",
+            "scope": "window"
+          },
+          "ide.agent.engineMode": {
+            "type": "string",
+            "enum": [
+              "stub",
+              "sidecar"
+            ],
+            "default": "stub",
+            "description": "Agent engine backend: 'stub' runs the scripted demo engine, 'sidecar' spawns the real ide-code engine as a sidecar process.",
+            "scope": "machine"
+          },
+          "ide.agent.enginePath": {
+            "type": "string",
+            "default": "",
+            "description": "Path to the ide-code engine checkout (empty = auto-detect ~/workspace/ide-code). Used when ide.agent.engineMode is 'sidecar'.",
+            "scope": "machine"
+          }
+        }
+      },
+      {
+        "title": "IDE Code › Voice",
+        "order": 80,
+        "properties": {}
+      },
+      {
+        "title": "IDE Code › Source Control",
+        "order": 90,
+        "properties": {}
+      },
+      {
+        "title": "IDE Code › Browser & Network",
+        "order": 100,
+        "properties": {
+          "ide.browser.chromiumPath": {
+            "default": "",
+            "description": "Path to a Chrome/Chromium (or chrome-headless-shell) executable used by the in-IDE browser tab. When empty, well-known install locations are probed.",
+            "type": "string"
+          }
+        }
+      },
+      {
+        "title": "IDE Code › Code Intelligence",
+        "order": 110,
+        "properties": {
+          "ide.tab.enabled": {
+            "default": true,
+            "description": "Enable IDE Tab inline completions.",
+            "type": "boolean"
+          },
+          "ide.tab.model": {
+            "default": "",
+            "description": "Tab model id (empty = server default). Change via the \"IDE Agent: Select Tab Model\" command or the Tab status bar item.",
+            "type": "string"
+          },
+          "ide.tab.enablePartialAccepts": {
+            "default": true,
+            "description": "Allow partial (next-word) accepts of Tab completions via Ctrl+Right.",
+            "type": "boolean"
+          },
+          "ide.tab.suggestionWhileCommenting": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show Tab suggestions while typing inside comments. When off, no suggestion is offered on comment lines."
+          },
+          "ide.tab.ignorePatterns": {
+            "default": [],
+            "description": "Glob patterns of files Tab completion ignores (analog of .cursorignore).",
+            "type": "array"
+          },
+          "ide.tab.disabledLanguages": {
+            "default": [
+              "markdown"
+            ],
+            "description": "Language IDs where Tab completion is disabled.",
+            "type": "array"
+          },
+          "ide.tab.maxConcurrentRequests": {
+            "default": 4,
+            "description": "Max concurrent in-flight Tab requests; oldest is evicted.",
+            "type": "number"
+          },
+          "ide.tab.suggestionDelayMs": {
+            "type": "number",
+            "default": 25,
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "Delay in milliseconds before requesting a Tab suggestion after you stop typing."
+          },
+          "ide.tab.promptDisableCopilot": {
+            "default": true,
+            "description": "Offer to disable GitHub Copilot on first Tab suggestion.",
+            "type": "boolean"
+          },
+          "ide.tab.telemetryEnabled": {
+            "default": true,
+            "description": "Record Tab session events and fate locally (privacy gate).",
+            "type": "boolean"
+          }
+        }
+      },
+      {
+        "title": "IDE Code › Beta",
+        "order": 120,
+        "properties": {}
+      }
+    ],
     "keybindings": [
       {
         "command": "ide.newFollowup",
@@ -800,14 +868,18 @@
         "key": "ctrl+l",
         "mac": "cmd+l",
         "when": "terminalFocus",
-        "args": { "source": "terminal" }
+        "args": {
+          "source": "terminal"
+        }
       },
       {
         "command": "ide.addToChat",
         "key": "ctrl+l",
         "mac": "cmd+l",
         "when": "editorTextFocus || ideAgent.chatInputFocused",
-        "args": { "source": "editor" }
+        "args": {
+          "source": "editor"
+        }
       },
       {
         "command": "ide.newChat",
@@ -828,7 +900,7 @@
         "when": "ideAgent.chatInputFocused"
       },
       {
-        "command": "ide.openModelPicker",
+        "command": "ide.cycleModel",
         "key": "ctrl+/",
         "mac": "cmd+/",
         "when": "ideAgent.chatInputFocused"
@@ -932,7 +1004,9 @@
           "command": "ide.addToChat",
           "group": "ideAgent@1",
           "when": "editorHasSelection",
-          "args": { "source": "editor" }
+          "args": {
+            "source": "editor"
+          }
         }
       ],
       "commandPalette": [
@@ -1003,7 +1077,7 @@
       }
     ]
   },
-  "description": "Built-in AI agent extension for the ide-code VS Code fork (scaffold \u2014 engine wiring pending). Mirrors Cursor's composer/aichat/cmdk command surface under the ide.* namespace.",
+  "description": "Built-in AI agent extension for the ide-code VS Code fork (scaffold — engine wiring pending). Mirrors Cursor's composer/aichat/cmdk command surface under the ide.* namespace.",
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@types/vscode": "^1.90.0",
