@@ -1,0 +1,164 @@
+/**
+ * Functional tests for ide.newChat (P1 CX1b) — node:test, zero extra deps.
+ *
+ * Exercises ComposerDataService.newChat() in idle and running states. The
+ * `vscode` module is stubbed via Module._load interception (no node_modules
+ * stub needed, nothing ships).
+ *
+ * Run after `tsc`:  node --test out/services/test/run-newchat-tests.js
+ */
+import { describe, it } from "node:test";
+import * as assert from "node:assert";
+import Module from "node:module";
+
+// ---- vscode API stub (test-only, never packaged) ----
+const calls: { warnings: string[]; infos: string[] } = { warnings: [], infos: [] };
+class StubEventEmitter<T> {
+  private listeners: Array<(e: T) => void> = [];
+  get event() {
+    return (listener: (e: T) => void) => {
+      this.listeners.push(listener);
+      return { dispose: () => undefined };
+    };
+  }
+  fire(e: T): void {
+    for (const l of [...this.listeners]) l(e);
+  }
+  dispose(): void {
+    this.listeners = [];
+  }
+}
+const vscodeStub = {
+  EventEmitter: StubEventEmitter,
+  window: {
+    showWarningMessage: (m: string) => {
+      calls.warnings.push(m);
+      return Promise.resolve(undefined);
+    },
+    showInformationMessage: (m: string) => {
+      calls.infos.push(m);
+      return Promise.resolve(undefined);
+    },
+    createOutputChannel: () => ({
+      appendLine: () => undefined,
+      dispose: () => undefined,
+      show: () => undefined,
+      clear: () => undefined,
+    }),
+  },
+  workspace: {
+    getConfiguration: () => ({
+      get: (_k: string, d: string) => d,
+      has: () => false,
+      update: async () => undefined,
+    }),
+    workspaceFolders: undefined,
+  },
+  Uri: {
+    file: (p: string) => ({ fsPath: p, scheme: "file", toString: () => p }),
+    joinPath: (base: { fsPath: string }, ...parts: string[]) => ({
+      fsPath: [base.fsPath, ...parts].join("/"),
+    }),
+  },
+  commands: {
+    executeCommand: async () => undefined,
+    registerCommand: () => ({ dispose: () => undefined }),
+  },
+  calls,
+};
+const origLoad = (Module as unknown as { _load: Function })._load;
+(Module as unknown as { _load: Function })._load = function (
+  request: string,
+  ...rest: unknown[]
+) {
+  if (request === "vscode") return vscodeStub;
+  return origLoad.call(this, request, ...rest);
+};
+
+import { ComposerDataService } from "../composerDataService";
+import { BubbleData } from "../../model";
+
+function makeBubble(id: string, text: string): BubbleData {
+  return {
+    bubbleId: id,
+    role: "human",
+    mode: "agent",
+    text,
+    toolCalls: [],
+    createdAt: Date.now(),
+  };
+}
+
+function freshService(): ComposerDataService {
+  calls.warnings.length = 0;
+  calls.infos.length = 0;
+  return new ComposerDataService(undefined);
+}
+
+describe("newChat (P1 CX1b)", () => {
+  it("idle: returns true; clears bubbles, checkpoints, queue; fires reset events", async () => {
+    const svc = freshService();
+    const events: string[] = [];
+    svc.onDidChange((e) => events.push(e.kind));
+
+    // Seed state belonging to the "old" conversation.
+    svc.bubbles.setBubbleData(makeBubble("b1", "hello"));
+    svc.bubbles.setBubbleData(makeBubble("b2", "world"));
+    svc.queue.enqueue("queued prompt 1", "agent");
+    svc.queue.enqueue("queued prompt 2", "agent");
+    (svc.checkpoints as unknown as { records: unknown[] }).records.push({
+      checkpointId: "cp1",
+      bubbleId: "b1",
+      createdAt: Date.now(),
+      label: "test",
+      isAfter: false,
+      files: [],
+      newlyCreatedFiles: [],
+      newlyCreatedFolders: [],
+    });
+
+    assert.strictEqual(svc.bubbles.getAllInOrder().length, 2);
+    assert.strictEqual(svc.queue.length, 2);
+
+    const ok = await svc.newChat();
+
+    assert.strictEqual(ok, true, "idle newChat must succeed");
+    assert.strictEqual(svc.bubbles.getAllInOrder().length, 0, "bubbles cleared");
+    assert.strictEqual(svc.queue.length, 0, "queue drained");
+    assert.strictEqual(
+      (svc.checkpoints as unknown as { records: unknown[] }).records.length,
+      0,
+      "checkpoints cleared",
+    );
+    assert.ok(events.includes("bubblesReset"), "bubblesReset fired (webview re-renders empty)");
+    assert.ok(events.includes("newChat"), "newChat fired (webview resets composer state)");
+    assert.ok(events.includes("queueChanged"), "queueChanged fired (queue chip hides)");
+    assert.strictEqual(calls.warnings.length, 0, "no warning on success");
+  });
+
+  it("running: returns false, warns, leaves state intact", async () => {
+    const svc = freshService();
+    svc.bubbles.setBubbleData(makeBubble("b1", "hello"));
+    svc.queue.enqueue("queued prompt", "agent");
+    // Simulate an in-flight turn (private field).
+    (svc as unknown as { running: boolean }).running = true;
+
+    const ok = await svc.newChat();
+
+    assert.strictEqual(ok, false, "running newChat must refuse");
+    assert.strictEqual(calls.warnings.length, 1, "warning shown");
+    assert.match(calls.warnings[0], /still running/i);
+    assert.strictEqual(svc.bubbles.getAllInOrder().length, 1, "bubbles NOT cleared");
+    assert.strictEqual(svc.queue.length, 1, "queue NOT drained");
+  });
+
+  it("idle with empty state: still succeeds and fires reset events", async () => {
+    const svc = freshService();
+    const events: string[] = [];
+    svc.onDidChange((e) => events.push(e.kind));
+    const ok = await svc.newChat();
+    assert.strictEqual(ok, true);
+    assert.ok(events.includes("bubblesReset"));
+    assert.ok(events.includes("newChat"));
+  });
+});

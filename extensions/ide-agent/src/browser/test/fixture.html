@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>IDE Browser Test Fixture</title>
+<style>
+  body { font-family: sans-serif; margin: 40px; background: #181818; color: #f0f0f0; }
+  #login-btn { background: #81a1c1; color: #111; padding: 12px 24px; border: none; border-radius: 6px; font-size: 16px; }
+  #name-input { padding: 10px; font-size: 15px; width: 300px; margin-top: 20px; display: block; }
+  .card { border: 1px solid #444; padding: 20px; margin-top: 20px; border-radius: 8px; }
+</style>
+</head>
+<body>
+  <h1 id="page-title">Fixture Page</h1>
+  <p class="intro">A page for testing the element picker and screenshot pipeline.</p>
+  <button id="login-btn">Sign in</button>
+  <input id="name-input" type="text" placeholder="Your name">
+  <div class="card" id="info-card">
+    <span>Card content here</span>
+  </div>
+  <select id="color-select" aria-label="Favorite color">
+    <option value="red">Red</option>
+    <option value="green">Green</option>
+    <option value="blue">Blue</option>
+  </select>
+  <div id="drag-src" draggable="true" style="width:80px;height:40px;background:#444;margin-top:20px;">drag me</div>
+  <div id="drop-tgt" style="width:120px;height:60px;border:1px dashed #888;margin-top:10px;">drop here</div>
+  <div id="tall-spacer" style="height:2000px;"></div>
+  <button id="bottom-btn">Bottom button</button>
+  <script>
+    window.__fixtureClicked = false;
+    document.getElementById('login-btn').addEventListener('click', () => { window.__fixtureClicked = true; });
+    window.__dropHappened = false;
+    document.getElementById('drop-tgt').addEventListener('drop', (e) => { e.preventDefault(); window.__dropHappened = true; });
+    document.getElementById('drop-tgt').addEventListener('dragover', (e) => { e.preventDefault(); });
+    window.__keyLog = [];
+    document.addEventListener('keydown', (e) => { window.__keyLog.push(e.key); });
+  </script>
+</body>
+</html>

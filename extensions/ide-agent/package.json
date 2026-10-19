@@ -1,0 +1,873 @@
+{
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "contributes": {
+    "chatParticipants": [
+      {
+        "description": "AI pair programmer (scaffold \u2014 engine wiring pending)",
+        "fullName": "IDE Agent",
+        "id": "ide.agent",
+        "isSticky": true,
+        "name": "ide"
+      }
+    ],
+    "commands": [
+      {
+        "category": "IDE Agent",
+        "command": "ide.newChat",
+        "title": "New Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.newFollowup",
+        "title": "Focus Chat Followup"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.newAgentChat",
+        "title": "New Agent Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.openInlinePrompt",
+        "title": "Open Inline Prompt"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.sendToAgent",
+        "title": "Send Inline Prompt to Agent"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.acceptInlineEdit",
+        "title": "Accept Inline Edit"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.rejectInlineEdit",
+        "title": "Reject Inline Edit"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.openModeMenu",
+        "title": "Open Mode Menu"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.openModelPicker",
+        "title": "Open Model Picker"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.cycleModel",
+        "title": "Cycle Model"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.manageModels",
+        "title": "Manage Models\u2026"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.toggleChatAsEditor",
+        "title": "Toggle Chat as Editor"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.nextChatTab",
+        "title": "Next Chat Tab"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.previousChatTab",
+        "title": "Previous Chat Tab"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.selectNextChat",
+        "title": "Select Next Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.selectPreviousChat",
+        "title": "Select Previous Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.selectNextSubagentTab",
+        "title": "Select Next Subagent Tab"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.selectPreviousSubagentTab",
+        "title": "Select Previous Subagent Tab"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.closeChatTab",
+        "title": "Close Chat Tab"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.cancelAgentStep",
+        "title": "Cancel Agent Step"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.findInChat",
+        "title": "Find in Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.hideFindInChat",
+        "title": "Hide Find in Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.openAddContextMenu",
+        "title": "Add Context\u2026"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.approveShellTool",
+        "title": "Approve Pending Shell Command"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.approveShellToolAllowlist",
+        "title": "Approve Pending Shell Command and Allowlist It"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.skipShellTool",
+        "title": "Skip Pending Shell Command"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.worktreeCommand",
+        "title": "Worktree Command (/worktree)"
+      },
+      {
+        "command": "ide.deleteWorktree",
+        "title": "Delete Worktree\u2026"
+      },
+      {
+        "command": "ide.listWorktrees",
+        "title": "List Worktrees"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.focusEditorFromDiff",
+        "title": "Focus Editor from Inline Diff"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.acceptPlan",
+        "title": "Accept Plan"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.restoreCheckpoint",
+        "title": "Restore Checkpoint\u2026"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.toggleTabCompletion",
+        "title": "Toggle Tab Completion"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.snoozeTabCompletion",
+        "title": "Snooze Tab Completion"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.unsnoozeTabCompletion",
+        "title": "Unsnooze Tab Completion"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.openBrowser",
+        "title": "Open Browser for Agent"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.openBrowserTab",
+        "title": "Open Browser Tab"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.newTab",
+        "title": "Browser Tab: New Tab"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.reloadTab",
+        "title": "Browser Tab: Reload"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.focusOmnibar",
+        "title": "Browser Tab: Focus Address Bar"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.screenshotToChat",
+        "title": "Browser Tab: Screenshot to Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.togglePicker",
+        "title": "Browser Tab: Toggle Element Picker"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.reviewChanges",
+        "title": "Review Changes with Agent"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.fixWithAI",
+        "title": "Fix with AI"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.addSelectionToChat",
+        "title": "Add Selection to Chat"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.terminalAiCommand",
+        "title": "Generate Terminal Command with AI"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.terminalRunBackground",
+        "title": "Run Command in Background"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.searchConversations",
+        "title": "Search Conversations"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.openSettings",
+        "title": "Open IDE Agent Settings"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.triggerTabSuggestion",
+        "title": "Trigger Tab Suggestion"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.acceptTabSuggestionFull",
+        "title": "Accept Tab Suggestion"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.acceptTabSuggestionPartial",
+        "title": "Accept Next Word of Tab Suggestion"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.peekTabSuggestion",
+        "title": "Peek Tab Suggestion"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.revertTabSuggestion",
+        "title": "Revert Tab Suggestion"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.abortTabRequests",
+        "title": "Abort Tab Requests"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.enableTabGlobally",
+        "title": "Enable Tab Completion"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.disableTabGlobally",
+        "title": "Disable Tab Completion"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.pickTabModel",
+        "title": "Pick Tab Model\u2026"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.toggleTabForLanguage",
+        "title": "Toggle Tab for Current Language"
+      },
+      {
+        "category": "IDE Tab",
+        "command": "ide.tabStatusClicked",
+        "title": "IDE Tab Status"
+      },
+      {
+        "command": "ide.openAgentsWindow",
+        "title": "Open Agents Window",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.addSelectionToInlinePrompt",
+        "title": "Add Selection to Inline Prompt",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.setAgentMode",
+        "title": "Open Chat in Agent Mode",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.setPlanMode",
+        "title": "Open Chat in Plan Mode",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.setAskMode",
+        "title": "Open Chat in Ask Mode",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.setDebugMode",
+        "title": "Open Chat in Debug Mode",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.setMultitaskMode",
+        "title": "Open Chat in Multitask Mode",
+        "category": "IDE Agent"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "ide.window.openAgentsWindowOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open the Agents Window instead of the default window on startup.",
+          "scope": "application"
+        },
+        "ide.tab.disabledLanguages": {
+          "default": [
+            "markdown"
+          ],
+          "description": "Language IDs where Tab completion is disabled.",
+          "type": "array"
+        },
+        "ide.tab.enablePartialAccepts": {
+          "default": true,
+          "description": "Allow partial (next-word) accepts of Tab completions via Ctrl+Right.",
+          "type": "boolean"
+        },
+        "ide.tab.enabled": {
+          "default": true,
+          "description": "Enable IDE Tab inline completions.",
+          "type": "boolean"
+        },
+        "ide.browser.chromiumPath": {
+          "default": "",
+          "description": "Path to a Chrome/Chromium (or chrome-headless-shell) executable used by the in-IDE browser tab. When empty, well-known install locations are probed.",
+          "type": "string"
+        },
+        "ide.tab.ignorePatterns": {
+          "default": [],
+          "description": "Glob patterns of files Tab completion ignores (analog of .cursorignore).",
+          "type": "array"
+        },
+        "ide.tab.maxConcurrentRequests": {
+          "default": 4,
+          "description": "Max concurrent in-flight Tab requests; oldest is evicted.",
+          "type": "number"
+        },
+        "ide.tab.model": {
+          "default": "",
+          "description": "Tab model id (empty = server default). Change via the \"IDE Agent: Select Tab Model\" command or the Tab status bar item.",
+          "type": "string"
+        },
+        "ide.tab.promptDisableCopilot": {
+          "default": true,
+          "description": "Offer to disable GitHub Copilot on first Tab suggestion.",
+          "type": "boolean"
+        },
+        "ide.tab.telemetryEnabled": {
+          "default": true,
+          "description": "Record Tab session events and fate locally (privacy gate).",
+          "type": "boolean"
+        },
+        "ide.agent.engineMode": {
+          "type": "string",
+          "enum": [
+            "stub",
+            "sidecar"
+          ],
+          "default": "stub",
+          "description": "Agent engine backend: 'stub' runs the scripted demo engine, 'sidecar' spawns the real ide-code engine as a sidecar process.",
+          "scope": "machine"
+        },
+        "ide.agent.enginePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ide-code engine checkout (empty = auto-detect ~/workspace/ide-code). Used when ide.agent.engineMode is 'sidecar'.",
+          "scope": "machine"
+        },
+        "ide.agent.approvalShadowMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Approval shadow mode (Cursor smartModeClassifierShadowMode parity): approval evaluation runs and is logged but does not enforce \u2014 approvals auto-resolve as approve-once so turns are never blocked. For evaluation only.",
+          "scope": "machine"
+        },
+        "ide.agent.enabledModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Models enabled for agent turns, as \"providerID/modelID[#variant]\" entries (see IDE Agent: Manage Models\u2026). Empty (default) = every model the engine reports is enabled. Non-empty = exact allowlist: only listed models appear in the picker and the model cycler. Manage via the \"IDE Agent: Manage Models\u2026\" command instead of editing raw strings.",
+          "scope": "window"
+        },
+        "ide.agent.terminal.enableAiChecks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow AI features (@Terminal mentions, the terminal Cmd+K prompt) to read terminal output. Mirrors Cursor's terminal.enableAiChecks.",
+          "scope": "window"
+        },
+        "ide.agent.terminal.maxBufferChars": {
+          "type": "number",
+          "default": 20000,
+          "description": "Maximum characters of terminal output attached as chat context by @Terminal.",
+          "scope": "window"
+        },
+        "ide.composer.runMode": {
+          "type": "string",
+          "enum": [
+            "autoReview",
+            "allowlist",
+            "runEverything"
+          ],
+          "default": "autoReview",
+          "description": "Agent tool approval mode (Cursor's Run Modes). autoReview: ask before each tool call. allowlist: auto-approve safe read-only tools (read, grep, web search...), ask for the rest. runEverything: approve everything without asking \u2014 use with care."
+        },
+        "ide.composer.shouldChimeAfterChatFinishes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Play a sound when a chat response is completed. Mirrors cursor.composer.shouldChimeAfterChatFinishes."
+        },
+        "ide.composer.customChimeSoundPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a custom sound file (mp3, wav, ogg) to play when the agent finishes responding. Leave empty to use the default sound. Mirrors cursor.composer.customChimeSoundPath."
+        },
+        "ide.composer.textSizeScale": {
+          "type": "number",
+          "enum": [
+            0.85,
+            1,
+            1.15,
+            1.3
+          ],
+          "default": 1,
+          "description": "Text size scale (relative to base) of AI chat messages. Mirrors cursor.composer.textSizeScale."
+        },
+        "ide.composer.conversationDensity": {
+          "type": "string",
+          "enum": [
+            "compact-all-grouped",
+            "compact-ungrouped",
+            "detailed"
+          ],
+          "default": "compact-all-grouped",
+          "description": "Controls how shell and edit-file tool calls are displayed and grouped in agent conversations. Mirrors cursor.composer.conversationDensity."
+        },
+        "ide.composer.codeBlockWordWrap": {
+          "type": "boolean",
+          "default": false,
+          "description": "Wrap long lines in agent chat code blocks. Mirrors cursor.composer.codeBlockWordWrap."
+        },
+        "ide.composer.queueMessageDefaultBehavior": {
+          "type": "string",
+          "enum": [
+            "send",
+            "stop-and-send",
+            "queue"
+          ],
+          "default": "send",
+          "description": "Default behavior of sending a message (Enter) while the agent is streaming. send: deliver at the next opportune time. stop-and-send: stop the agent immediately and send. queue: queue after the current turn finishes. Mirrors cursor.composer.queueMessageDefaultBehavior."
+        },
+        "ide.composer.queueManualSendBehavior": {
+          "type": "string",
+          "enum": [
+            "send",
+            "stop-and-send",
+            "queue"
+          ],
+          "default": "stop-and-send",
+          "description": "Behavior of manually sending a message (Send button / Cmd+Enter) while the agent is streaming. Mirrors cursor.composer.queueManualSendBehavior."
+        },
+        "ide.composer.shouldAutoSaveNonAgent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically save open files when a chat turn completes. Mirrors cursor.composer.shouldAutoSaveNonAgent."
+        },
+        "ide.composer.showEmptyStateTips": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show rotating tips on the empty chat screen. Mirrors cursor.composer.showEmptyStateTips."
+        },
+        "ide.composer.cmdPFilePicker2": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Cmd+P / Ctrl+P shortcut for the file picker in the chat input. Mirrors cursor.composer.cmdPFilePicker2."
+        },
+        "ide.general.privacyMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Privacy Mode: disable telemetry and keep all processing local. IDE Code is local-first, so this is on by default."
+        },
+        "ide.general.leakDetectionEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn before sending a chat message that looks like it contains a secret (API keys, tokens, private keys)."
+        },
+        "ide.general.fontSmoothingAntialiased": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use grayscale antialiased text rendering in the chat view for thinner, crisper text. Mirrors cursor.general.fontSmoothingAntialiased_v2."
+        },
+        "ide.general.globalCursorIgnoreList": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Global list of files to always ignore in IDE features, across all workspaces. Glob patterns \u2014 same effect as adding them to a .cursorignore file in every workspace. Mirrors cursor.general.globalCursorIgnoreList."
+        },
+        "ide.tab.suggestionDelayMs": {
+          "type": "number",
+          "default": 25,
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Delay in milliseconds before requesting a Tab suggestion after you stop typing."
+        },
+        "ide.tab.suggestionWhileCommenting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Tab suggestions while typing inside comments. When off, no suggestion is offered on comment lines."
+        },
+        "ide.cmdk.useThemedDiffBackground": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use themed background colors for inline diffs. Mirrors cursor.cmdk.useThemedDiffBackground2."
+        },
+        "ide.agent.terminal.notifyOnApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an OS-level notification when the agent needs tool approval while the IDE window is in the background."
+        }
+      },
+      "title": "IDE Agent"
+    },
+    "keybindings": [
+      {
+        "command": "ide.newChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "!ideAgent.chatInputFocused && !terminalFocus"
+      },
+      {
+        "command": "ide.newFollowup",
+        "key": "ctrl+y",
+        "mac": "cmd+y",
+        "when": "ideAgent.chatInputFocused"
+      },
+      {
+        "command": "ide.approveShellTool",
+        "key": "enter",
+        "when": "ideAgent.toolApprovalVisible"
+      },
+      {
+        "command": "ide.approveShellToolAllowlist",
+        "key": "shift+enter",
+        "when": "ideAgent.toolApprovalVisible"
+      },
+      {
+        "command": "ide.cancelAgentStep",
+        "key": "ctrl+shift+backspace",
+        "mac": "cmd+shift+backspace",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.closeChatTab",
+        "key": "ctrl+w",
+        "mac": "cmd+w",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.findInChat",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.hideFindInChat",
+        "key": "escape",
+        "when": "focusedView == 'ideAgent.chatView' && !ideAgent.toolApprovalVisible"
+      },
+      {
+        "command": "ide.newAgentChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+i",
+        "when": "!editorTextFocus && !terminalFocus"
+      },
+      {
+        "command": "ide.openAddContextMenu",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.openModeMenu",
+        "key": "ctrl+.",
+        "mac": "cmd+.",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.openModelPicker",
+        "key": "ctrl+shift+/",
+        "mac": "cmd+shift+/",
+        "when": "!editorTextFocus"
+      },
+      {
+        "command": "ide.skipShellTool",
+        "key": "escape",
+        "when": "ideAgent.toolApprovalVisible"
+      },
+      {
+        "command": "ide.openInlinePrompt",
+        "key": "ctrl+i",
+        "mac": "cmd+i",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "ide.acceptInlineEdit",
+        "key": "ctrl+enter",
+        "mac": "ctrl+enter",
+        "when": "ideAgent.inlineEditPending && editorTextFocus"
+      },
+      {
+        "command": "ide.rejectInlineEdit",
+        "key": "escape",
+        "mac": "escape",
+        "when": "ideAgent.inlineEditPending && editorTextFocus"
+      },
+      {
+        "command": "ide.toggleChatAsEditor",
+        "key": "ctrl+d",
+        "mac": "cmd+d",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.selectNextChat",
+        "key": "ctrl+alt+right",
+        "mac": "cmd+alt+right",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.selectPreviousChat",
+        "key": "ctrl+alt+left",
+        "mac": "cmd+alt+left",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.acceptTabSuggestionPartial",
+        "key": "ctrl+right",
+        "mac": "ctrl+right",
+        "when": "inlineSuggestionVisible && config.ide.tab.enablePartialAccepts"
+      },
+      {
+        "command": "ide.triggerTabSuggestion",
+        "key": "ctrl+alt+space",
+        "mac": "cmd+alt+space",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "ide.abortTabRequests",
+        "key": "alt+k",
+        "mac": "alt+k",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "ide.openAgentsWindow",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n",
+        "when": "!editorTextFocus && !terminalFocus"
+      },
+      {
+        "command": "ide.toggleTabCompletion",
+        "key": "ctrl+/",
+        "mac": "cmd+/",
+        "when": "!editorTextFocus && !ideAgent.chatInputFocused"
+      },
+      {
+        "command": "ide.fixWithAI",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "ide.addSelectionToChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "ide.newChat",
+        "key": "ctrl+t",
+        "mac": "cmd+t",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.cancelAgentStep",
+        "key": "ctrl+shift+backspace",
+        "mac": "cmd+shift+backspace",
+        "when": "ideAgent.chatInputFocused"
+      },
+      {
+        "command": "ide.worktreeCommand",
+        "key": "ctrl+shift+enter",
+        "mac": "cmd+shift+enter",
+        "when": "ideAgent.chatInputFocused"
+      },
+      {
+        "command": "ide.openModelPicker",
+        "key": "ctrl+/",
+        "mac": "cmd+/",
+        "when": "ideAgent.chatInputFocused"
+      },
+      {
+        "command": "ide.terminalAiCommand",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "ide.rejectInlineEdit",
+        "key": "ctrl+backspace",
+        "mac": "cmd+backspace",
+        "when": "ideAgent.inlineEditPending"
+      },
+      {
+        "command": "ide.toggleChatAsEditor",
+        "key": "ctrl+shift+i",
+        "mac": "cmd+shift+i",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.addSelectionToInlinePrompt",
+        "key": "ctrl+shift+k",
+        "mac": "cmd+shift+k",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "ide.focusEditorFromDiff",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "ideAgent.inlineEditPending && !terminalFocus"
+      },
+      {
+        "command": "ide.toggleChatAsEditor",
+        "key": "ctrl+alt+e",
+        "when": "focusedView == 'ideAgent.chatView'"
+      },
+      {
+        "command": "ide.browserTab.newTab",
+        "key": "ctrl+t",
+        "mac": "cmd+t",
+        "when": "activeWebviewPanelId == ideAgent.browserTab"
+      },
+      {
+        "command": "ide.browserTab.reloadTab",
+        "key": "ctrl+r",
+        "mac": "cmd+r",
+        "when": "activeWebviewPanelId == ideAgent.browserTab"
+      },
+      {
+        "command": "ide.browserTab.focusOmnibar",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "activeWebviewPanelId == ideAgent.browserTab"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ide.newChat",
+          "group": "navigation",
+          "when": "view == 'ideAgent.sessionsView'"
+        }
+      ]
+    },
+    "views": {
+      "ideAgent": [
+        {
+          "id": "ideAgent.chatView",
+          "name": "Chat",
+          "type": "webview"
+        },
+        {
+          "id": "ideAgent.sessionsView",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "icon": "media/icon.svg",
+          "id": "ideAgent",
+          "title": "IDE Agent"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "contents": "No agent sessions yet.\nRun [New Chat](command:ide.newChat) to start.",
+        "view": "ideAgent.sessionsView"
+      }
+    ]
+  },
+  "description": "Built-in AI agent extension for the ide-code VS Code fork (scaffold \u2014 engine wiring pending). Mirrors Cursor's composer/aichat/cmdk command surface under the ide.* namespace.",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  },
+  "displayName": "IDE Agent",
+  "enabledApiProposals": [
+    "terminalDataWriteEvent"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "license": "MIT",
+  "main": "./out/extension.js",
+  "name": "ide-agent",
+  "publisher": "ide-code",
+  "scripts": {
+    "check": "tsc --noEmit -p ./",
+    "compile": "tsc -p ./"
+  },
+  "version": "0.1.0"
+}

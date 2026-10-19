@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cursor Dark — Theme Preview (ide-theme-cursor-dark)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; color: #F0F0F0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         display: flex; flex-direction: column; align-items: center; padding: 24px; }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+  .sub { color: #F0F0F099; font-size: 12px; margin-bottom: 16px; }
+  /* ---- workbench mock, 1280x800 ---- */
+  .wb { width: 1280px; height: 800px; background: #181818; border: 1px solid #F0F0F013;
+        display: grid; grid-template-rows: 35px 1fr 22px; overflow: hidden; }
+  .titlebar { background: #141414; border-bottom: 1px solid #F0F0F013; display: flex; align-items: center;
+              padding: 0 12px; font-size: 12px; color: #F0F0F084; }
+  .titlebar .t { margin: 0 auto; }
+  .middle { display: grid; grid-template-columns: 48px 300px 1fr; min-height: 0; }
+  .activitybar { background: #141414; border-right: 1px solid #F0F0F013; display: flex; flex-direction: column;
+                 align-items: center; padding-top: 8px; gap: 4px; }
+  .ab-icon { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center;
+             border-left: 2px solid transparent; }
+  .ab-icon.active { border-left-color: #F0F0F0; }
+  .ab-icon svg { width: 24px; height: 24px; }
+  .sidebar { background: #141414; border-right: 1px solid #F0F0F013; font-size: 13px; overflow: hidden; }
+  .sb-title { padding: 10px 20px 6px; font-size: 11px; letter-spacing: 1px; color: #F0F0F05C; }
+  .sb-section { padding: 4px 0; }
+  .sb-h { padding: 4px 12px; font-weight: 700; font-size: 11px; color: #F0F0F0BD; letter-spacing: .5px; }
+  .tree { padding: 2px 0; }
+  .tree div { padding: 3px 12px 3px 28px; color: #F0F0F0BD; white-space: nowrap; }
+  .tree div.sel { background: #F0F0F01E; color: #F0F0F0; }
+  .tree .mod { color: #F1B467; } .tree .add { color: #70B489; } .tree .unt { color: #88C0D0; }
+  .tree .dim { color: #F0F0F05C; }
+  .editorcol { display: grid; grid-template-rows: 35px 22px 1fr 180px; min-width: 0; }
+  .tabs { background: #141414; border-bottom: 1px solid #F0F0F013; display: flex; font-size: 13px; }
+  .tab { padding: 0 14px; display: flex; align-items: center; gap: 8px; color: #F0F0F05C; background: #141414;
+         border-right: 1px solid #F0F0F013; }
+  .tab.active { background: #181818; color: #F0F0F0; }
+  .tab .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .breadcrumb { background: #181818; display: flex; align-items: center; gap: 6px; padding: 0 16px;
+                font-size: 13px; color: #F0F0F0BD; }
+  .breadcrumb b { color: #F0F0F0; font-weight: 400; }
+  .editorwrap { display: grid; grid-template-columns: 1fr 90px; min-height: 0; }
+  .editor { background: #181818; padding: 12px 0; font-family: "JetBrains Mono", Consolas, monospace;
+            font-size: 14px; line-height: 19px; overflow: hidden; position: relative; }
+  .editor .line { display: flex; }
+  .editor .ln { width: 52px; text-align: right; padding-right: 16px; color: #F0F0F05C; user-select: none; flex: none; }
+  .editor .ln.cur { color: #F0F0F0; }
+  .editor .lc { padding-left: 8px; white-space: pre; }
+  .editor .line.cur { background: #262626; }
+  .editor .cursor { display: inline-block; width: 2px; height: 15px; background: #F0F0F0; vertical-align: -2px; }
+  .minimap { background: #181818; border-left: 1px solid #F0F0F013; }
+  .mm-block { margin: 6px 10px; height: 5px; border-radius: 1px; background: #F0F0F011; }
+  .panel { background: #141414; border-top: 1px solid #F0F0F013; display: grid; grid-template-rows: 35px 1fr; }
+  .paneltabs { display: flex; align-items: center; gap: 2px; padding: 0 12px; font-size: 12px; }
+  .paneltabs span { padding: 8px 10px; color: #F0F0F0BD; }
+  .paneltabs span.active { color: #F0F0F0; border-bottom: 1px solid #F0F0F0; }
+  .terminal { padding: 8px 16px; font-family: Consolas, monospace; font-size: 13px; line-height: 20px; color: #F0F0F0; }
+  .statusbar { background: #141414; border-top: 1px solid #F0F0F013; display: flex; align-items: center;
+               padding: 0 12px; font-size: 12px; color: #F0F0F099; gap: 16px; }
+  .statusbar .right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+  .badge { background: #88C0D0; color: #141414; border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+  .btn { background: #81A1C1; color: #191c22; border-radius: 4px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+  /* syntax colors */
+  .c-com { color: #6A9955; } .c-str { color: #A3BE8C; } .c-kw { color: #81A1C1; }
+  .c-num { color: #B48EAD; } .c-fn { color: #88C0D0; } .c-ty { color: #EBCB8B; } .c-var { color: #F0F0F0; }
+  /* palette strip */
+  .pal { width: 1280px; margin-top: 20px; }
+  .pal h2 { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: #F0F0F0BD; }
+  .swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+  .sw { border: 1px solid #F0F0F013; border-radius: 4px; overflow: hidden; }
+  .sw .c { height: 44px; }
+  .sw .l { background: #141414; padding: 6px 8px; font-size: 11px; }
+  .sw .l b { display: block; font-weight: 600; color: #F0F0F0; }
+  .sw .l span { color: #F0F0F05C; font-family: Consolas, monospace; }
+</style>
+</head>
+<body>
+  <h1>Cursor Dark — workbench preview</h1>
+  <div class="sub">ide-theme-cursor-dark · 252 workbench tokens · layout: titlebar 35px / activity bar 48px / sidebar 300px / status bar 22px</div>
+
+  <div class="wb">
+    <div class="titlebar"><span>☰</span><span class="t">preview — ide-theme</span><span>— ▢ ✕</span></div>
+    <div class="middle">
+      <div class="activitybar">
+        <div class="ab-icon active"><svg viewBox="0 0 24 24" fill="none" stroke="#F0F0F0BD" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>
+        <div class="ab-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#F0F0F05C" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></div>
+        <div class="ab-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#F0F0F05C" stroke-width="1.5"><path d="M8 3H7a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h1M16 3h1a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 2 2 0 0 0-2 2v4a2 2 0 0 1-2 2h-1"/></svg></div>
+        <div class="ab-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#F0F0F05C" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
+        <div class="ab-icon"><svg viewBox="0 0 24 24" fill="none" stroke="#F0F0F05C" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 1-.1 1.2l2 1.6-2 3.4-2.4-1a7 7 0 0 1-2 1.2L14 20h-4l-.5-2.6a7 7 0 0 1-2-1.2l-2.4 1-2-3.4 2-1.6A7 7 0 0 1 5 12a7 7 0 0 1 .1-1.2l-2-1.6 2-3.4 2.4 1a7 7 0 0 1 2-1.2L10 4h4l.5 2.6a7 7 0 0 1 2 1.2l2.4-1 2 3.4-2 1.6c.06.4.1.8.1 1.2z"/></svg></div>
+      </div>
+      <div class="sidebar">
+        <div class="sb-title">EXPLORER</div>
+        <div class="sb-section">
+          <div class="sb-h">▾ IDE-CODE</div>
+          <div class="tree">
+            <div class="dim">▸ node_modules</div>
+            <div class="dim">▸ out</div>
+            <div>▾ <span class="c-var">src</span></div>
+            <div class="sel">&nbsp;&nbsp;&nbsp;▸ <span class="c-var">agent</span></div>
+            <div>&nbsp;&nbsp;&nbsp;<span class="mod">theme.ts&nbsp;&nbsp;M</span></div>
+            <div>&nbsp;&nbsp;&nbsp;<span class="add">browser.ts&nbsp;&nbsp;U</span></div>
+            <div>&nbsp;&nbsp;&nbsp;<span class="unt">mcp.ts&nbsp;&nbsp;A</span></div>
+            <div><span class="c-var">package.json</span></div>
+            <div><span class="c-var">README.md</span></div>
+          </div>
+        </div>
+        <div class="sb-section">
+          <div class="sb-h">▾ OUTLINE</div>
+          <div class="tree"><div class="dim">loadConfig()</div><div class="dim">isConfig()</div></div>
+        </div>
+      </div>
+      <div class="editorcol">
+        <div class="tabs">
+          <div class="tab active"><span class="dot" style="background:#81A1C1"></span>theme.ts<span style="color:#F0F0F05C">✕</span></div>
+          <div class="tab"><span class="dot" style="background:#A3BE8C"></span>browser.ts</div>
+          <div class="tab"><span class="dot" style="background:#F1B467"></span>package.json</div>
+        </div>
+        <div class="breadcrumb"><span>src</span><span>›</span><span>agent</span><span>›</span><b>theme.ts</b><span>›</span><b>loadConfig</b></div>
+        <div class="editorwrap">
+          <div class="editor">
+            <div class="line"><span class="ln">1</span><span class="lc"><span class="c-com">// Load workspace config with retries</span></span></div>
+            <div class="line"><span class="ln">2</span><span class="lc"><span class="c-kw">import</span> <span class="c-var">{ readFile }</span> <span class="c-kw">from</span> <span class="c-str">"node:fs/promises"</span><span class="c-var">;</span></span></div>
+            <div class="line"><span class="ln">3</span><span class="lc"></span></div>
+            <div class="line"><span class="ln">4</span><span class="lc"><span class="c-kw">const</span> <span class="c-var">MAX_RETRIES</span> <span class="c-var">=</span> <span class="c-num">3</span><span class="c-var">;</span></span></div>
+            <div class="line"><span class="ln">5</span><span class="lc"></span></div>
+            <div class="line cur"><span class="ln cur">6</span><span class="lc"><span class="c-kw">export async function</span> <span class="c-fn">loadConfig</span><span class="c-var">(path: </span><span class="c-ty">string</span><span class="c-var">): </span><span class="c-ty">Promise</span><span class="c-var">&lt;</span><span class="c-ty">Config</span><span class="c-var">&gt; {</span><span class="cursor"></span></span></div>
+            <div class="line"><span class="ln">7</span><span class="lc">  <span class="c-kw">const</span> <span class="c-var">raw</span> <span class="c-var">=</span> <span class="c-kw">await</span> <span class="c-fn">readFile</span><span class="c-var">(path, </span><span class="c-str">"utf8"</span><span class="c-var">);</span></span></div>
+            <div class="line"><span class="ln">8</span><span class="lc">  <span class="c-kw">const</span> <span class="c-var">data:</span> <span class="c-ty">unknown</span> <span class="c-var">=</span> <span class="c-fn">JSON.parse</span><span class="c-var">(raw);</span></span></div>
+            <div class="line"><span class="ln">9</span><span class="lc">  <span class="c-kw">if</span> <span class="c-var">(!</span><span class="c-fn">isConfig</span><span class="c-var">(data)) {</span></span></div>
+            <div class="line"><span class="ln">10</span><span class="lc">    <span class="c-kw">throw new</span> <span class="c-fn">Error</span><span class="c-var">(</span><span class="c-str">`Invalid config at </span><span class="c-var">${path}</span><span class="c-str">`</span><span class="c-var">);</span></span></div>
+            <div class="line"><span class="ln">11</span><span class="lc">  <span class="c-var">}</span></span></div>
+            <div class="line"><span class="ln">12</span><span class="lc">  <span class="c-kw">return</span> <span class="c-var">data;</span></span></div>
+            <div class="line"><span class="ln">13</span><span class="lc"><span class="c-var">}</span></span></div>
+          </div>
+          <div class="minimap">
+            <div class="mm-block" style="width:70%"></div><div class="mm-block" style="width:45%"></div>
+            <div class="mm-block" style="width:60%"></div><div class="mm-block" style="width:30%"></div>
+            <div class="mm-block" style="width:80%; background:#88C0D044"></div>
+            <div class="mm-block" style="width:55%"></div><div class="mm-block" style="width:40%"></div>
+            <div class="mm-block" style="width:65%; background:#E34671C0"></div>
+            <div class="mm-block" style="width:50%"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="paneltabs"><span>PROBLEMS</span><span>OUTPUT</span><span>DEBUG CONSOLE</span><span class="active">TERMINAL</span><span style="margin-left:auto">＋ ▾ 🗑</span></div>
+          <div class="terminal"><span style="color:#3FA266">➜</span> <span style="color:#81A1C1">ide-theme</span> <span style="color:#F1B467">git:</span><span style="color:#FC6B83">(main)</span> bun run check<br><span style="color:#70B489">✓</span> typecheck passed — 252 tokens validated</div>
+        </div>
+      </div>
+    </div>
+    <div class="statusbar">
+      <span>⎇ main*</span><span>0 ⚠ 0 ⒳</span>
+      <span class="right"><span class="badge">3</span><span>Tab: on</span><span class="btn">Ask</span><span>TypeScript</span><span>⎋ UTF-8</span></span>
+    </div>
+  </div>
+
+  <div class="pal">
+    <h2>Core palette (verbatim from Cursor Dark)</h2>
+    <div class="swatches">
+      <div class="sw"><div class="c" style="background:#141414"></div><div class="l"><b>Chrome</b><span>#141414</span></div></div>
+      <div class="sw"><div class="c" style="background:#181818"></div><div class="l"><b>Editor</b><span>#181818</span></div></div>
+      <div class="sw"><div class="c" style="background:#F0F0F0"></div><div class="l"><b>Text</b><span>#F0F0F0</span></div></div>
+      <div class="sw"><div class="c" style="background:#81A1C1"></div><div class="l"><b>Primary</b><span>#81A1C1</span></div></div>
+      <div class="sw"><div class="c" style="background:#88C0D0"></div><div class="l"><b>Badge teal</b><span>#88C0D0</span></div></div>
+      <div class="sw"><div class="c" style="background:#3FA266"></div><div class="l"><b>Diff add</b><span>#3FA266</span></div></div>
+      <div class="sw"><div class="c" style="background:#E34671"></div><div class="l"><b>Error red</b><span>#E34671</span></div></div>
+      <div class="sw"><div class="c" style="background:#F1B467"></div><div class="l"><b>Warning</b><span>#F1B467</span></div></div>
+    </div>
+  </div>
+</body>
+</html>
