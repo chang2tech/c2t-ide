@@ -1,0 +1,12 @@
+# Packaging ignore for the ide-agent built-in extension.
+# The gulp packaging tasks bundle via @vscode/vsce listFiles; without this,
+# src/*.ts, dev-only files and compiled tests would ship inside the desktop app.
+src/**
+.vscode/**
+tsconfig.json
+.gitignore
+**/*.map
+**/*.test.ts
+out/**/test/**
+out/**/*.test.js
+node_modules/**

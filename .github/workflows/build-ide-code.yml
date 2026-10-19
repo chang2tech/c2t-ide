@@ -1,0 +1,168 @@
+# Build IDE Code — Linux desktop packages (AppImage + .deb)
+#
+# Strategy (VSCodium-style, adapted to this fork):
+#   1. npm ci (root + build/) with the exact Node version from .nvmrc
+#   2. Compile our built-in extension extensions/ide-agent with its own tsc
+#      (the build's hardcoded extension-compilation list does NOT include it;
+#      packaging scans extensions/*/package.json via glob, so the compiled
+#      out/ dir gets bundled automatically by the gulp packaging tasks)
+#   3. `npm run gulp vscode-linux-x64`            -> .build/linux/VSCode-linux-x64
+#   4. `npm run gulp vscode-linux-<arch>-prepare-deb <arch>-build-deb` -> .deb
+#   5. appimagetool on the packaged dir          -> .AppImage
+#
+# Triggers: manual (workflow_dispatch) or pushing a v* tag.
+# Windows/macOS: the gulp tasks exist (vscode-win32-x64, vscode-darwin-x64,
+# vscode-darwin-arm64); add jobs later following the same shape.
+#
+# NOT needed: no secrets, no certs, no Apple/Windows signing for these
+# artifacts (unsigned; Windows SmartScreen / macOS Gatekeeper will warn —
+# expected for a first alpha).
+
+name: Build IDE Code (Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  VSCODE_ARCH: x64
+  NPM_ARCH: x64
+
+jobs:
+  build-linux-x64:
+    name: Linux x64 (AppImage + deb)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            build/package-lock.json
+            extensions/ide-agent/package-lock.json
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          set -e
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libkrb5-dev \
+            fakeroot \
+            dpkg-dev \
+            file \
+            wget
+
+      - name: Install build/ dependencies
+        working-directory: build
+        run: |
+          set -e
+          for i in 1 2 3 4 5; do npm ci && break || {
+            [ "$i" -eq 5 ] && { echo "npm ci (build) failed 5 times" >&2; exit 1; }
+            echo "npm ci (build) failed, retry $i/5"; sleep 10;
+          }; done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install root dependencies
+        run: |
+          set -e
+          for i in 1 2 3 4 5; do npm ci && break || {
+            [ "$i" -eq 5 ] && { echo "npm ci (root) failed 5 times" >&2; exit 1; }
+            echo "npm ci (root) failed, retry $i/5"; sleep 10;
+          }; done
+        env:
+          npm_config_arch: ${{ env.NPM_ARCH }}
+          VSCODE_ARCH: ${{ env.VSCODE_ARCH }}
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile ide-agent extension
+        run: |
+          set -e
+          npm --prefix extensions/ide-agent ci
+          npm --prefix extensions/ide-agent run compile
+          test -f extensions/ide-agent/out/extension.js
+
+      - name: Package Electron app (VSCode-linux-x64)
+        run: |
+          set -e
+          npm run gulp vscode-linux-x64
+          test -x .build/linux/VSCode-linux-x64/ide-code
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build .deb package
+        run: |
+          set -e
+          npm run gulp vscode-linux-x64-prepare-deb vscode-linux-x64-build-deb
+          ls -la .build/linux/deb/amd64/deb/
+
+      - name: Build AppImage
+        env:
+          ARCH: x86_64
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          set -e
+          APPDIR="$PWD/dist/appimage/IDECode.AppDir"
+          mkdir -p "$APPDIR/usr"
+          cp -a .build/linux/VSCode-linux-x64/. "$APPDIR/usr/"
+
+          cat > "$APPDIR/ide-code.desktop" <<'EOF'
+          [Desktop Entry]
+          Name=IDE Code
+          Comment=Cursor-class AI IDE
+          Exec=ide-code --no-sandbox %F
+          Icon=ide-code
+          Type=Application
+          StartupNotify=true
+          Categories=Development;IDE;
+          MimeType=text/plain;
+          EOF
+
+          # Icon: rebranded icon if present, else fall back to the stock one
+          if [ -f resources/linux/ide-code.png ]; then
+            cp resources/linux/ide-code.png "$APPDIR/ide-code.png"
+          else
+            cp resources/linux/code.png "$APPDIR/ide-code.png"
+          fi
+
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/ide-code" --no-sandbox "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          VERSION="$(node -p "require('./package.json').version")"
+          /tmp/appimagetool "$APPDIR" "dist/IDE-Code-${VERSION}-linux-x64.AppImage"
+          ls -la dist/*.AppImage
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ide-code-linux-x64
+          path: |
+            .build/linux/deb/amd64/deb/*.deb
+            dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
