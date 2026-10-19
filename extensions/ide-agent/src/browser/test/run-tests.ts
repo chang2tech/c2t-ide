@@ -304,6 +304,80 @@ describe("browser_cdp denylist", () => {
   });
 });
 
+/* ---------- REVERIFY-P1-1: sanctioned internal clear path ---------- */
+describe("clearBrowsingDataInternal (tab chrome)", () => {
+  function recordingService(calls: string[]): BrowserService {
+    return new BrowserService(async () => ({
+      navigate: async () => undefined,
+      captureScreenshot: async () => ({
+        data: encodePngRgba(2, 2, solidRgba(2, 2, 1, 2, 3)),
+        mimeType: "image/png" as const,
+        viewportWidth: 2,
+        viewportHeight: 2,
+        devicePixelRatio: 1,
+      }),
+      evaluate: (async () => null) as ServiceDriver["evaluate"],
+      getUrl: async () => "about:blank",
+      getTitle: async () => "blank",
+      rawCdp: (async (method: string) => {
+        calls.push(method);
+        return {};
+      }) as ServiceDriver["rawCdp"],
+      close: async () => undefined,
+    } as ServiceDriver));
+  }
+
+  it("lets the tab chrome clear via the sanctioned internal path", async () => {
+    const calls: string[] = [];
+    const service = recordingService(calls);
+    const s = await service.createSession({ agentId: "user" });
+    await service.clearBrowsingDataInternal(s.sessionId, "user", "Page.resetNavigationHistory");
+    await service.clearBrowsingDataInternal(s.sessionId, "user", "Network.clearBrowserCookies");
+    await service.clearBrowsingDataInternal(s.sessionId, "user", "Network.clearBrowserCache");
+    assert.deepStrictEqual(calls, [
+      "Page.resetNavigationHistory",
+      "Network.clearBrowserCookies",
+      "Network.clearBrowserCache",
+    ]);
+  });
+
+  it("refuses a non-allowlisted method at runtime even when cast away (REVERIFY2-P3-1)", async () => {
+    // X1's probe: TS type unions are compile-time only — a cast `as any`
+    // bypasses them. The runtime allowlist must fail-closed before the
+    // driver is touched.
+    const calls: string[] = [];
+    const service = recordingService(calls);
+    const s = await service.createSession({ agentId: "user" });
+    await assert.rejects(
+      () =>
+        service.clearBrowsingDataInternal(
+          s.sessionId,
+          "user",
+          "Input.dispatchKeyEvent" as "Page.resetNavigationHistory",
+        ),
+      /outside the allowlist/,
+    );
+    assert.deepStrictEqual(calls, [], "the driver must never be reached");
+  });
+
+  it("keeps the agent-facing cdp() denylist intact for the denied methods", async () => {
+    const calls: string[] = [];
+    const service = recordingService(calls);
+    const s = await service.createSession({ agentId: "agent-1" });
+    // Only the Network methods are denylisted (Page.resetNavigationHistory
+    // is allowed agent-facing — the tab chrome uses the internal path for
+    // all three for consistency).
+    for (const m of ["Network.clearBrowserCookies", "Network.clearBrowserCache"]) {
+      await assert.rejects(
+        service.cdp(s.sessionId, "agent-1", m, {}),
+        BrowserError,
+        `agent-facing cdp() must still deny ${m}`,
+      );
+    }
+    assert.deepStrictEqual(calls, [], "denied calls must never reach the driver");
+  });
+});
+
 /* ---------- unit: new tool schemas ---------- */
 describe("new browser tool schemas", () => {
   function fakeService(): BrowserService {
@@ -916,3 +990,5 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
 
 /* ---------- browser tab UI (DEV-BROWSER-TAB-UI) ---------- */
 import "./browser-tab.test";
+/* ---------- browser "..." menu host handlers (QA-BROWSERMENU P3-6) ---------- */
+import "./browser-menu-handlers.test";

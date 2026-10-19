@@ -8,7 +8,7 @@ import * as path from "path";
 import { EngineAdapter, EngineModelInfo, ModelRef, TurnContext } from "./agentService";
 import { ApprovalResult } from "./humanReviewService";
 import { ModeName, ToolCallViewModel, TurnEvent, ClarifyingQuestion } from "../model";
-import { isMutatingToolAction, isReadOnlyMode } from "./modeService";
+import { isMutatingToolAction, isReadOnlyMode, sessionPermissionsForMode } from "./modeService";
 import { parseSse, SseEvent } from "./sseParser";
 import { HookService } from "../hooks/hookService";
 
@@ -164,6 +164,14 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
   private selectedModel?: ModelRef;
   private starting: Promise<void> | undefined;
   /**
+   * P2 (QA-CHATTABS Round B, R1): set when dispose() runs. ensureServer()
+   * refuses to spawn a new sidecar for a dead tab — without this, a submit
+   * whose beforeSubmitPrompt hooks resolved after closeTab disposed the
+   * composer would respawn the bun process the P1-2 fix had just killed
+   * (the leak returned through the back door).
+   */
+  private disposed = false;
+  /**
    * P2 (XQA-03): approval serialization chain. `permission.asked` events are
    * consumed fire-and-forget, so two concurrent events used to orphan the
    * first approval card (HumanReviewService.current was overwritten and the
@@ -233,14 +241,18 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
           // {uri, name, description} — the engine reads the PNG as an image
           // part, so the agent literally sees the screenshot.
           ...(ctx.attachments && ctx.attachments.length > 0 ? { files: ctx.attachments } : {}),
-          // P1 (QA-PLANMODE-01): the engine's PromptInput.Prompt schema is
-          // {text, files, agents, skills} — there is NO mode/readonly wire
-          // field, so we cannot ask the engine to enforce read-only natively
-          // without engine-side schema support (engine lane). The read-only
-          // signal the engine DOES see is PLAN_MODE_INSTRUCTION, prepended to
-          // the prompt text by ComposerDataService for plan turns; the
-          // extension-side gate in handleApproval (turn-mode based) is the
-          // enforcement point for permission.asked tool calls.
+          // P1 (QA-PLANMODE Round B, P1-2(b) CORRECTION): the engine's
+          // PromptInput.Prompt schema is {text, files, agents, skills} —
+          // there is no per-prompt mode/readonly wire field, but the
+          // SESSION already carries enforcement: ensureSession passes a
+          // deny `permissions` ruleset at session.create for plan/ask
+          // modes (session.create natively accepts
+          // `permissions: Permission.Ruleset`), and the engine's
+          // Permission.evaluate/denied hard-blocks mutating tools with
+          // no approval card. The extension-side gate in handleApproval
+          // (turn-mode based) remains as a second, belt-and-braces layer
+          // for permission.asked flows the ruleset deliberately leaves
+          // open (effect "ask").
         });
       try {
         await postPrompt();
@@ -342,6 +354,10 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
 
   /** Spawn the sidecar server on a free loopback port; wait for readiness. */
   private ensureServer(): Promise<void> {
+    // P2 (QA-CHATTABS Round B, R1): never spawn for a disposed tab.
+    if (this.disposed) {
+      return Promise.reject(new Error("engine disposed — refusing to spawn a sidecar for a dead tab"));
+    }
     if (this.port) {
       return Promise.resolve();
     }
@@ -427,7 +443,7 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
     }
   }
 
-  private async ensureSession(mode: string): Promise<string> {
+  private async ensureSession(mode: ModeName): Promise<string> {
     const cached = this.sessions.get(mode);
     if (cached) {
       return cached;
@@ -435,9 +451,22 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
     // M-03: pass the picker's explicit model selection at creation so the
     // first turn of a new session already runs on the chosen model. Omitted
     // when the selection is "auto" (engine default).
+    // P1 (QA-PLANMODE Round B, P1-2(b)): read-only modes (plan/ask) pass a
+    // session-level deny ruleset here. session.create natively accepts
+    // `permissions: Permission.Ruleset` (protocol/src/groups/session.ts),
+    // so this is pure extension-lane: the engine enforces it via
+    // Permission.evaluate (findLast — session rules override agent rules)
+    // and denied() raises BlockedError with NO Permission.Event.Asked,
+    // i.e. mutating tools are hard-blocked with no approval card. This is
+    // also the durable fix for the MCP mutating-tool residual bypass:
+    // mcp__* is deny-by-default at the engine layer, with a read-only
+    // allowlist. Agent mode (and other non-read-only modes) send no
+    // permissions — behavior unchanged.
+    const permissions = sessionPermissionsForMode(mode);
     const res = await this.api("POST", "/api/session", {
       title: `IDE Agent (${mode})`,
       ...(this.selectedModel ? { model: toWireModelRef(this.selectedModel) } : {}),
+      ...(permissions ? { permissions } : {}),
     });
     const sessionID = res.data.id as string;
     // P2 (QA-FILE-03): a missing/non-string id would put "undefined" in every
@@ -1256,12 +1285,36 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
         decision = { optionId: "approve-once" };
       } else {
         try {
+          // P2-4 rework (QA-CHATTABS Round B): link a question tool's
+          // approval card to its question widget. The permission request's
+          // source.id is the tool call id (Tool.CallID.make(input.call.id)
+          // — the same id published in session.tool.called and used as the
+          // widget's toolCallId), so this link is exact even with several
+          // questions pending at once. Emitted only when a real card is
+          // created (not for auto-approved / blocked / dropped requests —
+          // there is no card to link then).
+          if (
+            action === "question" &&
+            typeof d.source?.id === "string" &&
+            d.source.id.length > 0
+          ) {
+            pushEvent({
+              type: "questionApproval",
+              toolCallId: d.source.id,
+              approvalToolCallId: toolCallId,
+            });
+            wake();
+          }
           // P1 (QA-CHATTABS-01): the allowlist identity is the STABLE tool
           // identity — action + sorted resources (e.g. "edit::src/a.ts") —
           // never the per-request toolCallId (`tc-<request-id>` is unique per
           // permission request, so keying on it made "Approve and allowlist"
-          // a dead feature).
-          const allowlistIdentity = `${action}::${[...new Set(resources)].sort().join(",")}`;
+          // a dead feature). Resources are joined with NUL, not "," — a comma
+          // collides ["a,b"] with ["a","b"], and shell resources are full
+          // command text where commas are common. NUL cannot appear in a
+          // file path (forbidden by the OS on POSIX and Windows) or in
+          // command text, so the key is unambiguous.
+          const allowlistIdentity = `${action}::${[...new Set(resources)].sort().join("\u0000")}`;
           decision = await this.opts.requestApproval(toolCallId, action, [
             d.message ?? `Permission requested: ${approvalTitle(action, resources)}`,
             ...(mcpAction ? [`MCP server: ${mcpAction.server}`] : []),
@@ -1418,6 +1471,7 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
 
   /** Stop the sidecar (call on extension deactivate). */
   dispose(): void {
+    this.disposed = true;
     this.sseAbort?.abort();
     // P2 (QA-04): drop all SSE listeners and cancel any pending reconnect so
     // nothing survives disposal.

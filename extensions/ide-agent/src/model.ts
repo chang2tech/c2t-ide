@@ -56,8 +56,23 @@ export interface ClarifyingQuestion {
   multiple: boolean;
   /** The toolCallId that asked — used to correlate the answer. */
   toolCallId: string;
-  /** The pending permission request id, if the question tool asked approval. */
-  approvalId?: string;
+  /**
+   * P2-4 rework (QA-CHATTABS Round B): the approval card's toolCallId
+   * (`tc-<permission-request-id>`), linked when the engine's permission
+   * request for this question arrives. The request's `source.id` is the
+   * tool call id, so the link is exact even with several questions pending.
+   * Answering the widget resolves that card as approve-once instead of
+   * letting it hang to the 5-minute timeout.
+   *
+   * NOTE: this is NOT set from the `toolCall` event — the engine publishes
+   * Tool.Called BEFORE the tool's execute fiber runs, and the question tool
+   * only raises its approval card inside execute (permission.assert) — so
+   * no card can exist yet at that point (the old wiring was dead code in
+   * production, and could link the WRONG card with two questions pending).
+   * It is set from the `questionApproval` turn event, which the adapter
+   * emits when it actually creates the card.
+   */
+  approvalToolCallId?: string;
   /**
    * P3-2 (QA-CHATTABS-01): the mode of the turn that asked the question.
    * An answer submitted while idle steers with THIS mode, not the live UI
@@ -93,5 +108,14 @@ export type TurnEvent =
   | { type: "textDelta"; bubbleId: string; delta: string }
   | { type: "toolCall"; bubbleId: string; toolCall: ToolCallViewModel }
   | { type: "toolCallDelta"; toolCallId: string; delta: Partial<ToolCallViewModel> }
+  /**
+   * P2-4 rework (QA-CHATTABS Round B): the adapter created an approval card
+   * for a `question` tool call. `toolCallId` is the question's tool call id
+   * (from the permission request's `source.id`); `approvalToolCallId` is
+   * the card's toolCallId (`tc-<permission-request-id>`). The composer
+   * records the link on the pending question so answering the widget
+   * resolves the card.
+   */
+  | { type: "questionApproval"; toolCallId: string; approvalToolCallId: string }
   | { type: "reconcile"; clientBubbleId: string; serverBubbleId: string }
   | { type: "done" };

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { ModeName } from "../model";
+import { parseToolName } from "../mcp/names";
 
 /**
  * ModeService — owns the unifiedMode enum and its mapping.
@@ -184,22 +185,148 @@ export function isReadOnlyMode(mode: ModeName): boolean {
   return READ_ONLY_MODES.has(mode);
 }
 
+/**
+ * MCP tool-name segments (the `<tool>` part of `mcp__<server>__<tool>`) that
+ * are strictly read-only. Grounded in the canonical MCP servers (filesystem,
+ * git, fetch, memory, playwright/browser): observation-only tools whose names
+ * cannot perform writes, deletes, or command execution. Mirrored in the
+ * engine's explore agent (`packages/core/src/indexing/explore.ts`).
+ *
+ * Fail-closed: in read-only modes (plan/ask) EVERY `mcp__*` tool is treated
+ * as mutating EXCEPT these names (see `isMutatingToolAction`). Unknown or
+ * future MCP tools are denied by default — the deliberate trade-off the
+ * Round B verdicts mandated (deny-by-default beats a name-matching arms
+ * race, since real MCP tool names are compound like `write_file`).
+ */
+export const READ_ONLY_MCP_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+  // file/content observation (filesystem server)
+  "read",
+  "read_file",
+  "read_text_file",
+  "read_media_file",
+  "read_multiple_files",
+  "read_resource",
+  "list_directory",
+  "list_directory_with_sizes",
+  "list_allowed_directories",
+  "list_resources",
+  "list_resource_templates",
+  "directory_tree",
+  "search",
+  "search_files",
+  "get_file_info",
+  // knowledge observation (memory server)
+  "read_graph",
+  "search_nodes",
+  "open_nodes",
+  // browser observation (playwright/browser server)
+  "screenshot",
+  "snapshot",
+  "browser_screenshot",
+  "browser_snapshot",
+  // web content (fetch server)
+  "fetch",
+  // version-control observation (git server)
+  "git_status",
+  "git_log",
+  "git_diff",
+  "git_diff_unstaged",
+  "git_diff_staged",
+  "git_show",
+]);
+
+/**
+ * Read-only MCP tool-name prefixes (`get_*` per the Round B remediation).
+ * A tool named `get_<anything>` is observation-shaped; combined with the
+ * fail-closed default above, the residual risk is a server deliberately
+ * misnaming a mutating tool — accepted and documented.
+ */
+export const READ_ONLY_MCP_TOOL_PREFIXES: ReadonlyArray<string> = ["get_"];
+
 export function isMutatingToolAction(action: string): boolean {
   const lower = action.toLowerCase();
   if (MUTATING_TOOL_ACTIONS.has(lower)) return true;
-  // P1 (QA-PLANMODE-01): MCP tool actions are Cursor-namespaced
-  // (mcp__<server>__<tool>) and never match the bare set above — a mutating
-  // MCP tool (e.g. mcp__fs__write) would bypass the plan/ask read-only gate.
-  // Classify by the tool segment; read-only MCP tools (mcp__fs__read,
-  // mcp__browser__screenshot) stay allowed.
+  // P1 (QA-PLANMODE Round B residual): fail-closed for MCP namespaced tools.
+  // The old strip-prefix + exact-match-bare-segment logic let real compound
+  // tool names (`mcp__filesystem__write_file`, `mcp__git__git_commit`)
+  // bypass the read-only gate. Now EVERY `mcp__*` name is mutating in
+  // read-only modes unless its tool segment is on the read-only allowlist
+  // above. Malformed `mcp__` names (no parseable server/tool) are denied too
+  // — the engine never generates them (McpNames.parseToolName/sanitize),
+  // so denying is safe.
   if (lower.startsWith("mcp__")) {
-    const parts = lower.split("__");
-    if (parts.length >= 3 && parts[1]) {
-      const tool = parts.slice(2).join("__");
-      return MUTATING_TOOL_ACTIONS.has(tool);
-    }
+    const parsed = parseToolName(lower);
+    if (!parsed) return true;
+    const tool = parsed.tool.toLowerCase();
+    if (READ_ONLY_MCP_TOOL_NAMES.has(tool)) return false;
+    return !READ_ONLY_MCP_TOOL_PREFIXES.some((prefix) => tool.startsWith(prefix));
   }
   return false;
+}
+
+/**
+ * One entry of the engine's `Permission.Ruleset` wire shape
+ * (`Permission.Rule = { action, resource, effect }` in
+ * `@opencode/schema/permission`). The extension posts plain JSON to
+ * `session.create`, so this stays a local structural type rather than
+ * importing the engine's schema package.
+ */
+export interface SessionPermissionRule {
+  action: string;
+  resource: string;
+  effect: "allow" | "deny";
+}
+
+/**
+ * P1 (QA-PLANMODE Round B, P1-2(b)): session-level deny ruleset for
+ * read-only modes (plan/ask). Passed as `permissions` in the
+ * `session.create` payload by IdeCodeEngineAdapter.ensureSession — pure
+ * extension-lane, no engine-side schema work needed: the engine's
+ * `Permission.evaluate` uses `findLast`, so session rules override agent
+ * rules, and `denied()` raises `BlockedError` with NO `Permission.Event.Asked`
+ * (hard block, no approval card). Session permissions ALSO narrow tool
+ * discovery (`session/context.ts`), so the model never even sees the tools.
+ *
+ * Grounded in the engine's actual permission actions (not tool names):
+ * write/edit/delete/patch/opencode/plan-create all assert action `"edit"`;
+ * shell asserts `"shell"`; subagent `"subagent"`; skill `"skill"`; MCP tools
+ * assert the full compound name (`mcp__<server>__<tool>`), so a `mcp__*`
+ * glob denies them all. The read-only MCP allowlist (same source of truth
+ * as `isMutatingToolAction`) is appended AFTER the blanket deny — findLast
+ * means later rules win, so `mcp__filesystem__read_file` stays allowed.
+ *
+ * Deliberately NOT denied: read/glob/grep/ls (research), webfetch/websearch,
+ * question (clarifying questions are the point of plan mode), todo tracking,
+ * and coordination tools (communicate/await/switchmode/summary).
+ *
+ * Agent mode (and every non-read-only mode) returns undefined — the session
+ * is created exactly as before, with no permissions payload.
+ */
+export function sessionPermissionsForMode(mode: ModeName): SessionPermissionRule[] | undefined {
+  if (!isReadOnlyMode(mode)) return undefined;
+  const rules: SessionPermissionRule[] = [
+    // File mutation (covers write/edit/delete/patch/opencode/plan tools).
+    { action: "edit", resource: "*", effect: "deny" },
+    // Command execution.
+    { action: "shell", resource: "*", effect: "deny" },
+    // Subagents and skills can do anything — fail-closed in read-only modes.
+    { action: "subagent", resource: "*", effect: "deny" },
+    { action: "skill", resource: "*", effect: "deny" },
+    // MCP tools: deny-by-default (durable fix for the Round B residual
+    // bypass — real MCP names are compound like `write_file`, so a
+    // name-matching arms race loses; deny the namespace instead).
+    { action: "mcp__*", resource: "*", effect: "deny" },
+  ];
+  // Read-only MCP allowlist. MUST stay after the mcp__* deny: the engine's
+  // findLast picks the last matching rule, so these re-allow observation
+  // tools like mcp__filesystem__read_file / mcp__*__get_*.
+  for (const tool of READ_ONLY_MCP_TOOL_NAMES) {
+    rules.push({ action: `mcp__*__${tool}`, resource: "*", effect: "allow" });
+  }
+  for (const prefix of READ_ONLY_MCP_TOOL_PREFIXES) {
+    rules.push({ action: `mcp__*__${prefix}*`, resource: "*", effect: "allow" });
+  }
+  return rules;
 }
 
 /**

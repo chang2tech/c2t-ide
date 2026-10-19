@@ -889,3 +889,172 @@ describe("fix P3-3: truncated SSE in POST response fails fast", () => {
     }
   });
 });
+
+describe("fix R1: 405 on the GET stream is streamUnsupported — no reconnect storm, POST keeps working", () => {
+  it("marks the stream unsupported on first 405 and never re-GETs", async () => {
+    let gets = 0;
+    let onCloseFired = false;
+    const { server, port } = await startHttpServer(async (req, res) => {
+      if (req.method === "GET") {
+        gets += 1;
+        res.writeHead(405); // spec 2025-03-26: no standalone SSE stream offered
+        res.end();
+        return;
+      }
+      const msg = JSON.parse((await readBody(req)) || "{}");
+      if (msg.method === "initialize") {
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "s1" });
+        res.end(jsonRpc(msg.id, PROBE_INIT_RESULT));
+        return;
+      }
+      if (msg.method === "notifications/initialized") {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(jsonRpc(msg.id, { content: [{ type: "text", text: "ok" }] }));
+    });
+    const client = new McpHttpClient({
+      url: `http://127.0.0.1:${port}/mcp`,
+      headers: undefined,
+      legacySse: false,
+      roots: [],
+      logger: silentLogger,
+      onClose: () => {
+        onCloseFired = true;
+      },
+    });
+    try {
+      await client.start();
+      const r = (await client.callTool("t", {})) as { content: Array<{ text: string }> };
+      assert.strictEqual(r.content[0].text, "ok", "POST transport unaffected by 405 on GET");
+      // Settle past the reconnect backoff floor (1000ms): any storm would re-GET.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const internals = client as unknown as Record<string, unknown>;
+      assert.strictEqual(gets, 1, "exactly one GET — no reconnect storm");
+      assert.strictEqual(internals.streamUnsupported, true, "405 ⇒ streamUnsupported");
+      assert.strictEqual(internals.streamReconnectTimer, undefined, "no reconnect timer scheduled");
+      assert.strictEqual(internals.streamReconnectInFlight, false, "no reconnect in flight");
+      assert.strictEqual(internals.streamDead, false, "server must NOT be marked dead");
+      assert.strictEqual(onCloseFired, false, "onClose must NOT fire on 405");
+    } finally {
+      client.stop();
+      server.close();
+    }
+  });
+});
+
+describe("fix R2: GET-404 counter is independent from the drop-reconnect budget", () => {
+  it("a stream blip followed by one GET 404 recovers via re-handshake, not permanent death", async () => {
+    let gets = 0;
+    let inits = 0;
+    let streamRes: http.ServerResponse | undefined;
+    const { server, port } = await startHttpServer(async (req, res) => {
+      if (req.method === "GET") {
+        gets += 1;
+        if (gets === 1) {
+          res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+          streamRes = res; // blip will drop this socket below
+          return;
+        }
+        if (gets === 2) {
+          res.writeHead(404); // one transient 404 on the reconnected GET
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        return; // keep open; client.stop() aborts it
+      }
+      const msg = JSON.parse((await readBody(req)) || "{}");
+      if (msg.method === "initialize") {
+        inits += 1;
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "mcp-session-id": `s${inits}`,
+        });
+        res.end(jsonRpc(msg.id, PROBE_INIT_RESULT));
+        return;
+      }
+      if (msg.method === "notifications/initialized") {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(jsonRpc(msg.id, { content: [{ type: "text", text: "ok" }] }));
+    });
+    // Blip: kill the held stream socket 150ms after it opened.
+    setTimeout(() => streamRes?.destroy(), 150);
+    const client = new McpHttpClient({
+      url: `http://127.0.0.1:${port}/mcp`,
+      headers: undefined,
+      legacySse: false,
+      roots: [],
+      logger: silentLogger,
+    });
+    try {
+      await client.start();
+      // blip (150ms) + reconnect backoff (1000ms) + 404 recovery handshake
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const internals = client as unknown as Record<string, unknown>;
+      assert.strictEqual(inits, 2, "one re-handshake after the GET 404");
+      assert.ok(gets >= 3, `expected ≥3 GETs (initial, 404, fresh), got ${gets}`);
+      assert.strictEqual(internals.streamUnsupported, false, "single 404 must NOT kill the stream");
+      assert.strictEqual(internals.streamDead, false, "server must NOT be marked dead");
+      const r = (await client.callTool("t", {})) as { content: Array<{ text: string }> };
+      assert.strictEqual(r.content[0].text, "ok", "tools/call still works on the recovered session");
+    } finally {
+      client.stop();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("two consecutive GET 404s (fresh handshake in between) mark the stream unsupported — bounded, no reconnect", async () => {
+    let gets = 0;
+    const { server, port } = await startHttpServer(async (req, res) => {
+      if (req.method === "GET") {
+        gets += 1;
+        res.writeHead(404); // server never offers the standalone stream
+        res.end();
+        return;
+      }
+      const msg = JSON.parse((await readBody(req)) || "{}");
+      if (msg.method === "initialize") {
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "fresh" });
+        res.end(jsonRpc(msg.id, PROBE_INIT_RESULT));
+        return;
+      }
+      if (msg.method === "notifications/initialized") {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(jsonRpc(msg.id, { content: [{ type: "text", text: "ok" }] }));
+    });
+    const client = new McpHttpClient({
+      url: `http://127.0.0.1:${port}/mcp`,
+      headers: undefined,
+      legacySse: false,
+      roots: [],
+      logger: silentLogger,
+    });
+    try {
+      await client.start();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const internals = client as unknown as Record<string, unknown>;
+      assert.strictEqual(gets, 2, `expected exactly 2 GETs (404 → re-handshake → 404), got ${gets}`);
+      assert.strictEqual(internals.streamUnsupported, true, "second consecutive 404 ⇒ unsupported");
+      assert.strictEqual(internals.streamNotFoundAttempts, 0, "404 counter resets after marking unsupported");
+      assert.strictEqual(internals.streamReconnectAttempts, 0, "drop-reconnect budget untouched by 404s");
+      assert.strictEqual(internals.streamReconnectTimer, undefined, "no reconnect timer for 404s");
+      const r = (await client.callTool("t", {})) as { content: Array<{ text: string }> };
+      assert.strictEqual(r.content[0].text, "ok", "POSTs keep working on the fresh session");
+    } finally {
+      client.stop();
+      server.close();
+    }
+  });
+});

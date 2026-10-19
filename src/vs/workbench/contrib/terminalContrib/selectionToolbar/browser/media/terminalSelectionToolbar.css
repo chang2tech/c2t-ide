@@ -1,0 +1,42 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* Floating "Toolbar on Selection" for the terminal (Cursor parity). Shown when
+ * the user selects text; hosts the "Add to Chat" button. Colors come from the
+ * workbench menu/widget tokens so it adapts to light and dark themes. */
+
+.monaco-workbench .terminal-selection-toolbar {
+	position: absolute;
+	z-index: 100;
+	display: flex;
+	padding: 2px;
+	background-color: var(--vscode-menu-background);
+	border: 1px solid var(--vscode-menu-border);
+	border-radius: 6px;
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow);
+}
+
+.monaco-workbench .terminal-selection-toolbar-button {
+	appearance: none;
+	border: none;
+	background: transparent;
+	color: var(--vscode-menu-foreground);
+	font-size: 12px;
+	line-height: 18px;
+	padding: 4px 10px;
+	border-radius: 4px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.monaco-workbench .terminal-selection-toolbar-button:hover {
+	background-color: var(--vscode-menu-selectionBackground);
+	color: var(--vscode-menu-selectionForeground);
+}
+
+.monaco-workbench .terminal-selection-toolbar-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}

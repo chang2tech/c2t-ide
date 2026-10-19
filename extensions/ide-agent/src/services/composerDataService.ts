@@ -403,7 +403,17 @@ export class ComposerDataService {
       }
     }
     if (this.running || this.isDraining) {
-      this.routeSubmit(text, opts);
+      try {
+        this.routeSubmit(text, opts);
+      } catch (err) {
+        // REVERIFY2-P3-3: routeSubmit can throw synchronously (H4 oversize
+        // reject in enqueue()/enqueueFront() — the user already got a
+        // warning toast at the throw site). Catch it here so the deliberate
+        // throw never escapes as an unhandled promise rejection through the
+        // `void submitWithHooks(...)` call sites. No second toast: the
+        // enqueue site already warned the user.
+        void err;
+      }
       return;
     }
     void this.runTurn(text, undefined, opts?.attachments);
@@ -427,7 +437,7 @@ export class ComposerDataService {
       // Bypass the queue entirely — delivered at the next opportune time
       // (next tool-call boundary), turn uninterrupted. FIFO: never overwrites
       // a pending steer/answer (P2 QA-CHATTABS-01).
-      this.pendingInterruptSends.push({ text: prompt, attachments });
+      this.pushInterruptSend({ text: prompt, attachments });
       return;
     }
     const composerCfg = vscode.workspace.getConfiguration("ide.composer");
@@ -444,7 +454,7 @@ export class ComposerDataService {
       // "send": deliver at the next opportune time — the runTurn loop breaks
       // after the current engine event. FIFO (P2 QA-CHATTABS-01): queued
       // behind any earlier steer/answer, never overwriting it.
-      this.pendingInterruptSends.push({ text: prompt, attachments });
+      this.pushInterruptSend({ text: prompt, attachments });
     }
   }
 
@@ -456,6 +466,46 @@ export class ComposerDataService {
    * queueSendNow, answerQuestion. Drained by runTurn's finally loop.
    */
   private pendingInterruptSends: { text: string; attachments?: FileAttachment[] }[] = [];
+
+  /**
+   * P3 (QA-CHATTABS Round B, R2): cap the interrupt-sends array. Four
+   * writers push into it while a turn runs and nothing bounded it — a
+   * paste storm (or a runaway script driving the API) could grow it
+   * without limit, and every entry becomes a full follow-up turn on drain.
+   * Cap: 10 entries / 60k chars total — mirrors the message queue's
+   * 10-message cap (MessageQueueService), with a larger char budget because
+   * interrupt sends bypass the queue and each one spawns a whole turn.
+   * Overflow drops the OLDEST (FIFO, same as the queue) with a warning.
+   */
+  private static readonly MAX_INTERRUPT_SENDS = 10;
+  private static readonly MAX_INTERRUPT_SEND_CHARS = 60_000;
+
+  private pushInterruptSend(entry: { text: string; attachments?: FileAttachment[] }): void {
+    this.pendingInterruptSends.push(entry);
+    let dropped = 0;
+    let chars = 0;
+    for (const m of this.pendingInterruptSends) {
+      chars += m.text.length;
+    }
+    while (
+      this.pendingInterruptSends.length > ComposerDataService.MAX_INTERRUPT_SENDS ||
+      chars > ComposerDataService.MAX_INTERRUPT_SEND_CHARS
+    ) {
+      const oldest = this.pendingInterruptSends.shift();
+      if (oldest) {
+        chars -= oldest.text.length;
+        dropped += 1;
+      } else {
+        break;
+      }
+    }
+    if (dropped > 0) {
+      void vscode.window.showWarningMessage(
+        `IDE Agent: too many pending steer messages — dropped ${dropped} oldest. ` +
+          `At most ${ComposerDataService.MAX_INTERRUPT_SENDS} pending sends are kept.`,
+      );
+    }
+  }
 
   /** Post-turn hooks: chime + autosave (Cursor parity settings). */
   private afterTurnCompleted(): void {
@@ -536,6 +586,12 @@ export class ComposerDataService {
   private abortRequested = false;
 
   private async runTurn(prompt: string, mode?: ModeName, attachments?: FileAttachment[]): Promise<void> {
+    // P2 (QA-CHATTABS Round B, R1): belt-and-braces — never start a turn on
+    // a disposed composer (see the check in submitWithHooks). The adapter's
+    // ensureServer() also refuses to spawn for a dead tab.
+    if (this.disposed) {
+      return;
+    }
     this.running = true;
     this.abortRequested = false;
     this.emitter.fire({ kind: "turnState", running: true });
@@ -893,14 +949,15 @@ export class ComposerDataService {
           // answer submitted while idle steers with the asking turn's mode,
           // not the live UI mode the user may have switched to meanwhile.
           q.mode = this.currentTurnMode ?? this.modes.getMode();
-          // P2-4 (QA-CHATTABS-01): if the question tool raised an approval
-          // card that is still open, wire its approval id — answering the
-          // widget then resolves the card as approve-once instead of letting
-          // it hang to the 5-minute timeout.
-          const currentApproval = this.reviews.currentApproval;
-          if (!q.approvalId && currentApproval && currentApproval.title === "question") {
-            q.approvalId = currentApproval.approvalId;
-          }
+          // P2-4 rework (QA-CHATTABS Round B): the approval-card link is NOT
+          // wired here. The engine publishes Tool.Called BEFORE the tool's
+          // execute fiber runs, and the question tool only raises its
+          // approval card inside execute (permission.assert) — so no card
+          // can exist yet at this point (the old wiring that grabbed
+          // reviews.currentApproval here was dead code in production, and
+          // could link the WRONG card with two questions pending). The
+          // adapter emits a `questionApproval` event when it actually
+          // creates the card; that handler sets q.approvalToolCallId.
           // P3-3 (QA-CHATTABS-01): surface the widget only for a NEW
           // question — a re-emitted/reconciled tool call must not render a
           // duplicate card. (Map.set is idempotent; the event is not.)
@@ -937,6 +994,21 @@ export class ComposerDataService {
       case "reconcile": {
         this.bubbles.reconcileServerId(event.clientBubbleId, event.serverBubbleId);
         this.emitter.fire({ kind: "bubblesChanged", ids: [event.clientBubbleId] });
+        break;
+      }
+      case "questionApproval": {
+        // P2-4 rework (QA-CHATTABS Round B): the adapter created an approval
+        // card for a question tool call — record the card's toolCallId on the
+        // pending question so answering the widget resolves the card as
+        // approve-once (no 5-minute hang). The link is exact: the adapter
+        // keys it by the permission request's source.id, which IS the
+        // question's toolCallId.
+        for (const q of this.pendingQuestions.values()) {
+          if (q.toolCallId === event.toolCallId && !q.approvalToolCallId) {
+            q.approvalToolCallId = event.approvalToolCallId;
+            break;
+          }
+        }
         break;
       }
       case "done": {
@@ -1145,7 +1217,7 @@ export class ComposerDataService {
     this.queue.remove(id);
     if (this.running || this.isDraining) {
       // P2-2 (QA-CHATTABS-01): FIFO — queued behind any earlier steer/answer.
-      this.pendingInterruptSends.push({ text: item.text, attachments: item.attachments });
+      this.pushInterruptSend({ text: item.text, attachments: item.attachments });
     } else {
       void this.runTurn(item.text, undefined, item.attachments);
     }
@@ -1181,8 +1253,13 @@ export class ComposerDataService {
       return false;
     }
     this.pendingQuestions.delete(questionId);
-    if (question.approvalId) {
-      this.reviews.resolveApproval(question.approvalId, { optionId: "approve-once" });
+    // P2-4 rework (QA-CHATTABS Round B): answering the widget resolves the
+    // question's approval card as approve-once (linked via the
+    // questionApproval event) instead of letting it hang to the 5-minute
+    // timeout. Resolved by the card's toolCallId — the reviews service's
+    // internal approval-N ids are never exposed to the turn events.
+    if (question.approvalToolCallId) {
+      this.reviews.resolveApprovalForToolCall(question.approvalToolCallId, { optionId: "approve-once" });
     }
     const labels = (picked as { label: string; description?: string }[])
       .map((o) => `${o.label}${o.description ? ` — ${o.description}` : ""}`)
@@ -1194,7 +1271,7 @@ export class ComposerDataService {
       `Continue with this answer in mind.`;
     if (this.running || this.isDraining) {
       // Steer: FIFO, delivered at the next opportune time.
-      this.pendingInterruptSends.push({ text: answerText });
+      this.pushInterruptSend({ text: answerText });
     } else {
       // P3-2 (QA-CHATTABS-01): an idle answer steers with the ASKING turn's
       // mode, not the live UI mode the user may have switched to meanwhile.
@@ -1216,7 +1293,10 @@ export class ComposerDataService {
    * and silently drop the turn's output.
    */
   async revertToCheckpoint(bubbleId: string): Promise<string[]> {
-    if (this.running) {
+    // P4/low (QA-CHATTABS Round B, R4): guard isDraining like closeTab and
+    // newChat do — restoring files mid-drain would corrupt the follow-up
+    // turns the drain loop is about to run.
+    if (this.running || this.isDraining) {
       void vscode.window.showWarningMessage(
         "IDE Agent: cannot restore a checkpoint while a turn is running — wait for the turn to finish first.",
       );
@@ -1268,7 +1348,9 @@ export class ComposerDataService {
    * contents (mirrors Cursor's checkoutToLatest).
    */
   async undoRestore(): Promise<void> {
-    if (this.running) {
+    // P4/low (QA-CHATTABS Round B, R4): same guard as revertToCheckpoint —
+    // re-applying files mid-drain corrupts the follow-up turns.
+    if (this.running || this.isDraining) {
       void vscode.window.showWarningMessage(
         "IDE Agent: cannot undo a restore while a turn is running.",
       );

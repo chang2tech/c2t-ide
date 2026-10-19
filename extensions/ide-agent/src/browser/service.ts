@@ -28,6 +28,13 @@ import {
   TextBlock,
 } from "./types";
 
+/** Debug-connection info for opening the DevTools frontend. */
+export interface DriverDebugInfo {
+  host: string;
+  port: number;
+  targetId: string;
+}
+
 /** Minimal page-driver surface the service needs (subset of PageDriver). */
 export interface ServiceDriver {
   navigate(url: string, timeoutMs?: number): Promise<void>;
@@ -37,6 +44,8 @@ export interface ServiceDriver {
   getTitle(): Promise<string>;
   rawCdp<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
   close(): Promise<void>;
+  /** Debug info for the DevTools frontend (absent on drivers without a debug port). */
+  debugInfo?(): DriverDebugInfo | undefined;
 }
 
 export type DriverFactory = (opts: { viewport: { width: number; height: number } }) => Promise<ServiceDriver>;
@@ -727,6 +736,75 @@ export class BrowserService {
       this.touch(rec, agentId);
       return out ?? {};
     });
+  }
+
+  /**
+   * Evaluate a script in the page (host chrome use — e.g. page zoom via
+   * `document.body.style.zoom`). Not agent-facing.
+   */
+  async evaluateInPage<T>(
+    sessionId: string | undefined,
+    agentId: string,
+    script: string,
+  ): Promise<T> {
+    const rec = this.requireSession(sessionId, agentId);
+    return this.runSerialized(rec, async () => {
+      const out = await rec.driver.evaluate<T>(script);
+      this.touch(rec, agentId);
+      return out;
+    });
+  }
+
+  /**
+   * REVERIFY-P1-1: sanctioned internal CDP for the tab chrome's own
+   * "Clear Browsing History / Cookies / Cache" menu (host chrome use —
+   * the user's own input, NOT agent-facing).
+   *
+   * The agent-facing `cdp()` denylist stays intact: this method accepts
+   * ONLY the exact 3 methods the menu needs (type-level union, no string
+   * passthrough), so it cannot be used as a denylist bypass for arbitrary
+   * CDP methods.
+   */
+  async clearBrowsingDataInternal(
+    sessionId: string | undefined,
+    agentId: string,
+    method:
+      | "Page.resetNavigationHistory"
+      | "Network.clearBrowserCookies"
+      | "Network.clearBrowserCache",
+  ): Promise<void> {
+    // REVERIFY2-P3-1: defense-in-depth RUNTIME allowlist. TS type unions are
+    // compile-time only — a cast `as any` would bypass them (demonstrated by
+    // the X1 probe), so enforce the exact 3 literals at runtime too.
+    // Fail-closed: anything else throws before touching the driver.
+    if (
+      method !== "Page.resetNavigationHistory" &&
+      method !== "Network.clearBrowserCookies" &&
+      method !== "Network.clearBrowserCache"
+    ) {
+      throw new Error(
+        `clearBrowsingDataInternal: refusing CDP method outside the allowlist: ${JSON.stringify(method)}`,
+      );
+    }
+    const rec = this.requireSession(sessionId, agentId);
+    await this.runSerialized(rec, async () => {
+      await rec.driver.rawCdp(method, {});
+      this.touch(rec, agentId);
+    });
+  }
+
+  /**
+   * Debug-connection info for the session's target (for the DevTools
+   * frontend). Throws when the driver has no debug port.
+   */
+  async getDebugInfo(
+    sessionId: string | undefined,
+    agentId: string,
+  ): Promise<DriverDebugInfo> {
+    const rec = this.requireSession(sessionId, agentId, { checkLock: false });
+    const info = rec.driver.debugInfo?.();
+    if (!info) throw new BrowserError("NO_DEBUG_PORT", "driver has no remote-debugging port");
+    return info;
   }
 
   /** Click at viewport coordinates (prefer browser_click with refs when possible). */

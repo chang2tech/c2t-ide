@@ -81,6 +81,18 @@ export class MessageQueueService {
     mode: string,
     attachments?: import("./mentionService").FileAttachment[],
   ): QueuedMessage {
+    // REVERIFY-P3-9 (H4): a single message larger than the entire char
+    // budget can never fit — reject it upfront with an accurate message
+    // instead of enqueueing it, dropping it as "oldest", and returning a
+    // dead id.
+    if (text.length > MessageQueueService.MAX_CHARS) {
+      void vscode.window.showWarningMessage(
+        `IDE Agent: message too large (${text.length.toLocaleString()} characters) — ` +
+          `the queue holds at most ${MessageQueueService.MAX_CHARS.toLocaleString()} characters total. ` +
+          `Please shorten the message.`,
+      );
+      throw new Error(`Queued message exceeds ${MessageQueueService.MAX_CHARS} characters`);
+    }
     queueSeq += 1;
     const message: QueuedMessage = {
       id: `q-${queueSeq}`,
@@ -105,6 +117,15 @@ export class MessageQueueService {
     mode: string,
     attachments?: import("./mentionService").FileAttachment[],
   ): QueuedMessage {
+    // REVERIFY-P3-9 (H4): same single-oversize guard as enqueue().
+    if (text.length > MessageQueueService.MAX_CHARS) {
+      void vscode.window.showWarningMessage(
+        `IDE Agent: message too large (${text.length.toLocaleString()} characters) — ` +
+          `the queue holds at most ${MessageQueueService.MAX_CHARS.toLocaleString()} characters total. ` +
+          `Please shorten the message.`,
+      );
+      throw new Error(`Queued message exceeds ${MessageQueueService.MAX_CHARS} characters`);
+    }
     queueSeq += 1;
     const message: QueuedMessage = {
       id: `q-${queueSeq}`,

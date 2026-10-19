@@ -841,6 +841,9 @@ export class MentionService {
       if (!isMentionChip(chip)) continue;
       const p = chip.payload;
       if (p.case !== "imageContext") continue;
+      // P3 (QA-MODELPICKER Round-B): filePath round-trips through the
+      // untrusted webview — guard the type before path.resolve.
+      if (typeof p.filePath !== "string") continue;
       const abs = path.resolve(p.filePath);
       if (!abs.startsWith(prefix)) continue;
       try {

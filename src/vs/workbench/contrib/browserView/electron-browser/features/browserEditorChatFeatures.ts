@@ -49,6 +49,8 @@ import { AccessibleViewRegistry, IAccessibleViewImplementation } from '../../../
 import { AccessibilityVerbositySettingId } from '../../../accessibility/browser/accessibilityConfiguration.js';
 import { ChatPetAchievementIds, shouldUnlockChatPetIntegratedBrowserShare } from '../../../chat/browser/chatPetAchievements.js';
 import { IChatPetService } from '../../../chat/browser/chatPetService.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { encodeBase64, VSBuffer } from '../../../../../base/common/buffer.js';
 
 // Register tools
 import '../tools/browserTools.contribution.js';
@@ -58,6 +60,35 @@ import '../tools/browserTools.contribution.js';
  * to the chat when sending elements from the Integrated Browser.
  */
 const BrowserSendElementsToChatAttachImagesSettingId = 'workbench.browser.sendElementsToChat.attachImages';
+
+/**
+ * IDE-CODE: Setting that controls where the Integrated Browser sends chat
+ * attachments (picked elements, screenshots, console logs). `'ideAgent'`
+ * routes them to the IDE Agent chat (the product's chat, implemented in the
+ * `ide-agent` built-in extension); `'workbench'` keeps upstream behavior
+ * (the workbench Copilot chat widget).
+ */
+const IdeBrowserChatTargetSettingId = 'ide.browser.chatTarget';
+
+/**
+ * IDE-CODE: Command (implemented by the `ide-agent` built-in extension) that
+ * receives a browser attachment and adds it to the IDE Agent chat input.
+ */
+const IdeBrowserAttachToChatCommandId = 'ide.browserAttachToChat';
+
+/**
+ * IDE-CODE: JSON-serializable payload sent to the IDE Agent chat. Image bytes
+ * are base64-encoded because command arguments cross the extension-host RPC
+ * boundary.
+ */
+interface IIdeBrowserChatAttachment {
+	kind: 'element' | 'screenshot' | 'areaScreenshot' | 'fullPageScreenshot' | 'consoleLogs';
+	name: string;
+	text: string;
+	imageBase64?: string;
+	imageMimeType?: string;
+	url?: string;
+}
 
 /**
  * Format an array of element ancestors into a CSS-selector-like path string.
@@ -184,6 +215,7 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 		@IAccessibilityService private readonly accessibilityService: IAccessibilityService,
 		@IAccessibleViewService private readonly accessibleViewService: IAccessibleViewService,
 		@IChatPetService private readonly chatPetService: IChatPetService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super(editor);
 		this._elementSelectionModeContext = CONTEXT_BROWSER_ELEMENT_SELECTION_MODE.bindTo(contextKeyService);
@@ -427,12 +459,60 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 	 * Callers are responsible for running {@link _confirmContentAttachmentRisk} first.
 	 */
 	private async _attachToChat(entries: readonly IChatRequestVariableEntry[]): Promise<boolean> {
+		// IDE-CODE: route to the IDE Agent chat when configured (the product's
+		// chat lives in the `ide-agent` extension, not the workbench chat).
+		if (this._shouldRouteToIdeAgent()) {
+			return this._attachEntriesToIdeAgent(entries);
+		}
 		const widget = await this._revealChatWidgetForAttachment();
 		if (!widget?.attachmentModel) {
 			return false;
 		}
 		widget.attachmentModel.addContext(...entries);
 		return true;
+	}
+
+	/**
+	 * IDE-CODE: Whether browser chat attachments should go to the IDE Agent
+	 * chat instead of the workbench chat widget.
+	 */
+	private _shouldRouteToIdeAgent(): boolean {
+		return this.configurationService.getValue<string>(IdeBrowserChatTargetSettingId) === 'ideAgent';
+	}
+
+	/**
+	 * IDE-CODE: Convert workbench chat entries to the plain JSON payload the
+	 * `ide-agent` extension understands and forward them via command. Returns
+	 * false when the extension command is not available.
+	 */
+	private async _attachEntriesToIdeAgent(entries: readonly IChatRequestVariableEntry[]): Promise<boolean> {
+		try {
+			const payloads: IIdeBrowserChatAttachment[] = entries.map(entry => {
+				const imageData = 'imageData' in entry ? entry.imageData : undefined;
+				const imageBase64 = imageData instanceof Uint8Array
+					? encodeBase64(VSBuffer.wrap(imageData))
+					: undefined;
+				const imageMimeType = 'imageMimeType' in entry ? entry.imageMimeType : undefined;
+				const kind = entry.kind === 'image'
+					? (entry.id.startsWith('browser-area-screenshot') ? 'areaScreenshot'
+						: entry.id.startsWith('browser-fullpage-screenshot') ? 'fullPageScreenshot'
+						: 'screenshot')
+					: entry.id.startsWith('console-logs') ? 'consoleLogs' : 'element';
+				return {
+					kind,
+					name: entry.name,
+					text: typeof entry.value === 'string' ? entry.value : '',
+					imageBase64,
+					imageMimeType,
+					url: undefined,
+				};
+			});
+			await this.commandService.executeCommand(IdeBrowserAttachToChatCommandId, payloads);
+			return true;
+		} catch (error) {
+			this.logService.error('BrowserEditorChatIntegration: failed to route attachment to IDE Agent chat', error);
+			return false;
+		}
 	}
 
 	// -- Element Selection ----------------------------------------------
@@ -489,6 +569,16 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 
 		if (!await this._confirmContentAttachmentRisk(elementData.url ?? model.url)) {
 			return false;
+		}
+		// IDE-CODE: route to the IDE Agent chat when configured. The element
+		// comment flow below is workbench-chat specific, so for ide-agent we
+		// forward the element (plus its comment, if any) as a single payload.
+		if (this._shouldRouteToIdeAgent()) {
+			const ok = await this._attachEntriesToIdeAgent(toAttach);
+			this.telemetryService.publicLog2<IntegratedBrowserAddElementToChatAddedEvent, IntegratedBrowserAddElementToChatAddedClassification>('integratedBrowser.addElementToChat.added', {
+				attachImages
+			});
+			return ok;
 		}
 		const widget = await this._revealChatWidgetForAttachment(elementData.comment !== undefined);
 		if (!widget?.attachmentModel || this._disposedCommentModels.has(model)) {
@@ -1153,6 +1243,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			markdownDescription: localize('workbench.browser.sendElementsToChat.attachImages', "Controls whether a screenshot of the selected element will be added to the chat."),
+		},
+		// IDE-CODE: where the Integrated Browser sends chat attachments.
+		[IdeBrowserChatTargetSettingId]: {
+			type: 'string',
+			enum: ['ideAgent', 'workbench'],
+			default: 'ideAgent',
+			markdownDescription: localize('ide.browser.chatTarget', "Controls where the Integrated Browser sends chat attachments (picked elements, screenshots, console logs). 'ideAgent' routes them to the IDE Agent chat; 'workbench' uses the workbench chat widget."),
 		}
 	}
 });

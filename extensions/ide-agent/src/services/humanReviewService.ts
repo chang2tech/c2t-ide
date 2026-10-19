@@ -169,6 +169,31 @@ export class HumanReviewService {
     if (!entry) {
       return;
     }
+    this.resolveEntry(approvalId, entry, result);
+  }
+
+  /**
+   * P2-4 rework (QA-CHATTABS Round B): resolve a pending approval by the
+   * card's toolCallId (`tc-<permission-request-id>`) instead of the
+   * internal `approval-N` id. Used when answering a clarifying-question
+   * widget: the turn events only carry the card's toolCallId (linked via
+   * the questionApproval event), never the approval-N id. No-op when no
+   * pending approval matches (card already resolved / timed out).
+   */
+  resolveApprovalForToolCall(toolCallId: string, result: ApprovalResult): void {
+    for (const [approvalId, entry] of this.pending) {
+      if (entry.request.toolCallId === toolCallId) {
+        this.resolveEntry(approvalId, entry, result);
+        return;
+      }
+    }
+  }
+
+  private resolveEntry(
+    approvalId: string,
+    entry: { request: ApprovalRequest; resolve: (result: ApprovalResult) => void; allowlistKey: string },
+    result: ApprovalResult,
+  ): void {
     // 24h TTL: an "Approve and allowlist" decision is remembered so the
     // same tool identity does not re-prompt within the TTL.
     if (result?.optionId === "approve-allowlist") {

@@ -102,6 +102,7 @@ import {
   PLAN_MODE_INSTRUCTION,
   isMutatingToolAction,
   isReadOnlyMode,
+  sessionPermissionsForMode,
 } from "../modeService";
 import { ComposerDataService, PendingPlan } from "../composerDataService";
 
@@ -233,10 +234,15 @@ describe("isMutatingToolAction (read-only gate, incl. MCP namespaced)", () => {
     assert.ok(!isMutatingToolAction("mcp__fs__read"));
     assert.ok(!isMutatingToolAction("mcp__browser__screenshot"));
   });
-  it("ignores malformed mcp__ prefixes instead of crashing", () => {
-    assert.ok(!isMutatingToolAction("mcp__"));
-    assert.ok(!isMutatingToolAction("mcp____write"));
-    assert.ok(!isMutatingToolAction("mcp__write"));
+  // Round B fail-closed (QA-PLANMODE): malformed mcp__ names are DENIED,
+  // not ignored. The engine never generates them
+  // (McpNames.parseToolName/sanitize), so denying is safe; deny-by-default
+  // beats a name-matching arms race. The point of this test is we never
+  // crash on bad input.
+  it("denies (fail-closed) malformed mcp__ prefixes instead of crashing", () => {
+    assert.ok(isMutatingToolAction("mcp__"));
+    assert.ok(isMutatingToolAction("mcp____write"));
+    assert.ok(isMutatingToolAction("mcp__write"));
   });
   it("plan and ask are read-only modes", () => {
     assert.ok(isReadOnlyMode("plan"));
@@ -351,5 +357,71 @@ describe("ComposerDataService plan flow", () => {
     svc.discardPlan();
     assert.strictEqual(svc.getPendingPlan(), null);
     assert.strictEqual(submitted.length, 0);
+  });
+});
+
+// P1 (QA-PLANMODE Round B, P1-2(b)): session-level deny ruleset for
+// read-only modes, passed as `permissions` at session.create by
+// IdeCodeEngineAdapter.ensureSession.
+describe("sessionPermissionsForMode (session.create permissions ruleset)", () => {
+  it("returns undefined for agent and other non-read-only modes", () => {
+    for (const mode of ["agent", "debug", "multitask", "background", "edit"] as const) {
+      assert.strictEqual(sessionPermissionsForMode(mode), undefined, `${mode} must send no ruleset`);
+    }
+  });
+
+  it("returns a deny ruleset for plan and chat (ask) modes", () => {
+    for (const mode of ["plan", "chat"] as const) {
+      const rules = sessionPermissionsForMode(mode);
+      assert.ok(Array.isArray(rules) && rules.length > 0, `${mode} must get a ruleset`);
+    }
+  });
+
+  it("denies the engine's real mutating permission actions", () => {
+    const rules = sessionPermissionsForMode("plan")!;
+    const deny = new Map(rules.filter((r) => r.effect === "deny").map((r) => [r.action, r.resource]));
+    // Grounded in packages/core/src/tool/plugin/*.ts permission.assert calls:
+    // write/edit/delete/patch/opencode/plan assert action "edit"; shell
+    // asserts "shell"; subagent "subagent"; skill "skill".
+    for (const action of ["edit", "shell", "subagent", "skill", "mcp__*"]) {
+      assert.ok(deny.has(action), `must deny ${action}`);
+      assert.strictEqual(deny.get(action), "*");
+    }
+  });
+
+  it("keeps read-only tools out of the deny list", () => {
+    const rules = sessionPermissionsForMode("plan")!;
+    const deniedActions = new Set(rules.filter((r) => r.effect === "deny").map((r) => r.action));
+    for (const action of ["read", "glob", "grep", "ls", "webfetch", "websearch", "question", "todo"]) {
+      assert.ok(!deniedActions.has(action), `${action} must stay usable in plan mode`);
+    }
+  });
+
+  it("re-allows the read-only MCP allowlist AFTER the mcp__* deny (engine findLast wins)", () => {
+    const rules = sessionPermissionsForMode("plan")!;
+    const denyIdx = rules.findIndex((r) => r.action === "mcp__*" && r.effect === "deny");
+    assert.ok(denyIdx >= 0, "mcp__* deny must exist");
+    const allows = rules.filter((r) => r.effect === "allow");
+    assert.ok(allows.length > 0, "allowlist rules must exist");
+    for (const r of allows) {
+      const idx = rules.indexOf(r);
+      assert.ok(idx > denyIdx, `${r.action} allow must come after the mcp__* deny`);
+      assert.ok(r.action.startsWith("mcp__"), "allow rules must be mcp-scoped");
+    }
+    // Spot-check the observation tools the verdict's probes used.
+    const allowActions = new Set(allows.map((r) => r.action));
+    assert.ok(allowActions.has("mcp__*__read_file"), "mcp read_file must be re-allowed");
+    assert.ok(allowActions.has("mcp__*__list_directory"), "mcp list_directory must be re-allowed");
+    assert.ok([...allowActions].some((a) => a.includes("get_")), "get_ prefix allow must exist");
+  });
+
+  it("every rule has the engine Permission.Rule wire shape", () => {
+    for (const mode of ["plan", "chat"] as const) {
+      for (const r of sessionPermissionsForMode(mode)!) {
+        assert.strictEqual(typeof r.action, "string");
+        assert.strictEqual(typeof r.resource, "string");
+        assert.ok(r.effect === "allow" || r.effect === "deny", `bad effect ${r.effect}`);
+      }
+    }
   });
 });

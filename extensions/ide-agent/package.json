@@ -228,6 +228,46 @@
       },
       {
         "category": "IDE Agent",
+        "command": "ide.browserTab.captureAreaScreenshot",
+        "title": "Browser Tab: Capture Area Screenshot"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.hardReload",
+        "title": "Browser Tab: Hard Reload"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.copyCurrentUrl",
+        "title": "Browser Tab: Copy Current URL"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.zoomIn",
+        "title": "Browser Tab: Zoom In"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.zoomOut",
+        "title": "Browser Tab: Zoom Out"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.zoomReset",
+        "title": "Browser Tab: Reset Zoom"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.clearBrowsingData",
+        "title": "Browser Tab: Clear Browsing Data"
+      },
+      {
+        "category": "IDE Agent",
+        "command": "ide.browserTab.openDevTools",
+        "title": "Browser Tab: Open DevTools"
+      },
+      {
+        "category": "IDE Agent",
         "command": "ide.reviewChanges",
         "title": "Review Changes with Agent"
       },
@@ -238,8 +278,32 @@
       },
       {
         "category": "IDE Agent",
-        "command": "ide.addSelectionToChat",
-        "title": "Add Selection to Chat"
+        "command": "ide.addToChat",
+        "title": "Add to Chat"
+      },
+      {
+        "command": "ide.exportTranscript",
+        "title": "Export Transcript"
+      },
+      {
+        "command": "ide.copyRequestId",
+        "title": "Copy Request ID"
+      },
+      {
+        "command": "ide.giveFeedback",
+        "title": "Give Feedback"
+      },
+      {
+        "command": "ide.renameChat",
+        "title": "Rename Chat"
+      },
+      {
+        "command": "ide.forkChat",
+        "title": "Fork Chat"
+      },
+      {
+        "command": "ide.openAgentSettings",
+        "title": "Agent Settings"
       },
       {
         "category": "IDE Agent",
@@ -381,6 +445,18 @@
           "default": "",
           "description": "Path to a Chrome/Chromium (or chrome-headless-shell) executable used by the in-IDE browser tab. When empty, well-known install locations are probed.",
           "type": "string"
+        },
+        "ide.terminal.toolbarOnSelection": {
+          "default": true,
+          "description": "Show the Add to Chat button when selecting text in the terminal.",
+          "type": "boolean",
+          "scope": "window"
+        },
+        "ide.chat.openAsEditorTabs": {
+          "default": true,
+          "description": "Open chats as editor tabs instead of the legacy stacked sidebar view (Cursor \"Open Chat as Editor Tabs\" parity).",
+          "type": "boolean",
+          "scope": "window"
         },
         "ide.tab.ignorePatterns": {
           "default": [],
@@ -581,12 +657,6 @@
     },
     "keybindings": [
       {
-        "command": "ide.newChat",
-        "key": "ctrl+l",
-        "mac": "cmd+l",
-        "when": "!ideAgent.chatInputFocused && !terminalFocus"
-      },
-      {
         "command": "ide.newFollowup",
         "key": "ctrl+y",
         "mac": "cmd+y",
@@ -628,8 +698,7 @@
       {
         "command": "ide.newAgentChat",
         "key": "ctrl+shift+l",
-        "mac": "cmd+i",
-        "when": "!editorTextFocus && !terminalFocus"
+        "mac": "cmd+shift+l"
       },
       {
         "command": "ide.openAddContextMenu",
@@ -727,10 +796,18 @@
         "when": "editorTextFocus"
       },
       {
-        "command": "ide.addSelectionToChat",
-        "key": "ctrl+shift+l",
-        "mac": "cmd+shift+l",
-        "when": "editorTextFocus"
+        "command": "ide.addToChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "terminalFocus",
+        "args": { "source": "terminal" }
+      },
+      {
+        "command": "ide.addToChat",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "editorTextFocus || ideAgent.chatInputFocused",
+        "args": { "source": "editor" }
       },
       {
         "command": "ide.newChat",
@@ -817,8 +894,86 @@
           "group": "navigation",
           "when": "view == 'ideAgent.sessionsView'"
         }
+      ],
+      "editor/title/context": [
+        {
+          "command": "ide.exportTranscript",
+          "group": "1_chat@1",
+          "when": "resourceScheme == 'ide-chat'"
+        },
+        {
+          "command": "ide.copyRequestId",
+          "group": "1_chat@2",
+          "when": "resourceScheme == 'ide-chat'"
+        },
+        {
+          "command": "ide.giveFeedback",
+          "group": "1_chat@3",
+          "when": "resourceScheme == 'ide-chat'"
+        },
+        {
+          "command": "ide.renameChat",
+          "group": "1_chat@4",
+          "when": "resourceScheme == 'ide-chat'"
+        },
+        {
+          "command": "ide.forkChat",
+          "group": "1_chat@5",
+          "when": "resourceScheme == 'ide-chat'"
+        },
+        {
+          "command": "ide.openAgentSettings",
+          "group": "2_settings",
+          "when": "resourceScheme == 'ide-chat'"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "ide.addToChat",
+          "group": "ideAgent@1",
+          "when": "editorHasSelection",
+          "args": { "source": "editor" }
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ide.exportTranscript",
+          "when": "never"
+        },
+        {
+          "command": "ide.copyRequestId",
+          "when": "never"
+        },
+        {
+          "command": "ide.giveFeedback",
+          "when": "never"
+        },
+        {
+          "command": "ide.renameChat",
+          "when": "never"
+        },
+        {
+          "command": "ide.forkChat",
+          "when": "never"
+        },
+        {
+          "command": "ide.openAgentSettings",
+          "when": "never"
+        }
       ]
     },
+    "customEditors": [
+      {
+        "viewType": "ideAgent.chatEditor",
+        "displayName": "IDE Agent Chat",
+        "selector": [
+          {
+            "scheme": "ide-chat"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "views": {
       "ideAgent": [
         {
@@ -856,7 +1011,8 @@
   },
   "displayName": "IDE Agent",
   "enabledApiProposals": [
-    "terminalDataWriteEvent"
+    "terminalDataWriteEvent",
+    "browser"
   ],
   "engines": {
     "vscode": "^1.90.0"

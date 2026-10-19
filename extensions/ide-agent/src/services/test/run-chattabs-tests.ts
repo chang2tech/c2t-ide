@@ -423,20 +423,64 @@ describe("QA-CHATTABS fix regressions", () => {
     assert.equal(composer.getPendingQuestions().length, 1);
   });
 
-  it("P2-4: a still-open question approval is wired into the question payload", () => {
+  it("P2-4: a question approval is linked via questionApproval event (production order)", () => {
     const composer = new ComposerDataService(undefined, undefined);
-    // Open an approval card for the question tool (as handleApproval does).
+    // Production order (the old test had it backwards — card first, then the
+    // toolCall — which is impossible: Tool.Called is published before the
+    // tool's execute fiber raises the approval):
+    //   1. toolCall event with the question payload (session.tool.called)
+    //   2. approval card opens (permission.asked → handleApproval)
+    //   3. adapter emits questionApproval linking the two
+    applyQuestion(composer, "tc-q");
+    assert.equal(composer.reviews.currentApproval, undefined, "no card before permission.asked");
+    const pending0 = composer.getPendingQuestions();
+    assert.equal(pending0.length, 1);
+    assert.equal(pending0[0]!.approvalToolCallId, undefined, "not linked before the card exists");
     const p = composer.reviews.requestApproval("tc-req-1", "question", ["reason"]);
     assert.ok(composer.reviews.currentApproval, "card is open");
-    applyQuestion(composer, "tc-q");
+    // What the adapter's handleApproval pushes for a question approval:
+    (composer as unknown as { applyEvent: (e: unknown) => void }).applyEvent({
+      type: "questionApproval",
+      toolCallId: "tc-q",
+      approvalToolCallId: "tc-req-1",
+    });
     const pending = composer.getPendingQuestions();
     assert.equal(pending.length, 1);
-    assert.equal(pending[0]!.approvalId, composer.reviews.currentApproval!.approvalId);
+    assert.equal(pending[0]!.approvalToolCallId, "tc-req-1");
     // Answering the widget resolves the card as approve-once (no 5-min hang).
+    // (running=true so the answer steers into the FIFO instead of starting a
+    // real turn — the link is what's under test, and the vscode stub has no
+    // workspace.saveAll for a full runTurn.)
+    (composer as unknown as { running: boolean }).running = true;
     assert.equal(composer.answerQuestion(`q-tc-q`, "opt-0"), true);
     assert.equal(composer.reviews.currentApproval, undefined);
     assert.equal(composer.reviews.pendingCount(), 0);
     void p;
+  });
+
+  it("P2-4: questionApproval links the right card with two questions pending", () => {
+    const composer = new ComposerDataService(undefined, undefined);
+    applyQuestion(composer, "tc-a");
+    applyQuestion(composer, "tc-b");
+    const pa = composer.reviews.requestApproval("tc-req-a", "question", ["reason a"]);
+    const pb = composer.reviews.requestApproval("tc-req-b", "question", ["reason b"]);
+    const apply = (composer as unknown as { applyEvent: (e: unknown) => void }).applyEvent.bind(composer);
+    apply({ type: "questionApproval", toolCallId: "tc-a", approvalToolCallId: "tc-req-a" });
+    apply({ type: "questionApproval", toolCallId: "tc-b", approvalToolCallId: "tc-req-b" });
+    const pending = composer.getPendingQuestions();
+    const qa = pending.find((q) => q.toolCallId === "tc-a")!;
+    const qb = pending.find((q) => q.toolCallId === "tc-b")!;
+    assert.equal(qa.approvalToolCallId, "tc-req-a");
+    assert.equal(qb.approvalToolCallId, "tc-req-b");
+    // Answering A resolves only A's card. (running=true: answers steer into
+    // the FIFO instead of starting real turns — see the note above.)
+    (composer as unknown as { running: boolean }).running = true;
+    assert.equal(composer.answerQuestion("q-tc-a", "opt-0"), true);
+    assert.equal(composer.reviews.pendingCount(), 1);
+    assert.equal(composer.answerQuestion("q-tc-b", "opt-1"), true);
+    assert.equal(composer.reviews.pendingCount(), 0);
+    void pa;
+    void pb;
   });
 
   it("P2-12: multi-select answers submit all options together", () => {
@@ -491,6 +535,39 @@ describe("QA-CHATTABS fix regressions", () => {
     );
     assert.equal(c.running, false, "no turn was started during the drain window");
     c.drainDepth = 0;
+  });
+
+  it("R2 (Round B): pendingInterruptSends is capped — oldest drop first", () => {
+    const composer = new ComposerDataService(undefined, undefined);
+    const c = composer as unknown as {
+      drainDepth: number;
+      pendingInterruptSends: { text: string }[];
+      pushInterruptSend: (e: { text: string }) => void;
+    };
+    c.drainDepth = 1; // keep submissions in the FIFO, no turn starts
+    for (let i = 0; i < 14; i++) {
+      composer.submit(`steer-${i}`, { sendMode: "sendNow" });
+    }
+    assert.equal(c.pendingInterruptSends.length, 10, "capped at 10 entries");
+    assert.deepEqual(
+      c.pendingInterruptSends.map((s) => s.text),
+      Array.from({ length: 10 }, (_, i) => `steer-${i + 4}`),
+      "oldest dropped first (FIFO)",
+    );
+    c.drainDepth = 0;
+  });
+
+  it("R1 (Round B): submitWithHooks after dispose starts no turn", async () => {
+    const composer = new ComposerDataService(undefined, undefined);
+    composer.dispose();
+    const c = composer as unknown as {
+      disposed: boolean;
+      running: boolean;
+      submitWithHooks: (text: string) => Promise<void>;
+    };
+    assert.equal(c.disposed, true);
+    await c.submitWithHooks("hello after close");
+    assert.equal(c.running, false, "no turn started on a disposed composer");
   });
 
   it("P1-2/P2-14: closeTab disposes the composer and its event relay", async () => {

@@ -16,6 +16,9 @@
  *   The GET stream is re-established on drop (reconnect, §B8: HTTP transport
  *   errors are NOT terminal). HTTP 404 on a POST with a session id means the
  *   session was invalidated → drop the id, re-initialize, retry once.
+ *   HTTP 404 (right after a fresh handshake) or 405 on the GET stream means
+ *   the server does not offer the standalone stream → stop opening it and
+ *   keep using POSTs (R1: 405 is the spec 2025-03-26 signal for this).
  *
  * Legacy SSE flow (transportType "sse" or allowDeprecatedSseFallback):
  *   GET {url} → first `endpoint` event gives the message POST URL
@@ -115,6 +118,14 @@ export class McpHttpClient implements McpTransportClient {
   private streamReconnectTimer: NodeJS.Timeout | undefined;
   private streamReconnectAttempts = 0;
   private streamReconnectInFlight = false;
+  /**
+   * R2: consecutive 404s on the standalone GET stream. This MUST be separate
+   * from streamReconnectAttempts (the drop-reconnect budget): sharing one
+   * counter meant a single 404 right after a stream blip exhausted the
+   * reconnect budget and permanently killed the stream, and the reset was
+   * dead code.
+   */
+  private streamNotFoundAttempts = 0;
   private streamDead = false;
   /**
    * Generation counter for the server→client stream. Every open/close bumps
@@ -125,7 +136,14 @@ export class McpHttpClient implements McpTransportClient {
    * stream (P2-3).
    */
   private streamGeneration = 0;
-  /** The server 404s the standalone stream even with a fresh session — stop opening it. */
+  /**
+   * The server 404s (after a fresh handshake) or 405s the standalone stream
+   * — stop opening it. R2: cleared when a fresh server-side session is
+   * recovered (POST 404 → re-handshake), because the new session is new
+   * stream state and the stream deserves one retry; the GET 404/405 path
+   * re-marks it if the new session still doesn't support the stream. The
+   * guard in openServerStream() checks this flag.
+   */
   private streamUnsupported = false;
   private messageEndpointCrossOrigin = false;
   private legacyReconnectAttempts = 0;
@@ -264,6 +282,15 @@ export class McpHttpClient implements McpTransportClient {
           this.sessionId = undefined;
           this.closeStream();
           try {
+            // R2: the fresh handshake creates a genuinely new server-side
+            // session, which is new stream state — clear streamUnsupported so
+            // the openServerStream() guard retries the stream once. If the
+            // new session still doesn't support it, the GET 404/405 path
+            // re-marks it. Bounded: a GET 404 after a fresh handshake does
+            // NOT re-handshake again (streamNotFoundAttempts > 1 →
+            // streamUnsupported).
+            this.streamUnsupported = false;
+            this.streamNotFoundAttempts = 0;
             await this.start();
           } catch {
             return true; // manager supervision handles it
@@ -359,6 +386,21 @@ export class McpHttpClient implements McpTransportClient {
     const req = this.rawRequest(this.opts.url, "GET", headers, abort.signal);
     this.streamReq = req;
     req.on("response", (res: http.IncomingMessage) => {
+      if (res.statusCode === 405) {
+        // R1: spec MCP Streamable HTTP (2025-03-26) — a server that does not
+        // offer the standalone SSE stream MUST answer GET with 405. The
+        // session and the POST transport are unaffected, so: stop opening
+        // the stream, NO reconnect, NO session invalidation, NO onClose —
+        // the manager must not see this as a dead server.
+        res.resume();
+        this.streamUnsupported = true;
+        this.streamNotFoundAttempts = 0;
+        this.closeStream();
+        this.opts.logger.appendLine(
+          "[mcp] server answered 405 on the standalone SSE stream (no stream offered) — continuing with POST requests only",
+        );
+        return;
+      }
       if (res.statusCode === 404 && this.sessionId) {
         // Session gone server-side. First consecutive 404: assume the session
         // expired → clear it and re-handshake for a fresh one. A 404 right
@@ -367,10 +409,14 @@ export class McpHttpClient implements McpTransportClient {
         // for POSTs. Session validity and stream availability are separate
         // concerns (P2-4).
         res.resume();
-        this.streamReconnectAttempts += 1;
-        if (this.streamReconnectAttempts > 1) {
+        // R2: own counter for consecutive GET 404s — NOT the drop-reconnect
+        // budget (streamReconnectAttempts). The old code bumped the shared
+        // counter here, so one 404 after a reconnect blip looked like
+        // exhaustion and killed the stream permanently.
+        this.streamNotFoundAttempts += 1;
+        if (this.streamNotFoundAttempts > 1) {
           this.streamUnsupported = true;
-          this.streamReconnectAttempts = 0;
+          this.streamNotFoundAttempts = 0;
           this.closeStream();
           this.opts.logger.appendLine(
             "[mcp] server does not support the standalone SSE stream — continuing with POST requests only",
@@ -382,7 +428,12 @@ export class McpHttpClient implements McpTransportClient {
         void (async () => {
           try {
             await this.start(); // opens a fresh stream on success
-            if (gen === this.streamGeneration) this.streamReconnectAttempts = 0;
+            // R2: deliberately NO reset of streamNotFoundAttempts here. A
+            // successful re-handshake means nothing about stream support —
+            // the fresh stream's own response decides: 200 resets the
+            // counter, a second consecutive 404 marks it unsupported. (The
+            // old `gen === this.streamGeneration` reset was dead code: both
+            // closeStream() and start() bump the generation first.)
           } catch {
             if (gen === this.streamGeneration) this.scheduleStreamReconnect(); // bounded; surfaces via onClose when exhausted
           }
@@ -399,6 +450,7 @@ export class McpHttpClient implements McpTransportClient {
       }
       this.streamReconnectDelay = STREAM_RECONNECT_BASE_MS;
       this.streamReconnectAttempts = 0;
+      this.streamNotFoundAttempts = 0; // R2: an open stream proves support — later 404s are session expiry again
       let buf = "";
       res.on("data", (chunk: Buffer) => {
         buf += chunk.toString("utf8");

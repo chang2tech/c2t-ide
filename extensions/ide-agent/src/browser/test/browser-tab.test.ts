@@ -16,6 +16,11 @@ import {
   normalizeOmnibarUrl,
   validateBrowserTabMessage,
   renderBrowserTabHtml,
+  zoomStepIn,
+  zoomStepOut,
+  clampZoom,
+  ZOOM_MIN,
+  ZOOM_MAX,
 } from "../tabView";
 import { browserCaptureDir, resolveChromiumPath, screenshotFilename } from "../chromium";
 import { PickerController } from "../picker";
@@ -120,6 +125,8 @@ describe("browser tab html", () => {
     viewportWidth: 1280,
     viewportHeight: 800,
     renderMode: "live",
+    zoomPercent: 100,
+    areaSelectMode: false,
   });
   it("renders the Cursor-style chrome", () => {
     assert.ok(html.includes('id="omnibar"'), "omnibar");
@@ -153,6 +160,8 @@ describe("browser tab html", () => {
       viewportWidth: 1280,
       viewportHeight: 800,
       renderMode: "live",
+      zoomPercent: 100,
+      areaSelectMode: false,
     });
     assert.ok(!evil.includes('"><script>alert(1)</script>'), "raw payload must not appear");
     assert.ok(evil.includes("&quot;&gt;&lt;script&gt;"), "escaped payload present");
@@ -427,5 +436,82 @@ describe("QA-BROWSERTAB-01 fixes", () => {
     const picker = new PickerController(driver as never);
     await picker.clearHover();
     assert.ok(calls.some((s) => s.includes("clearHover")), "clearHover script evaluated");
+  });
+});
+
+/* ---------- unit: browser "..." menu (Cursor BrowserMoreMenu parity) ---------- */
+describe("browser more menu", () => {
+  it("renders the full Cursor menu surface", () => {
+    const html = renderBrowserTabHtml("n", {
+      url: "https://example.com/",
+      title: "Example",
+      loading: false,
+      canGoBack: false,
+      canGoForward: false,
+      pickerMode: false,
+      viewportWidth: 1280,
+      viewportHeight: 800,
+      renderMode: "live",
+      zoomPercent: 125,
+      areaSelectMode: false,
+    });
+    assert.ok(html.includes('id="moreBtn"'), "ellipsis button");
+    assert.ok(html.includes("Take Screenshot"), "menu: Take Screenshot");
+    assert.ok(html.includes("Capture Area Screenshot"), "menu: Capture Area Screenshot");
+    assert.ok(html.includes("Hard Reload"), "menu: Hard Reload");
+    assert.ok(html.includes("Copy Current URL"), "menu: Copy Current URL");
+    assert.ok(html.includes("Zoom"), "menu: Zoom row");
+    assert.ok(html.includes("125%"), "zoom percent rendered");
+    assert.ok(html.includes("Clear Browsing History"), "menu: Clear Browsing History");
+    assert.ok(html.includes("Clear Cookies"), "menu: Clear Cookies");
+    assert.ok(html.includes("Clear Cache"), "menu: Clear Cache");
+    assert.ok(html.includes("Open DevTools"), "menu: Open DevTools");
+    assert.ok(html.includes('id="areaOverlay"'), "area-select overlay");
+  });
+  it("validates the new webview message types", () => {
+    for (const t of ["captureArea", "cancelAreaSelect", "hardReload", "copyUrl", "zoomIn", "zoomOut", "zoomReset", "openDevTools"]) {
+      assert.ok(validateBrowserTabMessage({ type: t }), t);
+    }
+    assert.deepStrictEqual(
+      validateBrowserTabMessage({ type: "areaSelect", x: 10, y: 20, width: 100, height: 50 }),
+      { type: "areaSelect", x: 10, y: 20, width: 100, height: 50 },
+    );
+    for (const kind of ["history", "cookies", "cache"]) {
+      assert.deepStrictEqual(validateBrowserTabMessage({ type: "clearData", kind }), {
+        type: "clearData",
+        kind,
+      });
+    }
+  });
+  it("rejects malformed areaSelect / clearData messages", () => {
+    assert.strictEqual(validateBrowserTabMessage({ type: "areaSelect", x: 1, y: 2, width: 0, height: 5 }), null, "zero width");
+    assert.strictEqual(validateBrowserTabMessage({ type: "areaSelect", x: 1, y: 2, width: -3, height: 5 }), null, "negative width");
+    assert.strictEqual(validateBrowserTabMessage({ type: "areaSelect", x: 1, y: 2, width: 99999, height: 5 }), null, "oversize width");
+    assert.strictEqual(validateBrowserTabMessage({ type: "areaSelect", x: 1, y: 2 }), null, "missing fields");
+    assert.strictEqual(validateBrowserTabMessage({ type: "clearData", kind: "passwords" }), null, "unknown kind");
+    assert.strictEqual(validateBrowserTabMessage({ type: "clearData" }), null, "missing kind");
+  });
+});
+
+/* ---------- unit: zoom ladder (Cursor: 25–500) ---------- */
+describe("browser zoom ladder", () => {
+  it("steps in/out along the Chromium ladder", () => {
+    assert.strictEqual(zoomStepIn(100), 110);
+    assert.strictEqual(zoomStepOut(100), 90);
+    assert.strictEqual(zoomStepIn(400), 500);
+    assert.strictEqual(zoomStepOut(33), 25);
+  });
+  it("clamps at the Cursor bounds", () => {
+    assert.strictEqual(zoomStepIn(500), ZOOM_MAX);
+    assert.strictEqual(zoomStepOut(25), ZOOM_MIN);
+    assert.strictEqual(zoomStepIn(999), ZOOM_MAX);
+    assert.strictEqual(zoomStepOut(1), ZOOM_MIN);
+  });
+  it("clampZoom sanitizes arbitrary input", () => {
+    assert.strictEqual(clampZoom(150), 150);
+    assert.strictEqual(clampZoom(10), ZOOM_MIN);
+    assert.strictEqual(clampZoom(900), ZOOM_MAX);
+    assert.strictEqual(clampZoom(NaN), 100);
+    assert.strictEqual(clampZoom(124.6), 125);
   });
 });

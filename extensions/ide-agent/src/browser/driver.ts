@@ -99,6 +99,11 @@ export class CdpPageDriver implements PageDriver {
   private host: string;
   private port: number;
 
+  /** Debug-connection info for the DevTools frontend. */
+  debugInfo(): { host: string; port: number; targetId: string } {
+    return { host: this.host, port: this.port, targetId: this.targetId };
+  }
+
   private constructor(client: CdpClient, targetId: string, host: string, port: number) {
     this.client = client;
     this.targetId = targetId;

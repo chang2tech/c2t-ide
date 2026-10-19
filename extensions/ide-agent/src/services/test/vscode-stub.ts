@@ -48,6 +48,11 @@ const windowStub = {
   showInformationMessage(_message: string): void {
     /* stub */
   },
+  // Extended for chat-editor tests: tests replace `tabGroups` as needed.
+  tabGroups: { all: [], activeTabGroup: undefined } as {
+    all: Array<{ activeTab?: { input?: unknown }; tabs: Array<{ input?: unknown }> }>;
+    activeTabGroup?: { activeTab?: { input?: unknown }; tabs: Array<{ input?: unknown }> };
+  },
   showErrorMessage(_message: string): void {
     /* stub */
   },
@@ -75,7 +80,33 @@ const vscodeStub = {
     },
   },
   env: { language: "en" },
-  Uri: { parse: (s: string) => ({ toString: () => s }) },
+  Uri: {
+    parse: (s: string) => ({ toString: () => s }),
+    // Extended for chat-editor tests: minimal Uri with scheme/path.
+    from: (parts: { scheme: string; path: string }) => ({
+      scheme: parts.scheme,
+      path: parts.path,
+      toString: () => `${parts.scheme}:${parts.path}`,
+    }),
+  },
+  // Extended for chat-editor tests: records executeCommand calls; tests may
+  // replace `impl` to control behavior.
+  commands: {
+    calls: [] as Array<{ command: string; args: unknown[] }>,
+    impl: null as null | ((command: string, ...args: unknown[]) => Promise<unknown>),
+    async executeCommand(command: string, ...args: unknown[]): Promise<unknown> {
+      (vscodeStub.commands.calls as Array<{ command: string; args: unknown[] }>).push({ command, args });
+      const impl = (vscodeStub.commands as { impl: null | ((c: string, ...a: unknown[]) => Promise<unknown>) }).impl;
+      return impl ? impl(command, ...args) : undefined;
+    },
+  },
+  // Extended for chat-editor tests: minimal TabInputCustom for instanceof checks.
+  TabInputCustom: class {
+    constructor(
+      readonly uri: unknown,
+      readonly viewType: string,
+    ) {}
+  },
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,10 +1,28 @@
 import * as vscode from "vscode";
 import * as path from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as childProcess from "node:child_process";
 import { ModeName } from "./model";
 import { ComposerDataService, ComposerEvent } from "./services/composerDataService";
-import { ChatTabService } from "./services/chatTabService";
+import { ChatTabService, ChatTab } from "./services/chatTabService";
 import { QueuedMessage, MessageQueueService } from "./services/messageQueueService";
+import {
+  CHAT_EDITOR_VIEW_TYPE,
+  ChatEditorProvider,
+  openChatAsEditorTabs,
+  openChatEditor,
+  resolveChatEditorTab,
+  transcriptToMarkdown,
+  type ChatEditorDeps,
+} from "./services/chatEditorProvider";
+import {
+  addToChat as addToChatService,
+  realVscodeSeam,
+  sanitizeAddToChatArgs,
+  type AddToChatArgs,
+  type AddToChatHost,
+} from "./services/addToChat";
 
 /**
  * Serialize queue items for the webview (adds the overdue-steer badge flag —
@@ -42,6 +60,7 @@ import { EngineModelInfo, ModelRef } from "./services/agentService";
 import { ModelSelection, ModelService, filterEnabledModels, isModelEnabled, nextEnabledModel } from "./services/modelService";
 import { HookService } from "./hooks/hookService";
 import { BrowserTabManager } from "./browser/browserTab";
+import { browserCaptureDir, screenshotFilename } from "./browser/chromium";
 
 /** Module-level hook service ref so deactivate() can fire sessionEnd hooks. */
 let hookServiceRef: HookService | undefined;
@@ -126,9 +145,23 @@ const COMMANDS: ScaffoldCommand[] = [
   { id: "ide.browserTab.focusOmnibar", title: "Browser Tab: Focus Address Bar", does: "focus the browser tab location bar (Cursor workbench.action.focusBrowserLocationBar)" },
   { id: "ide.browserTab.screenshotToChat", title: "Browser Tab: Screenshot to Chat", does: "capture the browser tab and attach the screenshot to the chat" },
   { id: "ide.browserTab.togglePicker", title: "Browser Tab: Toggle Element Picker", does: "toggle the element picker — click an element to send it to chat" },
+  { id: "ide.browserTab.captureAreaScreenshot", title: "Browser Tab: Capture Area Screenshot", does: "drag a region on the page and capture it to chat (Cursor: Capture Area Screenshot)" },
+  { id: "ide.browserTab.hardReload", title: "Browser Tab: Hard Reload", does: "reload the page bypassing cache (Cursor: Hard Reload / reloadIgnoringCache)" },
+  { id: "ide.browserTab.copyCurrentUrl", title: "Browser Tab: Copy Current URL", does: "copy the browser tab URL to the clipboard (Cursor: Copy Current URL)" },
+  { id: "ide.browserTab.zoomIn", title: "Browser Tab: Zoom In", does: "zoom the browser tab page in (Cursor: BrowserMoreMenu zoom)" },
+  { id: "ide.browserTab.zoomOut", title: "Browser Tab: Zoom Out", does: "zoom the browser tab page out" },
+  { id: "ide.browserTab.zoomReset", title: "Browser Tab: Reset Zoom", does: "reset the browser tab page zoom to 100%" },
+  { id: "ide.browserTab.clearBrowsingData", title: "Browser Tab: Clear Browsing Data", does: "clear history / cookies / cache with confirmation (Cursor: Clear Browsing History / Clear Cookies / Clear Cache)" },
+  { id: "ide.browserTab.openDevTools", title: "Browser Tab: Open DevTools", does: "open the Chrome DevTools frontend for the tab in a side panel" },
   { id: "ide.reviewChanges", title: "Review Changes with Agent", does: "ask the agent to review the working-tree changes" },
   { id: "ide.fixWithAI", title: "Fix with AI", does: "send the current selection (or file) plus diagnostics to the agent to fix" },
-  { id: "ide.addSelectionToChat", title: "Add Selection to Chat", does: "attach the current editor selection as context to the chat input" },
+  { id: "ide.addToChat", title: "Add to Chat", does: "attach the current editor or terminal selection as context to the chat input (Cursor Ctrl+L parity)" },
+  { id: "ide.exportTranscript", title: "Export Transcript", does: "save the chat transcript to a Markdown file (Cursor chat title menu parity)" },
+  { id: "ide.copyRequestId", title: "Copy Request ID", does: "copy the last turn's request id to the clipboard (Cursor chat title menu parity)" },
+  { id: "ide.giveFeedback", title: "Give Feedback", does: "send feedback about the chat (Cursor chat title menu parity)" },
+  { id: "ide.renameChat", title: "Rename Chat", does: "rename the chat tab (Cursor chat title menu parity)" },
+  { id: "ide.forkChat", title: "Fork Chat", does: "open a new chat tab seeded from the current transcript (Cursor chat title menu parity)" },
+  { id: "ide.openAgentSettings", title: "Agent Settings", does: "open the IDE Agent settings (Cursor chat title menu parity)" },
   { id: "ide.terminalAiCommand", title: "Generate Terminal Command with AI", does: "describe a task and prefill the chat to generate a terminal command" },
   { id: "ide.searchConversations", title: "Search Conversations", does: "search across agent conversations" },
   { id: "ide.openSettings", title: "Open IDE Agent Settings", does: "open the IDE Agent settings UI" },
@@ -139,6 +172,9 @@ const PENDING = "engine wiring pending";
 
 /** The live chat webview provider, when the chat view has been created. */
 let activeChatView: ChatViewProvider | undefined;
+
+/** The chat editor provider, for posting to open chat editor tabs (P2-3). */
+let chatEditorProviderRef: ChatEditorProvider | undefined;
 
 function notifyScaffold(cmd: ScaffoldCommand): void {
   void vscode.window.showInformationMessage(
@@ -179,11 +215,15 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("ide.agent.enabledModels")) {
-        void reconcileSelectionWithAllowlist(tabs.activeComposer);
+        // P1 (QA-MODELPICKER Round-B): reconcile ALL tabs — each tab owns its
+        // own engine adapter with an independent selectedModel, so reconciling
+        // only the active tab would leave background tabs burning a model the
+        // user just disabled (real money).
+        void reconcileAllTabsWithAllowlist(tabs);
       }
     }),
   );
-  void reconcileSelectionWithAllowlist(tabs.activeComposer);
+  void reconcileAllTabsWithAllowlist(tabs);
   const terminal = new TerminalService(() => tabs.activeComposer);
   terminal.activate(context);
 
@@ -199,13 +239,32 @@ export function activate(context: vscode.ExtensionContext): void {
   void slash.reloadSkills();
   context.subscriptions.push(slash);
 
+  // ---- Chat editor tabs (Cursor "Chat Editors" parity) ---------------------
+  // Register the custom editor provider so chat tabs open as REAL editor
+  // tabs (ide-chat:/<tabId>) with the native editor title context menu
+  // (Close/Split/Pin/Move into New Window/…) instead of a self-drawn tab
+  // bar inside one webview.
+  const chatEditorDeps: ChatEditorDeps = {
+    terminal,
+    slash,
+    pickModel,
+    readChatUiConfig,
+  };
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(
+      CHAT_EDITOR_VIEW_TYPE,
+      (chatEditorProviderRef = new ChatEditorProvider(context, tabs, chatEditorDeps)),
+      { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
+    ),
+  );
+
   // ---- Inline edit (Cursor Cmd+K flow, parity C1–C8) -----------------------
   // prefillChat escalates to a full agent turn: submit the prepared prompt to
   // the chat composer and focus it (same pattern as ide.fixWithAI).
   const inlineEdit = new InlineEditService(context, {
     prefillChat: async (text: string) => {
       tabs.activeComposer.submit(text);
-      await vscode.commands.executeCommand("ideAgent.chatView.focus");
+      await focusChatSurface(tabs);
     },
   });
   context.subscriptions.push(inlineEdit);
@@ -220,19 +279,94 @@ export function activate(context: vscode.ExtensionContext): void {
     context,
     {
       output: browserOutput,
+      // REVERIFY-P2-3 (H2): route through the editor-tab-aware host so
+      // chips land in the open chat editor tab, not the hidden sidebar.
       postImageToChat: (filePath, label, dataUrl) => {
-        activeChatView?.postToWebview({ type: "addImageContext", filePath, label, dataUrl });
-        void vscode.commands.executeCommand("ideAgent.chatView.focus");
+        const host = makeChatAttachHost(tabs);
+        host.postToWebview({ type: "addImageContext", filePath, label, dataUrl });
+        void host.focusChatView();
       },
       postElementToChat: (label, content) => {
-        activeChatView?.postToWebview({ type: "addSelectionContext", label, content });
-        void vscode.commands.executeCommand("ideAgent.chatView.focus");
+        const host = makeChatAttachHost(tabs);
+        host.postToWebview({ type: "addSelectionContext", label, content });
+        void host.focusChatView();
       },
     },
     () => vscode.workspace.getConfiguration("ide.browser").get<string>("chromiumPath", ""),
   );
   browserTabsRef = browserTabs;
   context.subscriptions.push({ dispose: () => void browserTabs.dispose() });
+
+  // ---- Native browser → IDE Agent chat bridge (Cursor parity) -------------
+  // The fork's native Integrated Browser (WebContentsView tab) routes its
+  // chat attachments here when `ide.browser.chatTarget` is `ideAgent`
+  // (see workbench core patch in browserEditorChatFeatures.ts). Payloads are
+  // plain JSON; images arrive base64-encoded and are written to the captures
+  // dir so they resolve as real file attachments on submit, like the
+  // webview-tab screenshot flow.
+  interface NativeBrowserChatAttachment {
+    kind: "element" | "screenshot" | "areaScreenshot" | "fullPageScreenshot" | "consoleLogs";
+    name: string;
+    text: string;
+    imageBase64?: string;
+    imageMimeType?: string;
+    url?: string;
+  }
+  function attachNativeBrowserImage(imageBase64: string, label: string): void {
+    try {
+      const dir = browserCaptureDir();
+      fs.mkdirSync(dir, { recursive: true });
+      const filePath = path.join(dir, screenshotFilename());
+      fs.writeFileSync(filePath, Buffer.from(imageBase64, "base64"));
+      const dataUrl = `data:image/png;base64,${imageBase64}`;
+      // REVERIFY-P2-3 (H2): editor-tab-aware host, not the sidebar.
+      makeChatAttachHost(tabs).postToWebview({ type: "addImageContext", filePath, label, dataUrl });
+    } catch (err) {
+      void vscode.window.showWarningMessage(`IDE Agent: could not save browser image (${err instanceof Error ? err.message : String(err)})`);
+    }
+  }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ide.browserAttachToChat", (payloads: NativeBrowserChatAttachment[]) => {
+      if (!Array.isArray(payloads) || payloads.length === 0) {
+        return;
+      }
+      // REVERIFY-P2-3 (H2): route all attachments through the editor-tab-aware host.
+      const host = makeChatAttachHost(tabs);
+      for (const p of payloads) {
+        if (!p || typeof p.kind !== "string") {
+          continue;
+        }
+        const label = p.name || "Browser attachment";
+        switch (p.kind) {
+          case "element":
+            host.postToWebview({
+              type: "addSelectionContext",
+              label: `Element: ${label}`,
+              content: p.text || "",
+            });
+            if (p.imageBase64) {
+              attachNativeBrowserImage(p.imageBase64, `Element screenshot: ${label}`);
+            }
+            break;
+          case "screenshot":
+          case "areaScreenshot":
+          case "fullPageScreenshot":
+            if (p.imageBase64) {
+              attachNativeBrowserImage(p.imageBase64, label);
+            }
+            break;
+          case "consoleLogs":
+            host.postToWebview({
+              type: "addSelectionContext",
+              label: "Console Logs",
+              content: p.text || "",
+            });
+            break;
+        }
+      }
+      void host.focusChatView();
+    }),
+  );
 
   // ---- 1. Commands -------------------------------------------------------
   for (const cmd of COMMANDS) {
@@ -255,9 +389,15 @@ export function activate(context: vscode.ExtensionContext): void {
             // P1 (CX1b): real new chat — clears bubbles, checkpoints, the
             // message queue and composer state of the ACTIVE tab. Refuses
             // while a turn runs.
+            // P2-2/P2-5 (QA-CHATEDITOR): this destructive clear has NO
+            // keybinding (see package.json) — Ctrl+Shift+L is the
+            // non-destructive "New Agent Chat" (Cursor parity). A chord must
+            // never mean "destroy" in one focus and "create" in another.
             void tabs.activeComposer.newChat().then((ok) => {
               if (ok) {
-                void vscode.commands.executeCommand("ideAgent.chatView.focus");
+                // QA-REVERIFY-2-02: reveal the chat editor tab when editor
+                // tabs are ON, not the hidden sidebar.
+                void focusChatSurface(tabs);
               }
             });
           }),
@@ -268,8 +408,33 @@ export function activate(context: vscode.ExtensionContext): void {
       case "ide.newAgentChat":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
+            // P1-3 (QA-CHATEDITOR): gated on ide.chat.openAsEditorTabs —
+            // OFF opens the new tab in the legacy stacked sidebar view.
             tabs.createAndActivate({ mode: "agent" });
-            void vscode.commands.executeCommand("ideAgent.chatView.focus");
+            // QA-REVERIFY-2-02: shared helper — the new tab is now active,
+            // so its editor-tabs branch reveals it (identical to the old
+            // inline if/else).
+            void focusChatSurface(tabs);
+          }),
+        );
+        break;
+      case "ide.toggleChatAsEditor":
+        // P3-11 (QA-CHATEDITOR): real implementation — was a dead scaffold
+        // (notifyScaffold popup) with three live keybindings. Flips
+        // ide.chat.openAsEditorTabs and migrates the current surface.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, async () => {
+            const cfg = vscode.workspace.getConfiguration("ide.chat");
+            const current = cfg.get<boolean>("openAsEditorTabs", true);
+            await cfg.update("openAsEditorTabs", !current, vscode.ConfigurationTarget.Global);
+            if (!current) {
+              await openChatEditor(tabs, undefined, tabs.activeTab.id);
+            } else {
+              await vscode.commands.executeCommand("ideAgent.chatView.focus");
+            }
+            void vscode.window.showInformationMessage(
+              `IDE Agent: new chats will now open as ${!current ? "editor tabs" : "the sidebar view"}.`,
+            );
           }),
         );
         break;
@@ -278,7 +443,8 @@ export function activate(context: vscode.ExtensionContext): void {
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
             tabs.nextTab();
-            void vscode.commands.executeCommand("ideAgent.chatView.focus");
+            // QA-REVERIFY-2-02: reveal the chat editor tab, not the sidebar.
+            void focusChatSurface(tabs);
           }),
         );
         break;
@@ -287,7 +453,8 @@ export function activate(context: vscode.ExtensionContext): void {
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
             tabs.previousTab();
-            void vscode.commands.executeCommand("ideAgent.chatView.focus");
+            // QA-REVERIFY-2-02: reveal the chat editor tab, not the sidebar.
+            void focusChatSurface(tabs);
           }),
         );
         break;
@@ -362,7 +529,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const doCycle = () => {
           const next = cycleMode(tabs.activeComposer.modes.getMode());
           tabs.activeComposer.modes.setMode(next);
-          void vscode.commands.executeCommand("ideAgent.chatView.focus");
+          // QA-REVERIFY-2-02: reveal the chat editor tab, not the sidebar.
+          void focusChatSurface(tabs);
         };
         context.subscriptions.push(vscode.commands.registerCommand(cmd.id, doCycle));
         break;
@@ -386,7 +554,8 @@ export function activate(context: vscode.ExtensionContext): void {
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
             tabs.activeComposer.modes.setMode(target);
-            void vscode.commands.executeCommand("ideAgent.chatView.focus");
+            // QA-REVERIFY-2-02: reveal the chat editor tab, not the sidebar.
+            void focusChatSurface(tabs);
           }),
         );
         break;
@@ -412,7 +581,7 @@ export function activate(context: vscode.ExtensionContext): void {
       case "ide.manageModels":
         // M-04 (real): checkbox UI for ide.agent.enabledModels.
         context.subscriptions.push(
-          vscode.commands.registerCommand(cmd.id, () => void manageModels(tabs.activeComposer)),
+          vscode.commands.registerCommand(cmd.id, () => void manageModels(tabs.activeComposer, tabs)),
         );
         break;
       case "ide.generateGitCommitMessage":
@@ -450,12 +619,27 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       case "ide.fixWithAI":
         context.subscriptions.push(
-          vscode.commands.registerCommand(cmd.id, () => void fixWithAI(tabs.activeComposer)),
+          vscode.commands.registerCommand(cmd.id, () => void fixWithAI(tabs, tabs.activeComposer)),
         );
         break;
-      case "ide.addSelectionToChat":
+      case "ide.addToChat":
         context.subscriptions.push(
-          vscode.commands.registerCommand(cmd.id, () => addSelectionToChat()),
+          vscode.commands.registerCommand(cmd.id, (rawArgs?: unknown) =>
+            addToChat(tabs, sanitizeAddToChatArgs(rawArgs)),
+          ),
+        );
+        break;
+      // Cursor parity: chat title context menu (chat editor tabs).
+      case "ide.exportTranscript":
+      case "ide.copyRequestId":
+      case "ide.giveFeedback":
+      case "ide.renameChat":
+      case "ide.forkChat":
+      case "ide.openAgentSettings":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (uri?: vscode.Uri) =>
+            runChatTitleCommand(cmd.id, tabs, uri),
+          ),
         );
         break;
       case "ide.terminalAiCommand":
@@ -469,7 +653,7 @@ export function activate(context: vscode.ExtensionContext): void {
         break;
       case "ide.searchConversations":
         context.subscriptions.push(
-          vscode.commands.registerCommand(cmd.id, () => void searchConversations(tabs.activeComposer)),
+          vscode.commands.registerCommand(cmd.id, () => void searchConversations(tabs.activeComposer, tabs)),
         );
         break;
       case "ide.worktreeCommand":
@@ -495,9 +679,14 @@ export function activate(context: vscode.ExtensionContext): void {
       default:
         // Browser tab commands (registered above in COMMANDS).
         if (cmd.id === "ide.openBrowserTab" || cmd.id === "ide.openBrowser") {
+          // IDE-CODE: open the NATIVE Integrated Browser tab (WebContentsView,
+          // Cursor-equivalent) instead of the legacy webview screencast tab.
           context.subscriptions.push(
             vscode.commands.registerCommand(cmd.id, (url?: string) =>
-              void browserTabs.open(typeof url === "string" ? url : undefined),
+              void vscode.commands.executeCommand(
+                "workbench.action.browser.open",
+                typeof url === "string" ? url : undefined,
+              ),
             ),
           );
         } else if (cmd.id === "ide.browserTab.newTab") {
@@ -519,6 +708,38 @@ export function activate(context: vscode.ExtensionContext): void {
         } else if (cmd.id === "ide.browserTab.togglePicker") {
           context.subscriptions.push(
             vscode.commands.registerCommand(cmd.id, () => browserTabs.togglePicker()),
+          );
+        } else if (cmd.id === "ide.browserTab.captureAreaScreenshot") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => browserTabs.startAreaSelect()),
+          );
+        } else if (cmd.id === "ide.browserTab.hardReload") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => void browserTabs.hardReload()),
+          );
+        } else if (cmd.id === "ide.browserTab.copyCurrentUrl") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => void browserTabs.copyCurrentUrl()),
+          );
+        } else if (cmd.id === "ide.browserTab.zoomIn") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => void browserTabs.zoomStep("in")),
+          );
+        } else if (cmd.id === "ide.browserTab.zoomOut") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => void browserTabs.zoomStep("out")),
+          );
+        } else if (cmd.id === "ide.browserTab.zoomReset") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => void browserTabs.zoomStep("reset")),
+          );
+        } else if (cmd.id === "ide.browserTab.clearBrowsingData") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => void browserTabs.clearBrowsingDataMenu()),
+          );
+        } else if (cmd.id === "ide.browserTab.openDevTools") {
+          context.subscriptions.push(
+            vscode.commands.registerCommand(cmd.id, () => void browserTabs.openDevTools()),
           );
         } else {
           context.subscriptions.push(
@@ -753,14 +974,50 @@ async function reconcileSelectionWithAllowlist(composer: ComposerDataService): P
       // Best effort: the engine keeps its (disabled) model, but the UI still
       // falls back to auto so it never lies about what will be used.
       const message = err instanceof Error ? err.message : String(err);
+      // P2 (QA-MODELPICKER Round-B): say exactly what happened — the switch
+      // failed for the CURRENT live session (its cached engine session still
+      // runs the disabled model), while new sessions are created with
+      // selectedModel cleared (setModel records undefined BEFORE the throw in
+      // ideCodeEngineAdapter.ts), so they are safe.
       void vscode.window.showWarningMessage(
         `IDE Agent: could not switch the engine to auto after disabling "${current.label}" — ${message}. ` +
-          "New turns may still use the disabled model; check the IDE Agent output channel.",
+          "The engine switch failed for the current live session, which may still use the disabled model. " +
+          "New sessions are safe — details in the IDE Agent output channel.",
       );
     }
   }
   composer.models.setSelection({ label: "auto" });
   return true;
+}
+
+/**
+ * P1 (QA-MODELPICKER Round-B): reconcile EVERY tab's selection against the
+ * allowlist, not just the active tab's. Each tab owns its own
+ * ComposerDataService + IdeCodeEngineAdapter with an independent
+ * `selectedModel` (`chatTabService.ts`), and `switchTab` doesn't re-validate —
+ * so disabling a model while tab B is in the background left tab B's engine
+ * on the disabled model, burning real money on tab B's next turn.
+ *
+ * Chosen over turn-time validation inside the engine adapter: the allowlist is
+ * extension-level config (`ide.agent.enabledModels`) while the adapter is the
+ * per-tab engine client — keeping the check in the extension layer avoids a
+ * config read on the hot turn path and keeps a single change point where the
+ * allowlist can mutate (manageModels, the config-change listener, startup).
+ *
+ * Returns the previous label of every tab whose selection changed, for honest
+ * reporting ("which tabs were affected").
+ */
+async function reconcileAllTabsWithAllowlist(
+  tabs: ChatTabService,
+): Promise<Array<{ tabId: string; previousLabel: string }>> {
+  const changed: Array<{ tabId: string; previousLabel: string }> = [];
+  for (const tab of tabs.listTabs()) {
+    const previousLabel = tab.composer.models.getSelection().label;
+    if (await reconcileSelectionWithAllowlist(tab.composer)) {
+      changed.push({ tabId: tab.id, previousLabel });
+    }
+  }
+  return changed;
 }
 
 /**
@@ -799,7 +1056,7 @@ async function loadEngineModels(
   }
 }
 
-async function pickModel(composer: ComposerDataService): Promise<void> {
+export async function pickModel(composer: ComposerDataService): Promise<void> {
   const models = await loadEngineModels(composer, "the model picker");
   if (!models) return;
   const adapter = composer.getEngineAdapter();
@@ -931,7 +1188,7 @@ async function cycleModel(composer: ComposerDataService): Promise<void> {
  * chat model ends up disabled, the selection falls back to "auto" so the
  * composer never points at a model the user just turned off.
  */
-async function manageModels(composer: ComposerDataService): Promise<void> {
+async function manageModels(composer: ComposerDataService, tabs: ChatTabService): Promise<void> {
   const models = await loadEngineModels(composer, "the model manager");
   if (!models) return;
   const enabledModels = getEnabledModels();
@@ -977,14 +1234,18 @@ async function manageModels(composer: ComposerDataService): Promise<void> {
     ? vscode.ConfigurationTarget.Workspace
     : vscode.ConfigurationTarget.Global;
   await vscode.workspace.getConfiguration("ide.agent").update("enabledModels", next, target);
-  // P1 (QA-MODELPICKER-01): reconcile via the shared helper so the engine is
-  // switched to auto too — the UI must never say "auto" while the engine
+  // P1 (QA-MODELPICKER-01) + P1 (Round-B): reconcile via the shared helper so
+  // the engine is switched to auto too — on ALL tabs, since each tab has its
+  // own engine adapter. The UI must never say "auto" while any tab's engine
   // keeps burning the model the user just disabled.
-  const current = composer.models.getSelection();
-  const reconciled = await reconcileSelectionWithAllowlist(composer);
-  if (reconciled) {
+  const changed = await reconcileAllTabsWithAllowlist(tabs);
+  if (changed.length > 0) {
+    const labels = [...new Set(changed.map((c) => c.previousLabel))]
+      .map((l) => `"${l}"`)
+      .join(", ");
+    const tabSuffix = changed.length > 1 ? ` on ${changed.length} tabs` : "";
     void vscode.window.showInformationMessage(
-      `IDE Agent: "${current.label}" was disabled — model reset to auto (engine default).`,
+      `IDE Agent: ${labels} ${changed.length > 1 ? "were" : "was"} disabled — model reset to auto${tabSuffix} (engine default).`,
     );
   } else {
     void vscode.window.showInformationMessage(
@@ -1132,7 +1393,7 @@ async function waitForNewAssistantText(
 }
 
 /** K-13 (Cursor parity): Cmd/Ctrl+Shift+E — send selection/file + diagnostics to the agent to fix. */
-async function fixWithAI(composer: ComposerDataService): Promise<void> {
+async function fixWithAI(tabs: ChatTabService, composer: ComposerDataService): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     void vscode.window.showInformationMessage("IDE Agent: open a file to fix with AI.");
@@ -1160,28 +1421,249 @@ async function fixWithAI(composer: ComposerDataService): Promise<void> {
     .filter(Boolean)
     .join("\n");
   composer.submit(prompt);
-  await vscode.commands.executeCommand("ideAgent.chatView.focus");
+  // REVERIFY-P2-3 (H2): focus the chat where the composer lives — the open
+  // editor tab when editor tabs are ON, not the hidden sidebar.
+  await makeChatAttachHost(tabs).focusChatView();
+}
+
+/**
+ * QA-REVERIFY-2-02: shared focus helper for commands that focus the chat
+ * WITHOUT attaching content to a specific tab (mode switches, tab
+ * navigation, conversation search, approval review, inline-edit prefill).
+ * Content routing for these is already correct (they act on
+ * `tabs.activeComposer`); this only fixes the focus TARGET: when chats live
+ * in editor tabs, reveal the active chat editor tab instead of yanking focus
+ * to a hidden sidebar view. Reuses the same openChatAsEditorTabs logic as
+ * makeChatAttachHost.focusChatView.
+ */
+async function focusChatSurface(tabs: ChatTabService): Promise<void> {
+  if (openChatAsEditorTabs()) {
+    await openChatEditor(tabs, undefined, tabs.activeTab.id);
+  } else {
+    await vscode.commands.executeCommand("ideAgent.chatView.focus");
+  }
+}
+
+/**
+ * REVERIFY-P2-3 (H2): shared editor-tab-aware attach host. ALL chat-attach
+ * paths (addToChat, browser image/element attach, native browser bridge,
+ * fixWithAI) must route through here so chips land in the OPEN chat editor
+ * tab when `ide.chat.openAsEditorTabs` is ON — never the hidden sidebar.
+ *
+ * REVERIFY-P2-1 (newChat misroute): when the caller just created a new tab,
+ * pass its id as `explicitTabId`. `resolveChatEditorTab` looks at VS Code's
+ * tab-group UI state, which hasn't caught up yet — without the explicit id
+ * it would resolve the OLD tab when exactly one chat editor is open.
+ */
+function makeChatAttachHost(tabs: ChatTabService, explicitTabId?: string): AddToChatHost {
+  const asEditor = openChatAsEditorTabs();
+  const resolveTarget = (): ChatTab | undefined => {
+    if (explicitTabId) {
+      const tab = tabs.listTabs().find((t) => t.id === explicitTabId);
+      if (tab) {
+        return tab;
+      }
+    }
+    return resolveChatEditorTab(tabs);
+  };
+  return {
+    postToWebview: (message: unknown) => {
+      if (asEditor && chatEditorProviderRef) {
+        const tab = resolveTarget();
+        const editorHost = tab ? chatEditorProviderRef.getHost(tab.id) : undefined;
+        if (editorHost) {
+          editorHost.postToWebview(message);
+          return;
+        }
+      }
+      activeChatView?.postToWebview(message);
+    },
+    focusChatView: async (): Promise<void> => {
+      if (asEditor) {
+        // Open (or reveal) the target chat editor tab — do NOT pull focus
+        // to the sidebar.
+        const tab = resolveTarget() ?? tabs.activeTab;
+        await openChatEditor(tabs, undefined, tab.id);
+      } else {
+        await vscode.commands.executeCommand("ideAgent.chatView.focus");
+      }
+    },
+  };
 }
 
 /** K-07 (Cursor parity): Cmd/Ctrl+Shift+L — attach the editor selection as a chip in the chat input. */
-function addSelectionToChat(): void {
-  const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.selection.isEmpty) {
-    void vscode.window.showInformationMessage("IDE Agent: select code in the editor first.");
+/**
+ * Cursor parity: "Add to Chat" (Ctrl+L, editor/context + terminal/context,
+ * floating terminal selection toolbar).
+ * Thin wrapper — the logic lives in services/addToChat.ts (testable).
+ * Label "Add to Chat" is verbatim from Cursor's selectionHoverActions.
+ * Accepts optional `{ source: 'terminal', text }` from the workbench-core
+ * terminal selection toolbar (selection text pre-resolved, no clipboard).
+ *
+ * P2-3 (QA-CHATEDITOR): the chip goes to the OPEN chat editor tab when one
+ * exists — never yanks focus to the sidebar. Legacy sidebar path only when
+ * `ide.chat.openAsEditorTabs` is OFF. P3-12: raw menu args are sanitized
+ * (a forwarded Uri is not AddToChatArgs).
+ *
+ * P3-10 (QA-CHATEDITOR, resolved): the `editor/context` menu has no API to
+ * report which editor was right-clicked, so the editor path uses
+ * `activeTextEditor` — the documented pattern. In the modal menu flow the
+ * right-click focuses the editor before the command runs, so this is the
+ * right editor in practice; the palette path is disambiguated by the
+ * keybinding `args`.
+ */
+function addToChat(tabs: ChatTabService, args?: AddToChatArgs): void {
+  // IDE-CODE (Cursor parity, DETAIL-TERMINAL): Ctrl/Cmd+click on the
+  // terminal floating button passes { newChat: true } — create a fresh
+  // agent tab first and pin its id (REVERIFY-P2-1); focusChatView below
+  // will reveal it.
+  let explicitTabId: string | undefined;
+  if (args?.newChat) {
+    explicitTabId = tabs.createAndActivate({ mode: "agent" }).id;
+  }
+  const host = makeChatAttachHost(tabs, explicitTabId);
+  void addToChatService(host, realVscodeSeam, args);
+}
+
+/**
+ * Cursor parity: chat title context menu commands. The target tab is
+ * resolved from the right-clicked editor tab when it is one of our chat
+ * editors (see resolveChatEditorTab), falling back to the sidebar's active
+ * tab — right-clicking a non-active editor tab does not activate it, so the
+ * heuristic matters.
+ *
+ * P2-1: the title menu forwards the right-clicked tab's resource URI as the
+ * first command arg — it must be honored, not dropped.
+ */
+async function runChatTitleCommand(
+  commandId: string,
+  tabs: ChatTabService,
+  rightClickedUri?: vscode.Uri,
+): Promise<void> {
+  const tab = resolveChatEditorTab(tabs, rightClickedUri);
+  // Contested P3-11 (2-2): keep this guard. closeTab never empties the map,
+  // but dispose() clears it — post-dispose the guard is reachable, and it
+  // costs nothing as defense.
+  if (!tab && commandId !== "ide.openAgentSettings") {
+    void vscode.window.showInformationMessage("IDE Agent: no chat tab to act on.");
     return;
   }
-  const doc = editor.document;
-  const sel = editor.selection;
-  const label = `selection:${vscode.workspace.asRelativePath(doc.uri)}:${sel.start.line + 1}`;
-  const content = doc.getText(sel);
-  void vscode.commands.executeCommand("ideAgent.chatView.focus").then(() => {
-    activeChatView?.postToWebview({ type: "addSelectionContext", label, content });
-  });
+  switch (commandId) {
+    case "ide.exportTranscript": {
+      const md = transcriptToMarkdown(tab!);
+      // P3-3: default into the workspace folder, not the filesystem root.
+      const fileName = `${tab!.title.replace(/[^\w\- ]+/g, "").trim() || "chat"}.md`;
+      const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+      const defaultUri = folder ? vscode.Uri.joinPath(folder, fileName) : vscode.Uri.file(fileName);
+      const uri = await vscode.window.showSaveDialog({
+        defaultUri,
+        filters: { Markdown: ["md"] },
+        saveLabel: "Export Transcript",
+      });
+      if (uri) {
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(md, "utf8"));
+        void vscode.window.showInformationMessage(`IDE Agent: transcript exported to ${uri.fsPath}`);
+      }
+      break;
+    }
+    case "ide.copyRequestId": {
+      // Cursor's Copy Request ID copies the last turn's backend request id
+      // (for support). Ours: the last assistant bubble's server-assigned id.
+      const bubbles = tab!.composer.bubbles.getAllInOrder().filter((b) => b.role === "assistant");
+      const last = bubbles[bubbles.length - 1];
+      const requestId = last?.serverBubbleId ?? last?.bubbleId;
+      if (requestId) {
+        await vscode.env.clipboard.writeText(requestId);
+        void vscode.window.showInformationMessage("IDE Agent: request ID copied to the clipboard.");
+      } else {
+        void vscode.window.showInformationMessage("IDE Agent: no request ID yet — ask the agent something first.");
+      }
+      break;
+    }
+    case "ide.giveFeedback": {
+      // P3-1 (QA-CHATEDITOR): the old input-box → "thanks" discarded the
+      // text — a fake. Feedback is now genuinely persisted to
+      // ~/.ide-code/feedback/ (one Markdown file per submission) where the
+      // team can read it; the user is told exactly where it went.
+      const text = await vscode.window.showInputBox({
+        prompt: "IDE Agent feedback",
+        placeHolder: "What worked, what didn't…",
+      });
+      if (text && text.trim()) {
+        try {
+          const dir = path.join(os.homedir(), ".ide-code", "feedback");
+          await fs.promises.mkdir(dir, { recursive: true });
+          const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const file = path.join(dir, `feedback-${stamp}.md`);
+          const body = `# IDE Agent feedback\n\nSubmitted: ${new Date().toISOString()}\n\n${text.trim()}\n`;
+          await fs.promises.writeFile(file, body, "utf8");
+          void vscode.window.showInformationMessage(
+            `IDE Agent: feedback saved to ${file} — thank you!`,
+          );
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          void vscode.window.showErrorMessage(`IDE Agent: could not save feedback — ${m}`);
+        }
+      }
+      break;
+    }
+    case "ide.renameChat": {
+      const title = await vscode.window.showInputBox({
+        prompt: "Rename chat",
+        value: tab!.title,
+      });
+      if (title && title.trim()) {
+        tabs.renameTab(tab!.id, title.trim());
+      }
+      break;
+    }
+    case "ide.forkChat": {
+      // P3-2/P3-14 (QA-CHATEDITOR): fork = a NEW tab seeded with a DEEP copy
+      // of this tab's transcript. Fresh client bubble ids (no cross-tab
+      // aliasing — Copy Request ID in the fork must not copy the source's
+      // ids), fresh tool-call objects, and NO serverBubbleId (the fork has no
+      // server session yet). The pending message queue is carried over so
+      // queued work continues; pending clarifying questions are NOT copied —
+      // they belong to the source tab's live approval state and re-asking
+      // them in a fresh session would orphan the answers. The user is told
+      // exactly this.
+      const source = tab!;
+      const fork = tabs.createTab({ title: `${source.title} (fork)` });
+      const copies = source.composer.bubbles.getAllInOrder().map((b) => ({
+        ...b,
+        bubbleId: fork.composer.bubbles.newClientBubbleId(),
+        serverBubbleId: undefined,
+        toolCalls: b.toolCalls.map((tc) => ({ ...tc })),
+        // REVERIFY-P3-8 (H3): deep-copy `thinking` — the source tab may
+        // still be streaming (mutating bubble.thinking.done/text in place);
+        // a shared reference would corrupt the fork mid-turn.
+        thinking: b.thinking ? { ...b.thinking } : undefined,
+      }));
+      fork.composer.bubbles.appendBubbles(copies);
+      for (const q of source.composer.queue.getItems()) {
+        fork.composer.queue.enqueue(q.text, q.mode, q.attachments ? [...q.attachments] : undefined);
+      }
+      const pendingQuestions = source.composer.getPendingQuestions().length;
+      await openChatEditor(tabs, undefined, fork.id);
+      void vscode.window.showInformationMessage(
+        "IDE Agent: forked into a new tab — transcript and queued messages copied; " +
+          "the agent session starts fresh here." +
+          (pendingQuestions > 0
+            ? ` (${pendingQuestions} pending question(s) stayed with the original tab.)`
+            : ""),
+      );
+      break;
+    }
+    case "ide.openAgentSettings": {
+      await vscode.commands.executeCommand("workbench.action.openSettings", "ide.agent");
+      break;
+    }
+  }
 }
 
 
 /** Conversation search across agent turns. */
-async function searchConversations(composer: ComposerDataService): Promise<void> {
+async function searchConversations(composer: ComposerDataService, tabs: ChatTabService): Promise<void> {
   // ENGINE: list real sessions when the session store lands; for now the
   // transcript's human turns are the searchable conversations.
   const humans = composer.bubbles.getAllInOrder().filter((b) => b.role === "human");
@@ -1198,7 +1680,8 @@ async function searchConversations(composer: ComposerDataService): Promise<void>
     { placeHolder: "Search conversations", matchOnDescription: true },
   );
   if (picked) {
-    await vscode.commands.executeCommand("ideAgent.chatView.focus");
+    // QA-REVERIFY-2-02: reveal the chat editor tab, not the sidebar.
+    await focusChatSurface(tabs);
   }
 }
 
@@ -1508,6 +1991,8 @@ type WebviewMessage =
 
 class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
+  /** P2-4: outbound messages queued while the view isn't resolved yet. */
+  private readonly pendingOutbound: unknown[] = [];
   // @-mention system: host-side provider registry (the webview cannot query
   // VS Code state, so it asks this service for items).
   private readonly mentions: MentionService;
@@ -1576,6 +2061,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       // P2 (QA-FILE-07): clear the view FIRST so post() drops messages
       // instead of posting to a disposed webview (unhandled rejection).
       this.view = undefined;
+      // P2-4: drop queued outbound messages — they belong to a dead view;
+      // a re-resolve gets a fresh full-state sync anyway.
+      this.pendingOutbound.length = 0;
       for (const d of viewDisposables) {
         d.dispose();
       }
@@ -1782,6 +2270,11 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             if (this.slash) {
               void this.post({ type: "slashCommands", items: this.slash.getPaletteItems() });
             }
+            // P2-4 (QA-CHATEDITOR): flush messages queued while the view
+            // wasn't resolved (chips posted during cold start).
+            for (const pending of this.pendingOutbound.splice(0)) {
+              void this.post(pending);
+            }
             break;
           // P1 (QA-FILE-01): Stop button → abort the running turn.
           case "stopTurn":
@@ -1936,7 +2429,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
                   .showInformationMessage(`IDE Agent needs approval: ${request.title}`, "Review")
                   .then((sel) => {
                     if (sel === "Review") {
-                      void vscode.commands.executeCommand("ideAgent.chatView.focus");
+                      // QA-REVERIFY-2-02: reveal the chat editor tab, not the
+                      // hidden sidebar, when editor tabs are ON.
+                      void focusChatSurface(this.tabs);
                     }
                   });
               }
@@ -2097,7 +2592,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
 
   /** Host → webview message (prefill input, attach selection context, …). */
   postToWebview(message: unknown): void {
-    void this.post(message);
+    // P2-4 (QA-CHATEDITOR): never silently drop a chip when the view isn't
+    // resolved yet (cold start, view hidden) — queue it and flush on
+    // resolveWebviewView. Bounded so a never-resolving view can't grow it
+    // without limit.
+    if (this.view) {
+      void this.post(message);
+    } else {
+      if (this.pendingOutbound.length < 100) {
+        this.pendingOutbound.push(message);
+      }
+    }
   }
 
   /**

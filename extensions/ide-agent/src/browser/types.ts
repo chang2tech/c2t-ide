@@ -163,6 +163,7 @@ export class BrowserError extends Error {
     | "PICKER_NOT_ACTIVE"
     | "INVALID_ARGS"
     | "NO_CHROMIUM"
+    | "NO_DEBUG_PORT"
     | "UNSUPPORTED";
   constructor(code: BrowserError["code"], message: string) {
     super(message);
