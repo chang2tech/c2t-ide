@@ -483,4 +483,7 @@ import './contrib/editTelemetry/browser/editTelemetry.contribution.js';
 // Opener
 import './contrib/opener/browser/opener.contribution.js';
 
+// Composer: accept pending agent pane action (Cursor 3.25.9 parity, FEATURE-1 `agent-accept-pending-decisions`)
+import './contrib/composer/browser/composerAcceptStep.contribution.js';
+
 //#endregion

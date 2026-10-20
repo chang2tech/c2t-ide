@@ -127,6 +127,15 @@ const COMMANDS: ScaffoldCommand[] = [
   { id: "ide.selectPreviousSubagentTab", title: "Select Previous Subagent Tab", does: "switch to the previous subagent tab" },
   { id: "ide.closeChatTab", title: "Close Chat Tab", does: "close the active chat tab" },
   { id: "ide.cancelAgentStep", title: "Cancel Agent Step", does: "cancel the currently running agent step" },
+  // FEATURE-1 (`agent-accept-pending-decisions`): runtime for the
+  // binary-verbatim `composer.acceptComposerStep` ("Accept pending agent
+  // pane action", workbench.glass.main.js 3.25.9 class LAb @39863346).
+  // Accepts EVERY item of the active composer's pending user-decision
+  // group (ComposerDataService.getPendingUserDecisionGroup — terminal
+  // decisions first, else the leading run of similar tools); when the
+  // group is empty it falls back to acceptNotification() (documented
+  // no-op in the fork — no host-owned composer notification service).
+  { id: "ide.acceptComposerStep", title: "Accept Pending Agent Pane Action", does: "accept every pending user decision of the active composer (Cursor composer.acceptComposerStep parity)" },
   { id: "ide.findInChat", title: "Find in Chat", does: "focus the find widget inside the chat view" },
   { id: "ide.hideFindInChat", title: "Hide Find in Chat", does: "hide the find widget inside the chat view" },
   { id: "ide.openAddContextMenu", title: "Add Context…", does: "open the @-mention context picker (files, symbols, browser, images)" },
@@ -699,6 +708,35 @@ export function activate(context: vscode.ExtensionContext): void {
       case "ide.applyWorktree":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void applyWorktreeFlow(new WorktreeService())),
+        );
+        break;
+      case "ide.acceptComposerStep":
+        // FEATURE-1 (`agent-accept-pending-decisions`): runtime of the
+        // binary-verbatim `composer.acceptComposerStep` ("Accept pending
+        // agent pane action", workbench.glass.main.js 3.25.9 class LAb
+        // @39863346):
+        //   const s = r ? n.getPendingUserDecisionGroup(r) : [];
+        //   if (s.length > 0) { for (const o of s) o.accept(); return }
+        //   e.acceptNotification()
+        // — the binary uses the RAW selectedComposerId (no resolve), and the
+        // active chat tab is the fork's "selected composer". The group is
+        // accepted UNCONDITIONALLY (no per-item filtering) — exactly like the
+        // binary; the empty-group fallback is acceptNotification()
+        // (documented no-op in the fork: no host-owned composer notification
+        // service). No warnings on empty selection / no handle — the binary
+        // silently falls through to the notification path.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            const composer = tabs.activeComposer;
+            const group = composer ? composer.getPendingUserDecisionGroup() : [];
+            if (group.length > 0) {
+              for (const decision of group) {
+                decision.accept();
+              }
+              return;
+            }
+            composer?.acceptNotification();
+          }),
         );
         break;
       default:

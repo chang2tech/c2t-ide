@@ -549,6 +549,42 @@ export class ComposerDataService {
   }
 
   /**
+   * FEATURE-1 (`agent-accept-pending-decisions`): the pending user decision
+   * GROUP for `composer.acceptComposerStep`. Binary-verbatim delegation
+   * (`ComposerDataService.getPendingUserDecisionGroup(handle)` @39965884
+   * delegates to the tool-former capability's
+   * `getPendingUserDecisionGroup()()`): the fork's review service is the
+   * tool-former analog (it owns the pending-decision store), so this
+   * delegates to `reviews.getPendingUserDecisionGroup()`.
+   */
+  getPendingUserDecisionGroup(): import("./humanReviewService").PendingUserDecision[] {
+    return this.reviews.getPendingUserDecisionGroup();
+  }
+
+  /**
+   * FEATURE-1 (`agent-accept-pending-decisions`): the
+   * `composerNotificationService.acceptNotification()` fallback of
+   * `composer.acceptComposerStep` (binary @17538502:
+   * `acceptNotification(){ this.notification_reactive()!==void 0 &&
+   * this._onAcceptNotification.fire() }` — fires the accept event only
+   * when a composer notification is currently showing; no-op otherwise).
+   *
+   * HONEST-DIVERGENCE: the fork has no host-side composer-notification
+   * service — the only composer-notification analog (the webview's plan
+   * nudge banner, modeled on the binary `mode_nudge` notification) is
+   * owned and accepted inside the chat webview, which the extension host
+   * cannot reach. So with no pending decisions this is a documented no-op
+   * — identical to the binary's behavior when no notification is showing.
+   * When a host-owned composer notification surface lands, this is the
+   * seam it plugs into (fire the binary-equivalent accept event here).
+   */
+  acceptNotification(): void {
+    // Intentionally no-op: no host-owned composer notification service
+    // exists yet (see doc comment). Not a silent drop — the binary is
+    // also silent when no notification is showing.
+  }
+
+  /**
    * P1-2 (QA-CHATTABS-01): dispose this composer — kill the sidecar `bun`
    * process (no more zombie servers on tab close) and settle any pending
    * approvals so no turn hangs. Idempotent: safe to call twice (tab close +

@@ -17,6 +17,16 @@ export interface ApprovalRequest {
   title: string;
   reasons: string[];
   options: ApprovalOption[];
+  /**
+   * FEATURE-1 (`agent-accept-pending-decisions`, Cursor 3.25.9 parity): the
+   * engine tool kind that raised this approval — the fork's analog of the
+   * binary's `clientSideTool` on a pending user decision
+   * (workbench.glass.main.js @27763492 groups by it). Optional: when absent
+   * the decision-group logic falls back to the title.
+   */
+  clientSideTool?: string;
+  /** Epoch ms when the approval was raised (binary decision `startedAt`). */
+  startedAt?: number;
 }
 
 export type ApprovalResult = { optionId: string } | undefined;
@@ -117,6 +127,12 @@ export class HumanReviewService {
      * used — still stable across requests, unlike the per-request toolCallId.
      */
     allowlistIdentity?: string,
+    /**
+     * FEATURE-1 (`agent-accept-pending-decisions`): engine tool kind that
+     * raised this approval (e.g. "bash", "edit") — stored on the request as
+     * `clientSideTool` for the pending-decision group logic.
+     */
+    clientSideTool?: string,
   ): Promise<ApprovalResult> {
     approvalSeq += 1;
     const approvalId = `approval-${approvalSeq}`;
@@ -133,6 +149,8 @@ export class HumanReviewService {
         { id: "approve-allowlist", label: "Approve and allowlist" },
         { id: "skip", label: "Skip" },
       ],
+      ...(clientSideTool !== undefined ? { clientSideTool } : {}),
+      startedAt: Date.now(),
     };
     // 24h allowlist TTL: a fresh "Approve and allowlist" decision for the
     // same tool identity auto-resolves without re-showing the card.
@@ -226,4 +244,138 @@ export class HumanReviewService {
   pendingCount(): number {
     return this.pending.size;
   }
+
+  /**
+   * FEATURE-1 (`agent-accept-pending-decisions`): the pending user decision
+   * GROUP for `composer.acceptComposerStep` — binary-verbatim port of the
+   * two layers in workbench.glass.main.js 3.25.9:
+   *
+   *  - `ComposerDataService.getPendingUserDecisionGroup(handle)` @39965884:
+   *    `const e=this.getToolFormer(t); return e?e.getPendingUserDecisionGroup()():[]`
+   *    (the fork's review service is the tool-former analog — it owns the
+   *    pending-decision store, so the data service delegates here).
+   *  - Tool-former getter @27763492:
+   *      const t = this.pendingDecisions(),
+   *            e = [...t.userInteractionBubbleIds].reverse();
+   *      if (e.length === 0) -> latest answerable ASK_QUESTION decision or []
+   *      const n = e.map(id => t.pendingDecisions[id])
+   *                 .filter(d => d !== void 0 && d.clientSideTool === RUN_TERMINAL_COMMAND_V2);
+   *      if (n.length > 0) return n;
+   *      const i = []; for (const id of e) { const s = t.pendingDecisions[id];
+   *        if (s) if (i.length===0 || areToolsSimilar(last(i).clientSideTool, s.clientSideTool)) i.push(s); else break }
+   *      return i
+   *  - `areToolsSimilar(t,e)` @27745295:
+   *      `if(t===e)return!0; const n=this.getToolCategory(t),i=this.getToolCategory(e);
+   *       return n!==void 0&&n===i` with `toolCategories` @27744379 =
+   *      `new Map([["file_modification", new Set([EDIT_FILE, EDIT_FILE_V2])]])`.
+   *
+   * Fork mapping: the pending map's insertion order is the
+   * `userInteractionBubbleIds` analog (approvals are appended as the agent
+   * raises them); `RUN_TERMINAL_COMMAND_V2` maps to the engine's terminal
+   * actions below; the single binary category `file_modification` maps to
+   * the fork engine's file-edit action "edit" (the engine emits one action
+   * for edits and writes — no EDIT_FILE_V2 analog exists locally, so the
+   * set has one member; `areToolsSimilar` itself is ported unchanged).
+   *
+   * HONEST-DIVERGENCE (ask-question fallback): when no approval decisions
+   * are pending the binary falls back to the latest answerable ASK_QUESTION
+   * decision whose `accept()` answers with the question UI's current
+   * selections. The fork's clarifying questions live in the webview and
+   * expose no current-selection state to the host, so there is no honest
+   * `accept()` to offer — this returns [] and the command falls through to
+   * `acceptNotification()`, exactly like the binary's no-decision path.
+   */
+  getPendingUserDecisionGroup(): PendingUserDecision[] {
+    // [...userInteractionBubbleIds].reverse() — most recent first.
+    const ordered = [...this.pending.entries()].reverse();
+    if (ordered.length === 0) {
+      return [];
+    }
+    const toDecision = ([approvalId, entry]: [string, { request: ApprovalRequest }]): PendingUserDecision => ({
+      toolCallId: entry.request.toolCallId,
+      clientSideTool: entry.request.clientSideTool ?? entry.request.title,
+      // Fork approvals always block the awaiting turn promise.
+      blocking: true,
+      startedAt: entry.request.startedAt ?? 0,
+      accept: () => this.resolveApproval(approvalId, { optionId: "approve-once" }),
+      reject: () => this.resolveApproval(approvalId, undefined),
+    });
+    // Terminal decisions first (binary RUN_TERMINAL_COMMAND_V2 filter).
+    const terminal = ordered.filter(([, entry]) =>
+      TERMINAL_ACTIONS.has(entry.request.clientSideTool ?? entry.request.title),
+    );
+    if (terminal.length > 0) {
+      return terminal.map(toDecision);
+    }
+    // Leading run of similar tools, in reversed (most-recent-first) order.
+    const group: PendingUserDecision[] = [];
+    for (const pair of ordered) {
+      const decision = toDecision(pair);
+      if (
+        group.length === 0 ||
+        areToolsSimilar(group[group.length - 1].clientSideTool, decision.clientSideTool)
+      ) {
+        group.push(decision);
+      } else {
+        break;
+      }
+    }
+    return group;
+  }
+}
+
+/**
+ * FEATURE-1: a pending user decision — the fork's shape of the binary's
+ * pending-decision item
+ * (`{accept,reject,toolCallId,clientSideTool,blocking,startedAt}`,
+ * workbench.glass.main.js 3.25.9).
+ */
+export interface PendingUserDecision {
+  readonly toolCallId: string;
+  readonly clientSideTool: string;
+  readonly blocking: boolean;
+  readonly startedAt: number;
+  accept(): void;
+  reject(): void;
+}
+
+/**
+ * FEATURE-1: the fork engine's terminal actions — the analog of the
+ * binary's `RUN_TERMINAL_COMMAND_V2` clientSideTool, which the binary's
+ * grouping filter prioritizes.
+ */
+const TERMINAL_ACTIONS: ReadonlySet<string> = new Set(["bash", "shell", "shell_tool_call"]);
+
+/**
+ * FEATURE-1: binary-verbatim `areToolsSimilar` port
+ * (workbench.glass.main.js 3.25.9 @27745295): identical tools are similar;
+ * otherwise two tools are similar iff they share a category in
+ * `toolCategories` (@27744379 — a single entry, "file_modification":
+ * {EDIT_FILE, EDIT_FILE_V2}).
+ *
+ * Fork mapping: the engine emits a single "edit" action covering both
+ * file edits and writes, so the local `file_modification` set has one
+ * member. New engine actions that represent file modification get added
+ * here as they are documented — the mechanism (same tool OR same
+ * category) is the binary's.
+ */
+const PENDING_DECISION_TOOL_CATEGORIES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["file_modification", new Set(["edit"])],
+]);
+
+function pendingDecisionToolCategory(tool: string): string | undefined {
+  for (const [category, tools] of PENDING_DECISION_TOOL_CATEGORIES) {
+    if (tools.has(tool)) {
+      return category;
+    }
+  }
+  return undefined;
+}
+
+function areToolsSimilar(a: string, b: string): boolean {
+  if (a === b) {
+    return true;
+  }
+  const categoryA = pendingDecisionToolCategory(a);
+  return categoryA !== undefined && categoryA === pendingDecisionToolCategory(b);
 }

@@ -6,10 +6,10 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
-import { ContextKeyExpr, type ContextKeyExpression } from '../../../../../platform/contextkey/common/contextkey.js';
+import { type ContextKeyExpression } from '../../../../../platform/contextkey/common/contextkey.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { ServiceIdentifier, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
-import { ComposerAcceptComposerStepAction } from '../../browser/composerActions.js';
+import { ComposerAcceptComposerStepAction } from '../../browser/composerAcceptStepAction.js';
 
 // FEATURE-1 (`agent-accept-pending-decisions`): Cursor 3.25.9 parity for
 // `composer.acceptComposerStep` (workbench.glass.main.js @39863346,
@@ -21,9 +21,11 @@ import { ComposerAcceptComposerStepAction } from '../../browser/composerActions.
 //   `(composerFocused || focusedView =~ /^workbench.panel.aichat.view/) &&
 //   !composerSubmitOnCmdEnterEnabled`; CtrlCmd+Alt+Enter when the same
 //   surface condition holds AND `composerSubmitOnCmdEnterEnabled`.
+//   Fork map: `workbench.panel.aichat.view` -> the fork's chat panel views
+//   `composer.chat` / `ideAgent.chatView`.
 // - run: delegates to the extension runtime `ide.acceptComposerStep`
-//   (the engine-side group-accept + notification branches live there until
-//   the webview migrates to core).
+//   (binary run(): non-empty pending-decision group -> accept() every item
+//   unconditionally; else composerNotificationService.acceptNotification()).
 
 interface KeybindingDescriptor {
 	weight?: number;
@@ -37,9 +39,9 @@ function keybindingsOf(action: ComposerAcceptComposerStepAction): KeybindingDesc
 }
 
 /** Minimal IContext for evaluating when-clauses: key -> value. */
-function contextWith(values: Record<string, unknown>) {
+function contextWith(values: Record<string, unknown>): { getValue<T>(key: string): T | undefined } {
 	return {
-		getValue: (key: string) => (key in values ? values[key] : undefined),
+		getValue: <T>(key: string) => (key in values ? values[key] as T : undefined),
 	};
 }
 
@@ -54,7 +56,8 @@ suite('ComposerAcceptComposerStepAction (agent-accept-pending-decisions, Cursor 
 		const action = new ComposerAcceptComposerStepAction();
 		assert.strictEqual(ComposerAcceptComposerStepAction.ID, 'composer.acceptComposerStep');
 		assert.strictEqual(action.desc.id, 'composer.acceptComposerStep');
-		assert.strictEqual(action.desc.title.value, 'Accept pending agent pane action');
+		const title = action.desc.title;
+		assert.strictEqual(typeof title === 'string' ? title : title.value, 'Accept pending agent pane action');
 		assert.strictEqual(action.desc.f1, true);
 		// Binary registers NO category (class LAb descriptor has none).
 		assert.strictEqual(action.desc.category, undefined);
@@ -71,47 +74,61 @@ suite('ComposerAcceptComposerStepAction (agent-accept-pending-decisions, Cursor 
 		assert.strictEqual(kbs[1]!.weight, 600);
 	});
 
-	test('when-clauses: chat surface && !composerSubmitOnCmdEnterEnabled vs chat surface && composerSubmitOnCmdEnterEnabled', () => {
+	test('when-clauses: binary surface condition && !composerSubmitOnCmdEnterEnabled vs && composerSubmitOnCmdEnterEnabled', () => {
 		const action = new ComposerAcceptComposerStepAction();
 		const kbs = keybindingsOf(action);
 		const acceptWhen = kbs[0]!.when;
 		const acceptAltWhen = kbs[1]!.when;
-		assert.ok(acceptWhen, 'CtrlCmd+Enter binding has a when-clause');
-		assert.ok(acceptAltWhen, 'CtrlCmd+Alt+Enter binding has a when-clause');
+		if (!acceptWhen || !acceptAltWhen) {
+			throw new Error('Both bindings must have a when-clause');
+		}
 
-		// chatSurface port: focusedView == 'composer.chat' (sidebar) or
-		// resourceScheme == 'ide-chat' (chat editor tab).
-		const sidebarOff = contextWith({ focusedView: 'composer.chat', 'composerSubmitOnCmdEnterEnabled': false });
-		const sidebarOn = contextWith({ focusedView: 'composer.chat', 'composerSubmitOnCmdEnterEnabled': true });
-		const editorTabOff = contextWith({ focusedView: 'editor', resourceScheme: 'ide-chat', 'composerSubmitOnCmdEnterEnabled': false });
-		const editorTabOn = contextWith({ focusedView: 'editor', resourceScheme: 'ide-chat', 'composerSubmitOnCmdEnterEnabled': true });
-		const elsewhere = contextWith({ focusedView: 'explorer', resourceScheme: 'file', 'composerSubmitOnCmdEnterEnabled': false });
+		// Binary surface port: composerFocused OR focusedView =~
+		// /^(composer.chat|ideAgent.chatView)/ (fork map of the binary's
+		// /^workbench.panel.aichat.view/).
+		const viaComposerFocusedOff = contextWith({ composerFocused: true, 'composerSubmitOnCmdEnterEnabled': false });
+		const viaComposerFocusedOn = contextWith({ composerFocused: true, 'composerSubmitOnCmdEnterEnabled': true });
+		const coreViewOff = contextWith({ focusedView: 'composer.chat', 'composerSubmitOnCmdEnterEnabled': false });
+		const coreViewOn = contextWith({ focusedView: 'composer.chat', 'composerSubmitOnCmdEnterEnabled': true });
+		const extViewOff = contextWith({ focusedView: 'ideAgent.chatView', 'composerSubmitOnCmdEnterEnabled': false });
+		const extViewOn = contextWith({ focusedView: 'ideAgent.chatView', 'composerSubmitOnCmdEnterEnabled': true });
+		const elsewhere = contextWith({ focusedView: 'explorer', 'composerSubmitOnCmdEnterEnabled': false });
+		const keyUnset = contextWith({ focusedView: 'composer.chat' }); // binary default: key defaults false
 
 		// CtrlCmd+Enter: live on the chat surface only while the
-		// submit-on-cmd-enter setting is OFF.
-		assert.strictEqual(acceptWhen.evaluate(sidebarOff), true);
-		assert.strictEqual(acceptWhen.evaluate(editorTabOff), true);
-		assert.strictEqual(acceptWhen.evaluate(sidebarOn), false);
+		// submit-on-cmd-enter setting is OFF (or unset = default false).
+		assert.strictEqual(acceptWhen.evaluate(viaComposerFocusedOff), true);
+		assert.strictEqual(acceptWhen.evaluate(coreViewOff), true);
+		assert.strictEqual(acceptWhen.evaluate(extViewOff), true);
+		assert.strictEqual(acceptWhen.evaluate(keyUnset), true);
+		assert.strictEqual(acceptWhen.evaluate(viaComposerFocusedOn), false);
+		assert.strictEqual(acceptWhen.evaluate(coreViewOn), false);
 		assert.strictEqual(acceptWhen.evaluate(elsewhere), false);
 
 		// CtrlCmd+Alt+Enter: live on the chat surface only while the
 		// submit-on-cmd-enter setting is ON.
-		assert.strictEqual(acceptAltWhen.evaluate(sidebarOn), true);
-		assert.strictEqual(acceptAltWhen.evaluate(editorTabOn), true);
-		assert.strictEqual(acceptAltWhen.evaluate(sidebarOff), false);
+		assert.strictEqual(acceptAltWhen.evaluate(viaComposerFocusedOn), true);
+		assert.strictEqual(acceptAltWhen.evaluate(coreViewOn), true);
+		assert.strictEqual(acceptAltWhen.evaluate(extViewOn), true);
+		assert.strictEqual(acceptAltWhen.evaluate(viaComposerFocusedOff), false);
+		assert.strictEqual(acceptAltWhen.evaluate(coreViewOff), false);
 		assert.strictEqual(acceptAltWhen.evaluate(elsewhere), false);
 	});
 
-	test('when-clauses reference the fork chat-surface port, not the binary-only keys', () => {
-		// `composerFocused` has no fork writer (established HONEST-DIVERGENCE);
-		// the port must use the chatSurface terms instead.
+	test('when-clauses are the binary port: composerFocused term + mapped aichat.view regex, no divergent terms', () => {
 		const action = new ComposerAcceptComposerStepAction();
 		const kbs = keybindingsOf(action);
 		for (const kb of kbs) {
 			const serialized = kb.when?.serialize() ?? '';
-			assert.ok(!serialized.includes('composerFocused'), `when must not reference composerFocused: ${serialized}`);
-			assert.ok(serialized.includes('composer.chat') || serialized.includes('ide-chat'), `when must cover the fork chat surface: ${serialized}`);
-			assert.ok(serialized.includes('composerSubmitOnCmdEnterEnabled'), `when must gate on composer.submitOnCmdEnterEnabled: ${serialized}`);
+			// The binary's own focus term, kept verbatim.
+			assert.ok(serialized.includes('composerFocused'), `when must reference composerFocused: ${serialized}`);
+			// Fork map of the binary's /^workbench.panel.aichat.view/ (serialized
+			// with the regex's escaped dots).
+			assert.ok(serialized.includes('composer\\.chat'), `when must map the aichat.view regex (composer.chat): ${serialized}`);
+			assert.ok(serialized.includes('ideAgent\\.chatView'), `when must map the aichat.view regex (ideAgent.chatView): ${serialized}`);
+			assert.ok(serialized.includes('composerSubmitOnCmdEnterEnabled'), `when must gate on composerSubmitOnCmdEnterEnabled: ${serialized}`);
+			// The old divergent port used resourceScheme == 'ide-chat' — gone.
+			assert.ok(!serialized.includes('ide-chat'), `when must not use the divergent resourceScheme term: ${serialized}`);
 		}
 		// Sanity: the two bindings differ exactly by the negation.
 		assert.ok(!(kbs[0]!.when?.serialize() === kbs[1]!.when?.serialize()));
@@ -134,17 +151,5 @@ suite('ComposerAcceptComposerStepAction (agent-accept-pending-decisions, Cursor 
 		assert.strictEqual(calls.length, 1);
 		assert.strictEqual(calls[0]!.id, 'ide.acceptComposerStep');
 		assert.deepStrictEqual(calls[0]!.args, ['extra-arg']);
-	});
-
-	test('chatSurface helper covers both chat surfaces (mirrors the binary OR)', () => {
-		// Guards the shared `chatSurface` expression this command relies on:
-		// sidebar view OR chat editor tab.
-		const surface = ContextKeyExpr.or(
-			ContextKeyExpr.equals('focusedView', 'composer.chat'),
-			ContextKeyExpr.equals('resourceScheme', 'ide-chat'),
-		);
-		assert.strictEqual(surface.evaluate(contextWith({ focusedView: 'composer.chat' })), true);
-		assert.strictEqual(surface.evaluate(contextWith({ focusedView: 'workbench.editors', resourceScheme: 'ide-chat' })), true);
-		assert.strictEqual(surface.evaluate(contextWith({ focusedView: 'terminal', resourceScheme: 'file' })), false);
 	});
 });
