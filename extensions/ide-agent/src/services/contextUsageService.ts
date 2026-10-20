@@ -68,6 +68,23 @@ export function estimateTokensFromChars(chars: number): number {
 }
 
 /**
+ * GAPS-191 (NF-188-2): the binary's own chars/4 estimate heuristic —
+ * `estimateTokensFromText` in the Cursor canvas source is
+ * `Math.max(0, Math.round(text.length / 4))` (desk@22095564 region), and the
+ * host builder `a8y` sanitizes with the same round. The ceil variant above
+ * predates the report and is pinned by the ring suites ("never
+ * understates"), so it is KEPT unchanged; this rounded variant is used ONLY
+ * on the context-usage totals path (`computeContextUsageBreakdown`), where
+ * QA-188 showed the divergence (5 chars → ceil totals 2 vs binary/item 1).
+ */
+export function estimateTokensFromCharsRounded(chars: number): number {
+  if (!Number.isFinite(chars) || chars <= 0) {
+    return 0;
+  }
+  return Math.round(chars / CHARS_PER_TOKEN);
+}
+
+/**
  * Measured inputs for one breakdown computation. Each char count must be the
  * length of REAL text the host observes flowing into the agent request —
  * except the two engine-owned categories, which the caller passes as 0 with
@@ -121,14 +138,19 @@ export interface ContextUsageBreakdown {
  */
 export function computeContextUsageBreakdown(input: ContextUsageInput): ContextUsageBreakdown {
   const cat = CONTEXT_RING_CATEGORIES;
+  // GAPS-191 (NF-188-2): char-measured categories use the binary's rounded
+  // heuristic (see estimateTokensFromCharsRounded) so the totals path agrees
+  // with the report's per-item estimates; the ceil estimator remains for its
+  // other (ring-pinned) callers. Conversation arrives as tokens already and
+  // was always rounded here.
   const tokens: number[] = [
-    estimateTokensFromChars(input.systemPromptChars),
-    estimateTokensFromChars(input.toolDefChars),
-    estimateTokensFromChars(input.rulesTextChars),
-    estimateTokensFromChars(input.skillsTextChars),
-    estimateTokensFromChars(input.mcpTextChars),
-    estimateTokensFromChars(input.subagentDocChars),
-    estimateTokensFromChars(input.summarizedChars),
+    estimateTokensFromCharsRounded(input.systemPromptChars),
+    estimateTokensFromCharsRounded(input.toolDefChars),
+    estimateTokensFromCharsRounded(input.rulesTextChars),
+    estimateTokensFromCharsRounded(input.skillsTextChars),
+    estimateTokensFromCharsRounded(input.mcpTextChars),
+    estimateTokensFromCharsRounded(input.subagentDocChars),
+    estimateTokensFromCharsRounded(input.summarizedChars),
     input.conversationTokens > 0 ? Math.round(input.conversationTokens) : 0,
   ];
   const totalTokens = tokens.reduce((a, b) => a + b, 0);

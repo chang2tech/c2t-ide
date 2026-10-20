@@ -1,0 +1,110 @@
+#!/usr/bin/env sh
+# ide-code launcher.
+#
+# Mirrors the structure of Cursor's bin/cursor (fair-use pattern, rewritten):
+# resolves the Electron binary and out/cli.js relative to this script, then
+# runs the CLI as:  ELECTRON_RUN_AS_NODE=1 <electron> out/cli.js "$@"
+# All flag parsing happens in cli.js; the app GUI is only spawned later for
+# the "open" path.
+#
+# Expected installed layout (decided at packaging; resolved relative to $0):
+#   <appRoot>/bin/ide-code                 <- this script
+#   <appRoot>/ide-code                     <- Electron binary (Linux)
+#   <appRoot>/resources/app/out/cli.js     <- this CLI bundle
+# Remote terminals override via IDE_CODE_IPC_HOOK_CLI (mirror of
+# VS Code's VSCODE_IPC_HOOK_CLI): the first `ide-code` on PATH containing
+# /remote-cli/ is exec'd instead.
+
+find_ide_code_cli() {
+	# Clear the output variables
+	IDE_CODE_CLI=""
+	IDE_CODE_CLI_MODE=""
+
+	# when run in a remote terminal, use the remote cli
+	if [ -n "$IDE_CODE_IPC_HOOK_CLI" ]; then
+		REMOTE_CLI="$(which -a 'ide-code' | grep /remote-cli/)"
+		if [ -n "$REMOTE_CLI" ]; then
+			IDE_CODE_CLI="$REMOTE_CLI"
+			IDE_CODE_CLI_MODE="remote"
+			return 0
+		fi
+	fi
+
+	# Otherwise, find the electron app
+	if [ ! -L "$0" ]; then
+		# if path is not a symlink, find relatively
+		APP_PATH="$(dirname "$0")/.."
+	else
+		if command -v readlink >/dev/null; then
+			# if readlink exists, follow the symlink and find relatively
+			APP_PATH="$(dirname "$(readlink -f "$0")")/.."
+		else
+			# else use the standard install location
+			APP_PATH="/usr/share/ide-code"
+		fi
+	fi
+
+	ELECTRON="$APP_PATH/ide-code"
+	CLI="$APP_PATH/resources/app/out/cli.js"
+
+	# Check if the electron app and CLI script exist
+	if [ -x "$ELECTRON" ] && [ -f "$CLI" ]; then
+		IDE_CODE_CLI_MODE="local"
+		return 0
+	else
+		# Electron app not found
+		return 1
+	fi
+}
+
+use_ide_code_cli() {
+	if [ -n "$IDE_CODE_CLI" ]; then
+		# Remote mode: exec the remote CLI directly.
+		# Avoid eval so arguments with spaces are preserved.
+		exec "$IDE_CODE_CLI" "$@"
+	elif [ "$IDE_CODE_CLI_MODE" = "local" ]; then
+		# Local mode: ELECTRON and CLI are set by find_ide_code_cli
+		ELECTRON_RUN_AS_NODE=1 "$ELECTRON" "$CLI" "$@"
+		exit $?
+	else
+		echo "Error: IDE Code CLI not found. Please install IDE Code properly." 1>&2
+		exit 1
+	fi
+}
+
+# If root, ensure that --user-data-dir or --file-write is specified
+# (Chromium refuses to run as root without --no-sandbox; without an
+# alternate user-data-dir the default profile would be owned by root).
+if [ "$(id -u)" = "0" ]; then
+	for i in "$@"
+	do
+		case "$i" in
+			--user-data-dir | --user-data-dir=* | --file-write | --no-sandbox )
+				CAN_LAUNCH_AS_ROOT=1
+			;;
+		esac
+	done
+	if [ -z "$CAN_LAUNCH_AS_ROOT" ]; then
+		echo "You are trying to start IDE Code as a super user which isn't recommended. If this was intended, please add the argument \`--no-sandbox\` and specify an alternate user data directory using the \`--user-data-dir\` argument." 1>&2
+		exit 1
+	fi
+fi
+
+# Main execution
+# VSCODE_NODE_OPTIONS is the upstream VS Code bootstrap contract (the fork's
+# main process reads it); pass NODE_OPTIONS through under that name.
+export VSCODE_NODE_OPTIONS=$NODE_OPTIONS
+unset NODE_OPTIONS
+
+if ! find_ide_code_cli; then
+	echo "Error: IDE Code CLI not found. Please install IDE Code properly." 1>&2
+	exit 1
+fi
+
+# Export variables for compatibility
+if [ -n "$IDE_CODE_CLI" ]; then
+	export IDE_CODE_CLI
+	export IDE_CODE_CLI_MODE
+fi
+
+use_ide_code_cli "$@"

@@ -34,8 +34,11 @@ import {
 //   `if(!r) return`; wait 50ms; `s = getPromptBar(r)`; `if(!s) return`;
 //   delegate.setText(o,o) → poll ≤3×150ms → delegate.submit().
 // - StartEditPrompt returns the created bar's id (`return le.id`
-//   @40739556); with a bar already open for the uri it returns undefined
-//   and JcI aborts (the fork's openPromptForRange mirrors this).
+//   @40739556); with a bar already open for the uri it executes
+//   insertEditSelection (override range non-empty, untrimmed) or
+//   focusEdit (empty) with that bar's id and returns undefined, so JcI
+//   aborts. GAPS-174 mirrored only the undefined; GAPS-189 mirrors the
+//   insert/focus side effect too (QA-185 NF-1) — pinned below.
 // - Sole caller: the merge-conflict extension's "Resolve with AI"
 //   CodeLens → `merge-conflict.resolve-in-chat` →
 //   `{uri, startLine, endLine, text}` (text ignored by the handler).
@@ -182,5 +185,84 @@ suite('cmdK.resolveConflictInCmdK (Cursor 3.25.9 parity, GAPS-174)', () => {
 			{ invocationType: 'new', overrideUri: URI.parse('file:///src/x.ts'), overrideRange: new Range(1, 1, 2, 1), visible: true },
 		);
 		assert.strictEqual(result, undefined);
+	});
+
+	// GAPS-189 (QA-185 NF-1): the binary's StartEditPrompt same-uri branch
+	// on the override path — bar already open for the override uri →
+	// insertEditSelection (range non-empty, UNTRIMMED) / focusEdit
+	// (range empty) with that bar's id, then return undefined. GAPS-174
+	// returned undefined silently (no insert/focus).
+	test('modal.generate: override + bar already open for the uri + non-empty range → insertEditSelection(barId), no create, undefined', async () => {
+		const commands: RecordedCommand[] = [];
+		let coreCalls = 0;
+		const core = {
+			openPromptForRange: async () => {
+				coreCalls++;
+				return 'bar-new';
+			},
+		};
+		const bars: IPromptBarRef[] = [{ id: 'bar-existing', createdAt: 100, uri: 'file:///src/conflicted.ts' }];
+		const result = await new AipopupModalGenerateAction().run(
+			accessorFor({ commands, bars, core }),
+			{ invocationType: 'new', initText: RESOLVE_CONFLICT_INIT_TEXT, overrideUri: URI.parse('file:///src/conflicted.ts'), overrideRange: new Range(5, 1, 11, 1), visible: true },
+		);
+		assert.strictEqual(result, undefined, 'binary returns no id on the same-uri branch — the JcI caller aborts');
+		assert.strictEqual(coreCalls, 0, 'the create path must not run when a bar is already open for the uri');
+		assert.deepStrictEqual(commands, [{ id: 'aipopup.action.insertEditSelection', args: ['bar-existing'] }]);
+	});
+
+	test('modal.generate: override + same-uri bar + column-1-ending range is NOT trimmed for the branch decision', async () => {
+		const commands: RecordedCommand[] = [];
+		const bars: IPromptBarRef[] = [{ id: 'bar-existing', createdAt: 100, uri: 'file:///src/conflicted.ts' }];
+		const result = await new AipopupModalGenerateAction().run(
+			accessorFor({ commands, bars }),
+			{ invocationType: 'new', overrideUri: URI.parse('file:///src/conflicted.ts'), overrideRange: new Range(5, 1, 6, 1), visible: true },
+		);
+		assert.strictEqual(result, undefined);
+		// (5,1)-(6,1) is non-empty as given; the column-1 trim applies
+		// only to the create path's target, never to this decision.
+		assert.deepStrictEqual(commands, [{ id: 'aipopup.action.insertEditSelection', args: ['bar-existing'] }]);
+	});
+
+	test('modal.generate: override + bar already open for the uri + EMPTY range → focusEdit(barId), no create, undefined', async () => {
+		const commands: RecordedCommand[] = [];
+		let coreCalls = 0;
+		const core = {
+			openPromptForRange: async () => {
+				coreCalls++;
+				return 'bar-new';
+			},
+		};
+		const bars: IPromptBarRef[] = [{ id: 'bar-existing', createdAt: 100, uri: 'file:///src/conflicted.ts' }];
+		const result = await new AipopupModalGenerateAction().run(
+			accessorFor({ commands, bars, core }),
+			{ invocationType: 'new', overrideUri: URI.parse('file:///src/conflicted.ts'), overrideRange: new Range(7, 1, 7, 1), visible: true },
+		);
+		assert.strictEqual(result, undefined);
+		assert.strictEqual(coreCalls, 0);
+		assert.deepStrictEqual(commands, [{ id: 'aipopup.action.focusEdit', args: ['bar-existing'] }]);
+	});
+
+	test('modal.generate: override + only a FOREIGN-uri bar open → create path as before (openPromptForRange)', async () => {
+		const commands: RecordedCommand[] = [];
+		const seen: { uri?: URI; range?: Range } = {};
+		const core = {
+			openPromptForRange: async (uri: URI, range: Range) => {
+				seen.uri = uri;
+				seen.range = range;
+				return 'bar-9';
+			},
+		};
+		const bars: IPromptBarRef[] = [{ id: 'bar-other', createdAt: 100, uri: 'file:///src/other.ts' }];
+		const uri = URI.parse('file:///src/conflicted.ts');
+		const range = new Range(5, 1, 11, 1);
+		const result = await new AipopupModalGenerateAction().run(
+			accessorFor({ commands, bars, core }),
+			{ invocationType: 'new', overrideUri: uri, overrideRange: range, visible: true },
+		);
+		assert.strictEqual(result, 'bar-9');
+		assert.strictEqual(seen.uri, uri);
+		assert.strictEqual(seen.range, range);
+		assert.deepStrictEqual(commands, [], 'no insert/focus command on the create path');
 	});
 });
