@@ -224,6 +224,16 @@ zone.js/dist/**
 # @github/copilot - strip unneeded binaries and files
 # Agent Host uses the runtime bundled with @github/copilot-sdk.
 @github/copilot/**
+# ...except the SDK tree the built-in copilot extension's own postinstall
+# materializes from the version-pinned @github/copilot-{platform} package.
+# The extension does `import('@github/copilot/sdk')` at runtime (via the
+# package.json exports map), and prepareBuiltInCopilotRipgrepShim requires
+# node_modules/@github/copilot/sdk to exist at packaging time, restoring the
+# target-platform natives into it. (Upstream CI gets the same tree from the
+# prebuilt Copilot VSIX downloaded by downloadCopilotVsix.ts instead; the
+# non-VSIX path used here has no VSIX, so the strip must not remove it.)
+!@github/copilot/package.json
+!@github/copilot/sdk/**
 
 # Standalone Copilot CLI platform packages are not product dependencies.
 @github/copilot-darwin-arm64/**
