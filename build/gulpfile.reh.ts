@@ -452,7 +452,10 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 function hasAuthenticodeSignature(filePath: string): Promise<boolean> {
 	return new Promise((resolve, reject) => {
 		const proc = cp.spawn('signtool.exe', ['verify', '/pa', filePath]);
-		proc.on('error', reject);
+		// Alpha builds ship unsigned and CI runners have no signtool.exe on
+		// PATH: treat a missing signtool as "no signature" (skip strip) so
+		// rcedit stamping still runs instead of failing the whole build.
+		proc.on('error', err => ((err as NodeJS.ErrnoException).code === 'ENOENT' ? resolve(false) : reject(err)));
 		proc.on('exit', code => resolve(code === 0));
 	});
 }

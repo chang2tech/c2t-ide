@@ -12,6 +12,7 @@ import { rename } from './gulp/facade.ts';
 import vfs from 'vinyl-fs';
 import * as ext from './extensions.ts';
 import { getCurrentExtensionTarget, getPlatformSpecificAssetName } from './extensionTarget.ts';
+import { getBuiltInExtensionDownloadSource } from './builtInExtensionSource.ts';
 import fancyLog from 'fancy-log';
 import ansiColors from 'ansi-colors';
 import { Stream } from 'stream';
@@ -93,7 +94,10 @@ function getExtensionDownloadStream(extension: IExtensionDefinition) {
 			return es.readArray([]);
 		}
 		input = ext.fromGithub(extension, { asset, latest: isInsiders() });
-	} else if (productjson.extensionsGallery?.serviceUrl) {
+	} else if (getBuiltInExtensionDownloadSource(extension, productjson.extensionsGallery?.serviceUrl) === 'marketplace') {
+		// NOTE: the `repo` field in product.json is NOT read on this path —
+		// fromMarketplace destructures only { name, version, sha256, metadata }.
+		// (XQA-05 P2 "fetched from Microsoft repos": refuted; see builtInExtensionSource.ts)
 		input = ext.fromMarketplace(productjson.extensionsGallery.serviceUrl, extension);
 	} else {
 		input = ext.fromGithub(extension, { latest: isInsiders() });

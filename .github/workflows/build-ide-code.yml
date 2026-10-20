@@ -303,6 +303,61 @@ jobs:
           VSCODE_FORCE_INSTALL: '1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Rebuild native modules for Electron
+        shell: bash
+        run: |
+          set -e
+          # Root/workspaces were installed with --ignore-scripts (native-keymap
+          # fails against Node 24 headers), which also skipped the root
+          # preinstall (it provisions the pinned node-gyp + Electron headers)
+          # and every native module's own build. These packages ship NO
+          # prebuilds -- their bindings must be compiled for Electron, otherwise
+          # the packaged app cannot boot: vscode-win32-x64-ci executes
+          # IDE Code.exe to generate the V8 compile cache and the main process
+          # hard-fails when a required binding is missing (policy-watcher broke
+          # build #10; windows-registry / sqlite3 have the same latent pattern).
+          # Re-run the root preinstall manually to get build/npm/gyp node-gyp
+          # (node-gyp ^11.2.0, pinned by the repo) and the Electron headers.
+          # NOTE: do NOT set npm_command here -- preinstall must run plain
+          # `npm ci` inside build/npm/gyp.
+          node build/npm/preinstall.ts
+          NODE_GYP="$PWD/build/npm/gyp/node_modules/.bin/node-gyp.cmd"
+          TARGET="$(sed -n 's/^target="\(.*\)"$/\1/p' .npmrc)"
+          # Scoped @vscode packages (13 native packages ship no prebuilds and
+          # only get bindings from their install scripts -- forward audit R4).
+          for pkg in policy-watcher spdlog sqlite3 windows-mutex windows-registry deviceid native-watchdog windows-ca-certs fs-copyfile; do
+            ( cd "node_modules/@vscode/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --dist-url=https://electronjs.org/headers )
+          done
+          # Unscoped packages. native-keymap goes LAST on purpose: it is the
+          # package --ignore-scripts was introduced for; building it against
+          # the Electron headers pinned in .npmrc (not plain Node headers) is
+          # unverified -- if it fails, the step fails fast here and only this
+          # entry needs to be dropped, the bindings above are already built.
+          for pkg in native-is-elevated kerberos windows-foreground-love native-keymap; do
+            ( cd "node_modules/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --dist-url=https://electronjs.org/headers )
+          done
+          # Fail fast with a clear message if any binding is missing, instead of
+          # a cryptic crash 45 minutes later in generateNodeCompileCache.
+          for f in \
+            node_modules/@vscode/policy-watcher/build/Release/vscode-policy-watcher.node \
+            node_modules/@vscode/spdlog/build/Release/spdlog.node \
+            node_modules/@vscode/sqlite3/build/Release/vscode-sqlite3.node \
+            node_modules/@vscode/windows-mutex/build/Release/CreateMutex.node \
+            node_modules/@vscode/windows-registry/build/Release/winregistry.node \
+            node_modules/@vscode/deviceid/build/Release/windows.node \
+            node_modules/@vscode/native-watchdog/build/Release/watchdog.node \
+            node_modules/@vscode/windows-ca-certs/build/Release/crypt32.node \
+            node_modules/@vscode/fs-copyfile/build/Release/vscode_fs.node \
+            node_modules/native-is-elevated/build/Release/iselevated.node \
+            node_modules/kerberos/build/Release/kerberos.node \
+            node_modules/windows-foreground-love/build/Release/foreground_love.node \
+            node_modules/native-keymap/build/Release/keymapping.node ; do
+            [ -f "$f" ] || { echo "missing native binding: $f" >&2; exit 1; }
+          done
+        env:
+          VSCODE_FORCE_INSTALL: '1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run copilot extension postinstall
         shell: bash
         run: |
@@ -324,6 +379,20 @@ jobs:
 
 
 
+      - name: Download Explorer dll (appx)
+        shell: bash
+        run: |
+          set -e
+          # Downloads code_explorer_command_x64.dll from the public
+          # microsoft/vscode-explorer-command mirror into .build/win32/appx;
+          # packageTask merges it into the packaged app's appx/ folder.
+          # Upstream runs the same command before the client build
+          # (product-build-win32-compile.yml:69).
+          node build/win32/explorer-dll-fetcher.ts .build/win32/appx
+          test -f .build/win32/appx/code_explorer_command_x64.dll
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Package Electron app (VSCode-win32-x64)
         shell: bash
         run: |
@@ -335,6 +404,44 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare appx package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # makeappx.exe ships with the Windows SDK but is not on PATH;
+          # upstream adds the SDK bin dir explicitly
+          # (product-build-win32-compile.yml:110-113). Resolve the newest
+          # installed SDK version dir instead of hardcoding 10.0.26100.0.
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "x64" } |
+            Where-Object { Test-Path (Join-Path $_ "makeappx.exe") } |
+            Select-Object -First 1
+          if (-not $sdk) { throw "makeappx.exe not found in Windows SDK" }
+          $env:PATH = "$sdk;$env:PATH"
+          # quality is "stable" (product.json) so the package name is
+          # code_x64.appx, matching the AppxPackage definition ISCC gets
+          # from buildWin32Setup (gulpfile.vscode.win32.ts:117).
+          makeappx pack /d "..\VSCode-win32-x64\appx\manifest" /p "..\VSCode-win32-x64\appx\code_x64.appx" /nv
+          if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed" }
+          Remove-Item -Path "..\VSCode-win32-x64\appx\manifest" -Recurse -Force
+          if (-not (Test-Path "..\VSCode-win32-x64\appx\code_x64.appx")) { throw "code_x64.appx missing after makeappx" }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build inno updater tools
+        shell: bash
+        run: |
+          set -e
+          # code.iss requires tools\* (inno_updater.exe + vcruntime140.dll)
+          # with no skipifsourcedoesntexist flag; the folder is produced only
+          # by this gulp task, which upstream runs right after the client
+          # build (product-build-win32-compile.yml:95) but this workflow
+          # never called -- ISCC would fail with "source does not exist".
+          npm run gulp vscode-win32-x64-inno-updater
+          test -f ../VSCode-win32-x64/tools/inno_updater.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Windows installer
         shell: bash
@@ -351,6 +458,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ide-code-windows-x64
-          path: .build/win32-x64/*Setup*.exe
+          path: .build/win32-x64/system-setup/*Setup*.exe
           if-no-files-found: error
           retention-days: 14
