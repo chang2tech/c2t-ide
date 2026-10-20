@@ -483,4 +483,7 @@ import './contrib/editTelemetry/browser/editTelemetry.contribution.js';
 // Opener
 import './contrib/opener/browser/opener.contribution.js';
 
+// Composer: resume current chat (Cursor 3.25.9 parity, FEATURE-2 `agent-resume-chat`)
+import './contrib/composer/browser/composerResumeChat.contribution.js';
+
 //#endregion

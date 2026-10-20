@@ -4,13 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ServiceIdentifier, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
+import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
-import { ComposerChatEditorInput } from '../../browser/composerEditorInput.js';
-import { ComposerResumeCurrentChatAction } from '../../browser/composerActions.js';
+import {
+	ComposerResumeCurrentChatAction,
+	composerChatTabIdFromChatUri,
+	findOpenComposerChatInput,
+	resolveRenameChatTabId,
+} from '../../browser/composerResumeChatAction.js';
 
 // DEV-GAPS-56 (`agent-resume-chat`): Cursor 3.25.9 parity for
 // `composer.resumeCurrentChat` (workbench.glass.main.js @39846912, class CAb,
@@ -26,16 +32,23 @@ import { ComposerResumeCurrentChatAction } from '../../browser/composerActions.j
 //   else chatService.resumeChat(handle, { isAutoResume: args?.isAutoResume === true });
 //   catch -> warn(err.message) / "Cannot resume".
 // - fork mapping: selection/loaded-handle = the active OPEN composer chat
-//   editor (resolveRenameChatTabId / findOpenComposerChatInput); the
-//   resumeChat runtime is the ide-agent extension's `ide.resumeCurrentChat`
-//   (ComposerDataService.resumeChat throws verbatim "Cannot resume: chat not
-//   found" — surfaced through the core catch, exactly like the binary).
+//   editor, identified by the `ide-chat` URI scheme (the extension's
+//   CHAT_EDITOR_SCHEME — there is no ComposerChatEditorInput class in this
+//   branch); the resumeChat runtime is the ide-agent extension's
+//   `ide.resumeCurrentChat` (ComposerDataService.resumeChat throws verbatim
+//   "Cannot resume: chat not found" — surfaced through the core catch,
+//   exactly like the binary).
 
-/** Fake composer editor input without a real webview (no disposables). */
-function fakeChatInput(tabId: string): ComposerChatEditorInput {
-	const input = Object.create(ComposerChatEditorInput.prototype) as ComposerChatEditorInput;
-	(input as unknown as Record<string, unknown>)['tabId'] = tabId;
-	return input;
+const CHAT_SCHEME = 'ide-chat';
+
+/** Fake chat editor input: identified by its `ide-chat:/<tabId>` resource. */
+function fakeChatInput(tabId: string): EditorInput {
+	return { resource: URI.from({ scheme: CHAT_SCHEME, path: `/${tabId}` }) } as unknown as EditorInput;
+}
+
+function tabIdOf(input: unknown): string | undefined {
+	const resource = (input as { resource?: URI }).resource;
+	return resource?.scheme === CHAT_SCHEME ? resource.path.replace(/^\//, '') : undefined;
 }
 
 function stubEditorService(activeEditor: unknown, editors: unknown[]) {
@@ -91,7 +104,7 @@ function runStubs(opts: {
 	const open = (opts.openTabIds ?? (opts.activeTabId ? [opts.activeTabId] : []))
 		.map(id => fakeChatInput(id));
 	const activeEditor = opts.activeTabId
-		? (open.find(i => i.tabId === opts.activeTabId) ?? fakeChatInput(opts.activeTabId))
+		? (open.find(i => tabIdOf(i) === opts.activeTabId) ?? fakeChatInput(opts.activeTabId))
 		: undefined;
 	const editorService = stubEditorService(activeEditor, open);
 	const notificationService = stubNotificationService();
@@ -111,7 +124,8 @@ suite('ComposerResumeCurrentChatAction (agent-resume-chat, Cursor 3.25.9 parity)
 		const action = new ComposerResumeCurrentChatAction();
 		assert.strictEqual(ComposerResumeCurrentChatAction.ID, 'composer.resumeCurrentChat');
 		assert.strictEqual(action.desc.id, 'composer.resumeCurrentChat');
-		assert.strictEqual(action.desc.title.value, 'Resume Current Chat');
+		const title = action.desc.title;
+		assert.strictEqual(typeof title === 'string' ? title : title.value, 'Resume Current Chat');
 		// Binary class CAb passes {id,title} ONLY — no f1, so Ht's truthy-f1
 		// gate keeps it out of the palette. The fork says it explicitly.
 		assert.strictEqual(action.desc.f1, false);
@@ -199,5 +213,57 @@ suite('ComposerResumeCurrentChatAction (agent-resume-chat, Cursor 3.25.9 parity)
 		await action.run(s.accessor);
 
 		assert.deepStrictEqual(s.notificationService.warnings, ['Cannot resume']);
+	});
+});
+
+suite('composer chat tab-id helpers (ide-chat URI scheme)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('composerChatTabIdFromChatUri: exactly /<tabId> translates; garbage fails closed', () => {
+		const uri = (path: string) => URI.from({ scheme: CHAT_SCHEME, path });
+		assert.strictEqual(composerChatTabIdFromChatUri(uri('/tab-1')), 'tab-1');
+		// Fail-closed: empty, nested, `.`, `..`, anything containing `..`.
+		for (const bad of ['/', '', '/a/b', '/.', '/..', '/../x', '/a..b', '/...']) {
+			assert.strictEqual(composerChatTabIdFromChatUri(uri(bad)), undefined, `path=${bad}`);
+		}
+	});
+
+	test('resolveRenameChatTabId: string arg verbatim; ide-chat URI arg from path; else active chat editor', () => {
+		const svc = (active: unknown) => stubEditorService(active, []);
+		// String arg verbatim (binary MiI: no length check).
+		assert.strictEqual(resolveRenameChatTabId(svc(undefined), 'tab-9'), 'tab-9');
+		assert.strictEqual(resolveRenameChatTabId(svc(fakeChatInput('other')), 'tab-9'), 'tab-9');
+		// ide-chat URI arg -> tab id from path.
+		assert.strictEqual(
+			resolveRenameChatTabId(svc(undefined), URI.from({ scheme: CHAT_SCHEME, path: '/tab-7' })),
+			'tab-7');
+		// Non-composer scheme falls through to the active editor (binary-identical).
+		assert.strictEqual(
+			resolveRenameChatTabId(svc(fakeChatInput('tab-5')), URI.from({ scheme: 'file', path: '/x.ts' })),
+			'tab-5');
+		// Active chat editor contributes its tab id.
+		assert.strictEqual(resolveRenameChatTabId(svc(fakeChatInput('tab-3')), undefined), 'tab-3');
+		// Active editor without an ide-chat resource -> undefined.
+		assert.strictEqual(resolveRenameChatTabId(svc({ label: 'some.ts' }), undefined), undefined);
+		assert.strictEqual(resolveRenameChatTabId(svc(undefined), undefined), undefined);
+	});
+
+	test('resolveRenameChatTabId: bad ide-chat URI arg fails closed (no fallthrough to active editor)', () => {
+		const svc = stubEditorService(fakeChatInput('tab-3'), []);
+		assert.strictEqual(
+			resolveRenameChatTabId(svc, URI.from({ scheme: CHAT_SCHEME, path: '/../evil' })),
+			undefined);
+	});
+
+	test('findOpenComposerChatInput: matches open editor by ide-chat scheme + tab id', () => {
+		const editors = [fakeChatInput('tab-1'), fakeChatInput('tab-2')];
+		const svc = stubEditorService(undefined, editors);
+		assert.strictEqual(findOpenComposerChatInput(svc, 'tab-2'), editors[1]);
+		assert.strictEqual(findOpenComposerChatInput(svc, 'tab-9'), undefined);
+		// A file editor with the same path shape is NOT a chat editor.
+		const mixed = stubEditorService(undefined, [
+			{ resource: URI.from({ scheme: 'file', path: '/tab-1' }) },
+		]);
+		assert.strictEqual(findOpenComposerChatInput(mixed, 'tab-1'), undefined);
 	});
 });
