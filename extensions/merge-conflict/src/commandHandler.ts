@@ -36,7 +36,12 @@ export default class CommandHandler implements vscode.Disposable {
 			this.registerTextEditorCommand('merge-conflict.accept.all-both', this.acceptAllBoth),
 			this.registerTextEditorCommand('merge-conflict.next', this.navigateNext),
 			this.registerTextEditorCommand('merge-conflict.previous', this.navigatePrevious),
-			this.registerTextEditorCommand('merge-conflict.compare', this.compare)
+			this.registerTextEditorCommand('merge-conflict.compare', this.compare),
+			// IDE-CODE (GAPS-174, queue #33): Cursor's patch of this stock
+			// extension registers this command LAST in the same list
+			// (Cursor 3.25.9 extensions/merge-conflict/dist/
+			// mergeConflictMain.js @9637).
+			this.registerTextEditorCommand('merge-conflict.resolve-in-chat', this.resolveInChat)
 		);
 	}
 
@@ -145,6 +150,46 @@ export default class CommandHandler implements vscode.Disposable {
 		}
 
 		await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title, opts);
+	}
+
+	/**
+	 * IDE-CODE (GAPS-174, queue #33): verbatim port of Cursor's
+	 * `resolveInChat` (Cursor 3.25.9 extensions/merge-conflict/dist/
+	 * mergeConflictMain.js @14850). Resolves the conflict from the
+	 * "known-conflict" argument (CodeLens path) or from the current
+	 * selection, then hands `{uri, startLine, endLine, text}` (1-based
+	 * lines) to the workbench command `cmdK.resolveConflictInCmdK`,
+	 * which opens Cmd+K over the conflict range with the init text
+	 * "Resolve this merge conflict" and auto-submits it. (The workbench
+	 * handler consumes only uri/startLine/endLine; `text` is sent
+	 * because the binary sends it.)
+	 */
+	async resolveInChat(editor: vscode.TextEditor, ...args: any[]): Promise<void> {
+		let conflict: interfaces.IDocumentMergeConflict | null;
+
+		// If launched with known context, take the conflict from that
+		if (args[0] === 'known-conflict') {
+			conflict = args[1];
+		}
+		else {
+			// Attempt to find a conflict that matches the current cursor position
+			conflict = await this.findConflictContainingSelection(editor);
+		}
+
+		if (!conflict) {
+			vscode.window.showWarningMessage(vscode.l10n.t("Editor cursor is not within a merge conflict"));
+			return;
+		}
+
+		const startLine = conflict.range.start.line + 1;
+		const endLine = conflict.range.end.line + 1;
+		const cmdKArg = {
+			uri: editor.document.uri.toString(),
+			startLine,
+			endLine,
+			text: editor.document.getText(conflict.range)
+		};
+		await vscode.commands.executeCommand('cmdK.resolveConflictInCmdK', cmdKArg);
 	}
 
 	navigateNext(editor: vscode.TextEditor): Promise<void> {

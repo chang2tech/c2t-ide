@@ -1,11 +1,17 @@
 import { ModeName, ToolCallViewModel, TurnEvent } from "../model";
-import { ApprovalResult } from "./humanReviewService";
+import { ApprovalDetails, ApprovalResult } from "./humanReviewService";
 
 export interface TurnContext {
   prompt: string;
   mode: ModeName;
   /** Assistant bubble the turn streams into. */
   bubbleId: string;
+  /**
+   * DD-AR-3 (resume-from-checkpoint): the human bubble the turn answers.
+   * The "before" checkpoint is captured on this bubble, so the adapter
+   * reads the resume checkpoint from it.
+   */
+  humanBubbleId?: string;
   /**
    * File attachments (browser-tab screenshots) — forwarded to the engine
    * prompt's `files` field so the agent receives the image bytes.
@@ -32,6 +38,28 @@ export interface EngineModelInfo {
   /** Friendly display name (falls back to id when the engine omits it). */
   name: string;
   variant?: string;
+  /**
+   * Context window size, in tokens (DEV-GAPS-88).
+   *
+   * Cursor parity: `aiserver.v1.AvailableModelsResponse.AvailableModel`
+   * carries `context_token_limit` (field 15, int32, optional) — JS name
+   * `contextTokenLimit` (Cursor 3.25.9 workbench.glass.main.js, offset
+   * ~1947656). The engine wire source is `Model.Info.limit.context`
+   * (ide-code schema `packages/schema/src/model.ts`), mapped by
+   * IdeCodeEngineAdapter; absent when the engine reports no limit —
+   * never fabricated.
+   */
+  contextTokenLimit?: number;
+  /**
+   * Context window size in tokens when the model runs in Max Mode
+   * (DEV-GAPS-88). Cursor: `context_token_limit_for_max_mode` (field 16
+   * of the same AvailableModel message, JS `contextTokenLimitForMaxMode`).
+   *
+   * The ide-code engine has no Max Mode concept and its Model.Info wire
+   * carries no such value, so the adapter never sets this — it stays
+   * undefined rather than being filled with an invented number.
+   */
+  contextTokenLimitForMaxMode?: number;
 }
 
 /**
@@ -86,6 +114,12 @@ export class StubEngineAdapter implements EngineAdapter {
       reasons: string[],
       /** P1 (QA-CHATTABS-01): stable allowlist identity (action+resources). */
       allowlistIdentity?: string,
+      /** GAPS-12: file-edit diff payload (unused by the stub's scripted card). */
+      approvalDetails?: ApprovalDetails,
+      /** GAPS-22B: shell/terminal candidate labels (unused by the stub). */
+      allowlistCandidates?: readonly string[],
+      /** DEV-GAPS-66/W66A: engine tool identity (binary `clientSideTool`). */
+      clientSideTool?: string,
     ) => Promise<ApprovalResult>,
   ) {}
   /** P1 (QA-FILE-01): Stop button — the stub's scripted turn is interruptible between yields. */
@@ -119,7 +153,7 @@ export class StubEngineAdapter implements EngineAdapter {
     const decision = await this.requestApproval(toolCall.toolCallId, toolCall.title, [
       "Stub engine wants to demonstrate the approval card.",
       "No real file access happens in the scaffold.",
-    ]);
+    ], undefined, undefined, undefined, toolCall.kind);
     if (!decision || decision.optionId === "skip") {
       yield {
         type: "toolCallDelta",

@@ -32,6 +32,12 @@ export interface AcceptDeps {
   setOwnEdit(active: boolean): void;
   /** DEV-HOOKS: optional agent hooks for afterTabFileEdit. */
   agentHooks?: HookService;
+  /**
+   * DD-SB-5: aiCodeTracking `tab.accept` hook — called with the accepted text
+   * (full or partial portion) so the tracking service can count lines and
+   * record attribution. Optional; accepts must never break when unwired.
+   */
+  onAiAccept?: (info: { text: string; uri: vscode.Uri }) => void;
 }
 
 /** DEV-HOOKS: fire afterTabFileEdit (informational, fire-and-forget). */
@@ -83,6 +89,13 @@ function trackAccept(deps: AcceptDeps, fate: TabFate, originalText: string, repl
     modelVersion: s.modelVersion,
   });
   deps.cleared.resetOnAccept();
+  // DD-SB-5: feed the aiCodeTracking `tab.accept` analog (lines + attribution).
+  // Never let stats break the accept flow.
+  try {
+    deps.onAiAccept?.({ text: replacementText, uri: s.uri });
+  } catch {
+    /* stats are best-effort */
+  }
 }
 
 /** Full accept via the stock inline-suggest commit. Returns the next-edit effect. */
@@ -91,7 +104,11 @@ export async function acceptFullSuggestion(deps: AcceptDeps): Promise<NextAction
   if (!s) return { kind: 'none' };
   await vscode.commands.executeCommand('editor.action.inlineSuggest.commit');
   const effect = resolveNextAction(s.nextAction);
-  trackAccept(deps, 'ACCEPT', '', s.fullText);
+  // P2-B fix (QA-VERIFY-DIGDEEPER): the user may have typed over part of the
+  // suggestion before hitting Tab (type-over). That typed portion was already
+  // counted via trackTabAccept(typedText) in extension.ts. Pass only the
+  // not-yet-counted remainder to avoid double-counting accepted lines.
+  trackAccept(deps, 'ACCEPT', '', s.fullText.slice(s.appliedLength));
   fireAfterTabFileEdit(deps, s.fullText);
   deps.session.clear();
   return effect;

@@ -25,7 +25,11 @@ export type MentionKind =
   /** Local codebase index (Instant Grep + symbols). */
   | "codebase"
   /** Browser-tab screenshot attached as an image chip (host-side only). */
-  | "image";
+  | "image"
+  /** Pasted URL auto-parsed into a link chip (GAPS-131: Cursor's
+   * `Zr.link` mention type, born from the paste handler at desk
+   * @24723930 of Cursor 3.25.9 — see mentionLinkToolbar.ts). */
+  | "link";
 
 /** Payload cases (Emp in Cursor's bundle). */
 export type MentionPayload =
@@ -56,7 +60,10 @@ export type MentionPayload =
   /** @Codebase: local index search for a query; resolved at submit time. */
   | { case: "codebaseSelection"; query: string }
   /** Browser-tab screenshot: PNG saved on disk, sent as an engine file attachment. */
-  | { case: "imageContext"; label: string; filePath: string; dataUrl: string };
+  | { case: "imageContext"; label: string; filePath: string; dataUrl: string }
+  /** Pasted-URL link chip (GAPS-131): Cursor's `insertLink({url, uuid})`
+   * selection (desk @24723930); the URL itself is the attached context. */
+  | { case: "linkSelection"; url: string };
 
 /** One row in the mention menu; serializable across the webview boundary. */
 export interface MentionItem {
@@ -213,6 +220,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "git",
   "image",
   "codebase",
+  "link",
 ]);
 
 /** The webview is untrusted: validate a chip before resolving context. */

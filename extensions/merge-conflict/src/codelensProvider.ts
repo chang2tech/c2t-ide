@@ -85,12 +85,26 @@ export default class MergeConflictCodeLensProvider implements vscode.CodeLensPro
 				arguments: [conflict]
 			};
 
+			// IDE-CODE (GAPS-174, queue #33): Cursor's patch of this stock
+			// extension (Cursor 3.25.9
+			// extensions/merge-conflict/dist/mergeConflictMain.js @7379)
+			// adds a FIFTH lens per conflict, after Compare Changes:
+			// `{command:"merge-conflict.resolve-in-chat",
+			//   title:l10n.t("Resolve with AI"),
+			//   arguments:["known-conflict", conflict]}`.
+			const resolveWithAiCommand: vscode.Command = {
+				command: 'merge-conflict.resolve-in-chat',
+				title: vscode.l10n.t("Resolve with AI"),
+				arguments: ['known-conflict', conflict]
+			};
+
 			const range = document.lineAt(conflict.range.start.line).range;
 			items.push(
 				new vscode.CodeLens(range, acceptCurrentCommand),
 				new vscode.CodeLens(range, acceptIncomingCommand),
 				new vscode.CodeLens(range, acceptBothCommand),
-				new vscode.CodeLens(range, diffCommand)
+				new vscode.CodeLens(range, diffCommand),
+				new vscode.CodeLens(range, resolveWithAiCommand)
 			);
 		});
 

@@ -175,9 +175,17 @@ export interface SkillFrontmatter {
   name?: string;
   description?: string;
   disableModelInvocation?: boolean;
+  /**
+   * GAPS-46D (agent-custom-modes): optional `icon` / `color` fields style the
+   * custom mode's badge (docs.cursor.com/agent/prompting: "the optional
+   * `icon` and `color` frontmatter fields style the mode's badge"; binary
+   * 3.25.9: `Ncs({icon:"icon"in t?t.icon:void 0,colorId:"color"in t?t.color:void 0})`).
+   */
+  icon?: string;
+  color?: string;
 }
 
-/** Parse SKILL.md frontmatter (name/description/disable-model-invocation). */
+/** Parse SKILL.md frontmatter (name/description/disable-model-invocation/icon/color). */
 export function parseSkillFrontmatter(raw: string): SkillFrontmatter {
   const out: SkillFrontmatter = {};
   const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
@@ -197,6 +205,10 @@ export function parseSkillFrontmatter(raw: string): SkillFrontmatter {
       out.description = v;
     } else if (k === "disable-model-invocation" || k === "disable_model_invocation") {
       out.disableModelInvocation = /^(true|1|yes)$/i.test(v);
+    } else if (k === "icon") {
+      out.icon = v;
+    } else if (k === "color") {
+      out.color = v;
     }
   }
   return out;

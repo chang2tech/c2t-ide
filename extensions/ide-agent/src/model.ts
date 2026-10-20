@@ -11,7 +11,7 @@
  * "edit" is the Cmd+K inline-edit flow's internal mode value (submitted by
  * InlineEditService), "background" a separate composer kind — neither is a
  * chat mode; both kept as enum values for compat. */
-export type ModeName = "agent" | "chat" | "plan" | "edit" | "debug" | "background" | "multitask";
+export type ModeName = "agent" | "chat" | "plan" | "edit" | "debug" | "background" | "multitask" | "triage";
 
 export type BubbleRole = "human" | "assistant" | "tool" | "system";
 
@@ -99,7 +99,39 @@ export interface BubbleData {
   thinking?: ThinkingBlock;
   toolCalls: ToolCallViewModel[];
   checkpointId?: string;
+  /**
+   * DD-AR-9 (turnSettled protocol): how this bubble's turn ended.
+   * Set from the adapter's turnSettled event; undefined while running.
+   */
+  turnOutcome?: TurnOutcome;
   createdAt: number;
+}
+
+/**
+ * DD-AR-9 — turnSettled protocol (Cursor 3.25.9, OBSERVED host 2402900-area):
+ * turnSettled{turnId, outcome, interruptedBy?, stopReason?, error?} with
+ * outcome ∈ COMPLETED | FAILED | INTERRUPTED. Replaces the divergent
+ * MAX_STEPS_PROMPT injection with a clean stop-reason enum.
+ */
+export type TurnOutcome = "COMPLETED" | "FAILED" | "INTERRUPTED";
+/** Who interrupted the turn: HOST (observed) or USER. */
+export type TurnInterruptedBy = "HOST" | "USER";
+/** stopReason: MAX_STEPS_REACHED (observed). */
+export type TurnStopReason = "MAX_STEPS_REACHED";
+
+export interface TurnSettled {
+  type: "turnSettled";
+  turnId: string;
+  /**
+   * Extension-side routing: the assistant bubble this turn streamed into.
+   * (Cursor's mailbox event carries turnId only; we add bubbleId so the
+   * composer can record the outcome on the right bubble.)
+   */
+  bubbleId: string;
+  outcome: TurnOutcome;
+  interruptedBy?: TurnInterruptedBy;
+  stopReason?: TurnStopReason;
+  error?: string;
 }
 
 /** Events a turn produces; the data service applies them to the bubble store. */
@@ -118,4 +150,10 @@ export type TurnEvent =
    */
   | { type: "questionApproval"; toolCallId: string; approvalToolCallId: string }
   | { type: "reconcile"; clientBubbleId: string; serverBubbleId: string }
+  /**
+   * DD-AR-9 (turnSettled protocol): the adapter reports how the turn ended —
+   * COMPLETED | FAILED | INTERRUPTED (+ interruptedBy / stopReason). The
+   * composer records the outcome on the bubble instead of inferring it.
+   */
+  | TurnSettled
   | { type: "done" };

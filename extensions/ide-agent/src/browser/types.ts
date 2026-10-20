@@ -164,7 +164,11 @@ export class BrowserError extends Error {
     | "INVALID_ARGS"
     | "NO_CHROMIUM"
     | "NO_DEBUG_PORT"
-    | "UNSUPPORTED";
+    | "UNSUPPORTED"
+    // Added by P0 browser-tab-workbench-commands (additive):
+    | "NATIVE_API_UNAVAILABLE"
+    | "UNKNOWN_VIEW"
+    | "NO_VIEW";
   constructor(code: BrowserError["code"], message: string) {
     super(message);
     this.code = code;

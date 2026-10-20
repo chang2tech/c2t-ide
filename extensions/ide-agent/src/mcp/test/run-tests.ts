@@ -7,8 +7,17 @@
  * exercises the stdio client handshake, tools/list pagination, tools/call,
  * roots/list and server→client ping.
  *
+ * Provider API: `cursor.registerMcpProvider()` (DEV-GAPS-8) — registry unit
+ * tests plus McpService-level register/unregister/callTool tests. The
+ * `./vscode-shim` import MUST stay first: it stubs `require("vscode")`
+ * before `../service` loads under plain node.
+ *
  * Run after `tsc`:  node out/mcp/test/run-tests.mjs
  */
+import "./vscode-shim";
+// W50D (mcp-symbolic-file-args): $file: symbolic argument tests live in
+// ./symbolicFileArgs.test.ts — imported here so they run under the shim.
+import "./symbolicFileArgs.test";
 import { describe, it, before, after } from "node:test";
 import * as assert from "node:assert";
 import * as fs from "node:fs";
@@ -22,14 +31,31 @@ import {
   expandServerConfig,
   parseEnvFile,
   detectTransport,
+  extractRestMcpServerId,
 } from "../config";
-import { McpAllowlist, matchAllowlistPattern } from "../allowlist";
+import { McpAllowlist, matchAllowlistPattern, normalizeGrantEntry } from "../allowlist";
+import {
+  ExtensionMcpGrantStore,
+  InMemoryMcpGrantStore,
+  MCP_ALLOWED_TOOLS_GLOBAL_KEY,
+} from "../grantStore";
 import { normalizeResult, formatResultMarkdown } from "../results";
 import { McpStdioClient } from "../stdioClient";
 import { McpHttpClient, McpAuthError, parseSseEvents } from "../httpClient";
-import { McpServerManager } from "../serverManager";
+import { McpServerManager, DEFAULT_MCP_RECONNECT_POLICY } from "../serverManager";
 import { mcpApprovalOptions } from "../approvalOptions";
-import { McpLogger } from "../types";
+import { McpLogger, McpReconnectPolicy } from "../types";
+import { McpProviderRegistry } from "../providerRegistry";
+import type { McpProvider, McpProviderCallContext } from "../providerRegistry";
+import { McpService } from "../service";
+import { createCursorApi } from "../providerApi";
+import {
+  CURSOR_IDE_BROWSER_INSTRUCTIONS,
+  CURSOR_IDE_BROWSER_PROVIDER_ID,
+  CURSOR_IDE_BROWSER_TOOL_NAMES,
+  createCursorIdeBrowserProvider,
+} from "../../browser/browserMcpProvider";
+import type { BrowserService } from "../../browser/service";
 
 /* ---------- names (§B4 verbatim) ---------- */
 describe("mcp names", () => {
@@ -170,11 +196,99 @@ describe("config discovery", () => {
 });
 
 describe("transport detection", () => {
-  it("command → stdio, url → streamable_http/sse, else unknown", () => {
+  it("command → stdio, url → streamableHttp/sse, else unknown", () => {
     assert.strictEqual(detectTransport({ command: "npx" }), "stdio");
-    assert.strictEqual(detectTransport({ url: "https://x/mcp" }), "streamable_http");
+    assert.strictEqual(detectTransport({ url: "https://x/mcp" }), "streamableHttp");
     assert.strictEqual(detectTransport({ url: "https://x", transportType: "sse" }), "sse");
     assert.strictEqual(detectTransport({}), "unknown");
+  });
+
+  // WORKER-GAPS-32C (mcp-transport-types): Cursor's binary enum is camelCase
+  // `streamableHttp` (cursor-mcp/dist/main.js 3.25.9); the legacy snake_case
+  // spelling is accepted at the parse boundary and normalized to canonical.
+  it("accepts both streamableHttp and streamable_http spellings", () => {
+    assert.strictEqual(
+      detectTransport({ url: "https://x/mcp", transportType: "streamableHttp" }),
+      "streamableHttp",
+    );
+    assert.strictEqual(
+      detectTransport({ url: "https://x/mcp", transportType: "streamable_http" }),
+      "streamableHttp",
+    );
+    // unknown spellings fall through to the default HTTP transport (parity:
+    // binary compares n.type against "streamableHttp" only)
+    assert.strictEqual(
+      detectTransport({ url: "https://x/mcp", transportType: "websocket" }),
+      "streamableHttp",
+    );
+  });
+});
+
+describe("rest-mcp hosted gateway detection", () => {
+  // WORKER-GAPS-32C (mcp-transport-types): verbatim binary predicate
+  // `/^\/rest-mcp\/([^/]+)\/mcp\/?$/` on the URL pathname
+  // (cursor-mcp/dist/main.js 3.25.9).
+  it("extracts the gateway server id from gateway URLs", () => {
+    assert.strictEqual(
+      extractRestMcpServerId("https://api.cursor.sh/rest-mcp/my-server/mcp"),
+      "my-server",
+    );
+    // optional trailing slash
+    assert.strictEqual(
+      extractRestMcpServerId("https://api.cursor.sh/rest-mcp/my-server/mcp/"),
+      "my-server",
+    );
+    // ids are single path segments
+    assert.strictEqual(
+      extractRestMcpServerId("https://api.cursor.sh/rest-mcp/a-b_c.1/mcp"),
+      "a-b_c.1",
+    );
+  });
+
+  it("returns undefined for non-gateway URLs", () => {
+    assert.strictEqual(extractRestMcpServerId("https://x/mcp"), undefined);
+    assert.strictEqual(
+      extractRestMcpServerId("https://api.cursor.sh/rest-mcp/mcp"),
+      undefined,
+    );
+    assert.strictEqual(
+      extractRestMcpServerId("https://api.cursor.sh/rest-mcp/a/b/mcp"),
+      undefined,
+    );
+    assert.strictEqual(
+      extractRestMcpServerId("https://api.cursor.sh/rest-mcp/a/mcp/extra"),
+      undefined,
+    );
+    // binary returns early on unparseable/undefined input
+    assert.strictEqual(extractRestMcpServerId("not a url"), undefined);
+    assert.strictEqual(extractRestMcpServerId(undefined), undefined);
+    assert.strictEqual(extractRestMcpServerId(""), undefined);
+  });
+
+  it("discoverServers records gatewayServerId for gateway URLs", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-gw-"));
+    const logs: string[] = [];
+    try {
+      fs.mkdirSync(path.join(dir, ".cursor"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, ".cursor", "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            gw: { url: "https://api.cursor.sh/rest-mcp/acme-docs/mcp" },
+            plain: { url: "https://example.com/mcp" },
+          },
+        }),
+      );
+      const servers = discoverServers({ workspaceFolders: [dir], logger: { appendLine: (m: string) => logs.push(m) } });
+      const gw = servers.find((s) => s.displayName === "gw");
+      const plain = servers.find((s) => s.displayName === "plain");
+      assert.strictEqual(gw?.gatewayServerId, "acme-docs");
+      assert.strictEqual(gw?.transport, "streamableHttp");
+      assert.strictEqual(plain?.gatewayServerId, undefined);
+      assert.strictEqual(plain?.transport, "streamableHttp");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -219,6 +333,9 @@ describe("precheck", () => {
       path.join(root, ".cursor", "permissions.json"),
       JSON.stringify({ mcpAllowlist: ["fs:read", "git:*"] }),
     );
+    // Legacy fabricated file: Cursor has no `mcp-approvals.json` (0 hits in
+    // the 3.25.9 glass+desktop bundles). It must be IGNORED, even when it
+    // records a deny.
     fs.writeFileSync(
       path.join(root, ".cursor", "mcp-approvals.json"),
       JSON.stringify({ approvals: { "fs:write": "deny", "fs:delete": "ask", "net:fetch": "allow" } }),
@@ -226,16 +343,63 @@ describe("precheck", () => {
   });
   after(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  it("deny > ask > allow; approvals beat allowlist", () => {
-    const al = new McpAllowlist([root], logger);
-    assert.strictEqual(al.precheck("fs", "write").decision, "deny");
+  it("permissions.json allowlist still allows; legacy mcp-approvals.json is ignored", () => {
+    const al = new McpAllowlist([root], logger, new InMemoryMcpGrantStore());
+    // Legacy file says deny/ask — must NOT be honored (binary: file absent).
+    assert.strictEqual(al.precheck("fs", "write").decision, "ask");
     assert.strictEqual(al.precheck("fs", "delete").decision, "ask");
-    assert.strictEqual(al.precheck("net", "fetch").decision, "allow");
-    assert.strictEqual(al.precheck("fs", "read").decision, "allow"); // permissions.json
+    // Legacy file says allow — must NOT be honored either.
+    assert.strictEqual(al.precheck("net", "fetch").decision, "ask");
+    // permissions.json (real Cursor surface) still works.
+    assert.strictEqual(al.precheck("fs", "read").decision, "allow"); // exact
     assert.strictEqual(al.precheck("git", "push").decision, "allow"); // git:*
     const ask = al.precheck("fs", "exec");
     assert.strictEqual(ask.decision, "ask");
     assert.ok(ask.reason.includes("mcpToolsProtection"));
+  });
+
+  it("global grants allow (case-insensitive consult), chat grants are composer-scoped", () => {
+    const store = new InMemoryMcpGrantStore();
+    const al = new McpAllowlist([root], logger, store);
+    assert.strictEqual(al.precheck("srv", "tool", "chat-1").decision, "ask");
+
+    // "Always allow" → user-global: visible to every composer, persistent.
+    al.rememberAlwaysAllow("srv", "tool");
+    assert.deepStrictEqual(store.getGlobalGrants(), ["srv:tool"]);
+    assert.strictEqual(al.precheck("srv", "tool", "chat-1").decision, "allow");
+    assert.strictEqual(al.precheck("srv", "tool", "chat-2").decision, "allow");
+    // Case-insensitive consult (binary WFf).
+    assert.strictEqual(al.precheck("SRV", "TOOL", "chat-1").decision, "allow");
+  });
+
+  it("chat grants scope to one composer and never leak across chats", () => {
+    const store = new InMemoryMcpGrantStore();
+    const al = new McpAllowlist([root], logger, store);
+    // One-shot RUN → per-composer memory (mcpAllowedToolsForChat).
+    al.rememberChatGrant("chat-1", "srv", "tool");
+    assert.strictEqual(al.precheck("srv", "tool", "chat-1").decision, "allow");
+    assert.strictEqual(al.precheck("srv", "tool", "chat-2").decision, "ask");
+    assert.strictEqual(al.precheck("srv", "tool").decision, "ask");
+    assert.deepStrictEqual(store.getChatGrants("chat-1"), ["srv:tool"]);
+    assert.deepStrictEqual(store.getChatGrants("chat-2"), []);
+  });
+
+  it("write-dedupe is case-sensitive (binary K?.includes(W))", () => {
+    const store = new InMemoryMcpGrantStore();
+    const al = new McpAllowlist([root], logger, store);
+    al.rememberAlwaysAllow("srv", "tool");
+    al.rememberAlwaysAllow("srv", "tool");
+    assert.deepStrictEqual(store.getGlobalGrants(), ["srv:tool"]);
+  });
+
+  it("normalizeGrantEntry trims to server:tool", () => {
+    assert.strictEqual(normalizeGrantEntry(" srv ", " tool "), "srv:tool");
+  });
+
+  it("works with no grant store (permissions.json only)", () => {
+    const al = new McpAllowlist([root], logger);
+    assert.strictEqual(al.precheck("fs", "read").decision, "allow");
+    assert.strictEqual(al.precheck("srv", "tool").decision, "ask");
   });
 });
 
@@ -392,9 +556,9 @@ describe("sse parsing", () => {
 });
 
 describe("http transport config", () => {
-  it("url + transportType sse → sse; plain url → streamable_http", () => {
+  it("url + transportType sse → sse; plain url → streamableHttp", () => {
     assert.strictEqual(detectTransport({ url: "https://x/sse", transportType: "sse" }), "sse");
-    assert.strictEqual(detectTransport({ url: "https://x/mcp" }), "streamable_http");
+    assert.strictEqual(detectTransport({ url: "https://x/mcp" }), "streamableHttp");
   });
 
   it("expands variables in url and headers", () => {
@@ -414,27 +578,44 @@ describe("http transport config", () => {
   });
 });
 
-describe("approval persistence", () => {
-  it("persistApproval writes .cursor/mcp-approvals.json and precheck honors it", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-appr-"));
+describe("approval persistence (Cursor 3.25.9 parity)", () => {
+  it("rememberAlwaysAllow persists to the user-global key with no TTL", () => {
     const logger: McpLogger = { appendLine: () => undefined };
-    try {
-      const al = new McpAllowlist([dir], logger);
-      assert.strictEqual(al.precheck("srv", "tool").decision, "ask");
-      al.persistApproval(dir, "srv", "tool", "allow");
-      al.reload();
-      assert.strictEqual(al.precheck("srv", "tool").decision, "allow");
-      al.persistApproval(dir, "srv", "tool", "deny");
-      al.reload();
-      const denied = al.precheck("srv", "tool");
-      assert.strictEqual(denied.decision, "deny");
-      const doc = JSON.parse(
-        fs.readFileSync(path.join(dir, ".cursor", "mcp-approvals.json"), "utf8"),
-      );
-      assert.strictEqual(doc.approvals["srv:tool"], "deny");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const store = new InMemoryMcpGrantStore();
+    const al = new McpAllowlist([], logger, store);
+    assert.strictEqual(al.precheck("srv", "tool", "chat-1").decision, "ask");
+    al.rememberAlwaysAllow("srv", "tool");
+    // A FRESH allowlist over the same store sees the grant (no reload needed,
+    // no expiry): the grant is user-global, not per-folder.
+    const al2 = new McpAllowlist([], logger, store);
+    assert.strictEqual(al2.precheck("srv", "tool", "chat-9").decision, "allow");
+  });
+
+  it("global key is the verbatim Cursor storage key", () => {
+    assert.strictEqual(MCP_ALLOWED_TOOLS_GLOBAL_KEY, "composerState.mcpAllowedTools");
+  });
+
+  it("ExtensionMcpGrantStore round-trips through a memento", async () => {
+    const backing = new Map<string, unknown>();
+    const memento = {
+      get: <T,>(key: string, def: T): T =>
+        (backing.has(key) ? (backing.get(key) as T) : def),
+      update: (key: string, value: unknown): Promise<void> => {
+        backing.set(key, value);
+        return Promise.resolve();
+      },
+    };
+    const store = new ExtensionMcpGrantStore(memento);
+    store.addGlobalGrant("srv:tool");
+    store.addGlobalGrant("srv:tool"); // dedupe
+    store.addChatGrant("c1", "srv:other");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.deepStrictEqual(store.getGlobalGrants(), ["srv:tool"]);
+    assert.deepStrictEqual(store.getChatGrants("c1"), ["srv:other"]);
+    assert.deepStrictEqual(store.getChatGrants("c2"), []);
+    // Corrupt/foreign values are filtered, never crash the precheck.
+    backing.set(MCP_ALLOWED_TOOLS_GLOBAL_KEY, { not: "an array" });
+    assert.deepStrictEqual(store.getGlobalGrants(), []);
   });
 
   it("mcpApprovalOptions offers once/always/deny/skip", () => {
@@ -531,17 +712,23 @@ describe("fix P1-1: legacy endpoint detection uses streaming parse (X3: event-on
   });
 });
 
-describe("fix P1-3: precheck merges deny > ask > allow across ALL folders", () => {
+describe("precheck merges allow sources across ALL folders (Cursor parity)", () => {
   let dirA = "";
   let dirB = "";
   before(() => {
     dirA = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fix-a-"));
     dirB = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-fix-b-"));
     for (const d of [dirA, dirB]) fs.mkdirSync(path.join(d, ".cursor"), { recursive: true });
+    // permissions.json allowlists (real Cursor surface) in both folders.
     fs.writeFileSync(
-      path.join(dirA, ".cursor", "mcp-approvals.json"),
-      JSON.stringify({ approvals: { "srv:tool": "allow", "srv:other": "allow" } }),
+      path.join(dirA, ".cursor", "permissions.json"),
+      JSON.stringify({ mcpAllowlist: ["srv:tool"] }),
     );
+    fs.writeFileSync(
+      path.join(dirB, ".cursor", "permissions.json"),
+      JSON.stringify({ mcpAllowlist: ["other:tool"] }),
+    );
+    // Legacy fabricated file: must be ignored even when it records deny/ask.
     fs.writeFileSync(
       path.join(dirB, ".cursor", "mcp-approvals.json"),
       JSON.stringify({ approvals: { "srv:tool": "deny", "srv:other": "ask" } }),
@@ -551,16 +738,29 @@ describe("fix P1-3: precheck merges deny > ask > allow across ALL folders", () =
     for (const d of [dirA, dirB]) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it("deny in ANY folder beats allow, regardless of folder order", () => {
-    const d1 = new McpAllowlist([dirA, dirB], silentLogger).precheck("srv", "tool");
-    const d2 = new McpAllowlist([dirB, dirA], silentLogger).precheck("srv", "tool");
-    assert.strictEqual(d1.decision, "deny");
-    assert.strictEqual(d2.decision, "deny");
+  it("allow from ANY folder's permissions.json wins, regardless of folder order", () => {
+    const store = new InMemoryMcpGrantStore();
+    const d1 = new McpAllowlist([dirA, dirB], silentLogger, store).precheck("srv", "tool");
+    const d2 = new McpAllowlist([dirB, dirA], silentLogger, store).precheck("other", "tool");
+    assert.strictEqual(d1.decision, "allow");
+    assert.strictEqual(d2.decision, "allow");
   });
 
-  it("ask beats allow across folders", () => {
-    const d = new McpAllowlist([dirA, dirB], silentLogger).precheck("srv", "other");
+  it("legacy deny in mcp-approvals.json no longer blocks (file is not read)", () => {
+    // dirB's legacy file says deny for srv:tool — must NOT be honored.
+    const d = new McpAllowlist([dirB], silentLogger, new InMemoryMcpGrantStore()).precheck(
+      "srv",
+      "tool",
+    );
     assert.strictEqual(d.decision, "ask");
+  });
+
+  it("global grants apply across folders without reload", () => {
+    const store = new InMemoryMcpGrantStore();
+    const al = new McpAllowlist([dirA, dirB], silentLogger, store);
+    assert.strictEqual(al.precheck("srv", "other").decision, "ask");
+    al.rememberAlwaysAllow("srv", "other");
+    assert.strictEqual(al.precheck("srv", "other").decision, "allow");
   });
 });
 
@@ -728,7 +928,7 @@ describe("fix P1-4: mid-session 401/403 marks the server failed", () => {
         scope: "project",
         sourcePath: "/tmp/probe-mcp.json",
         config: { args: [], url: `http://127.0.0.1:${port}/mcp` },
-        transport: "streamable_http",
+        transport: "streamableHttp",
       },
       [],
       silentLogger,
@@ -1054,6 +1254,716 @@ describe("fix R2: GET-404 counter is independent from the drop-reconnect budget"
       assert.strictEqual(r.content[0].text, "ok", "POSTs keep working on the fresh session");
     } finally {
       client.stop();
+      server.close();
+    }
+  });
+});
+
+/* ---------- cursor.registerMcpProvider (DEV-GAPS-8) ---------- */
+
+interface FakeToolDef {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+const providerToolDefs: FakeToolDef[] = [
+  {
+    name: "ping",
+    description: "Reply with pong.",
+    parameters: { type: "object", properties: { msg: { type: "string" } } },
+  },
+  {
+    name: "add",
+    description: "Add two numbers.",
+    parameters: {
+      type: "object",
+      properties: { a: { type: "number" }, b: { type: "number" } },
+      required: ["a", "b"],
+    },
+  },
+];
+
+interface FakeProvider extends McpProvider {
+  calls: Array<{ name: string; args: Record<string, unknown>; ctx: McpProviderCallContext }>;
+  turnEnded: unknown[];
+  setTools(tools: FakeToolDef[]): void;
+}
+
+const makeFakeProvider = (id = "demo", overrides: Partial<McpProvider> = {}): FakeProvider => {
+  const calls: FakeProvider["calls"] = [];
+  const turnEnded: unknown[] = [];
+  let tools: FakeToolDef[] = providerToolDefs.map((t) => ({ ...t }));
+  return {
+    id,
+    name: `${id} display`,
+    instructions: `Instructions for ${id}.`,
+    async listOfferings() {
+      return { tools: tools.map((t) => ({ ...t })), prompts: [], resources: [] };
+    },
+    async callTool(name, args, ctx) {
+      calls.push({ name, args, ctx });
+      return { content: [{ type: "text", text: `ok:${name}` }] };
+    },
+    async onTurnEnded(ctx) {
+      turnEnded.push(ctx);
+    },
+    calls,
+    turnEnded,
+    setTools(next: FakeToolDef[]): void {
+      tools = next.map((t) => ({ ...t }));
+    },
+    ...overrides,
+  };
+};
+
+describe("mcp provider registry", () => {
+  it("register → refresh → tools cached; unregister → gone", async () => {
+    const reg = new McpProviderRegistry();
+    const provider = makeFakeProvider("demo");
+    const handle = reg.register(provider);
+    assert.deepStrictEqual(reg.ids(), ["demo"]);
+    assert.strictEqual(reg.getTools().length, 0, "no tools before offerings are fetched");
+    await reg.refreshOfferings("demo");
+    const tools = reg.getTools();
+    assert.strictEqual(tools.length, 2);
+    assert.deepStrictEqual(
+      tools.map((t) => t.tool.name).sort(),
+      ["add", "ping"],
+    );
+    handle.dispose();
+    assert.deepStrictEqual(reg.ids(), []);
+    assert.strictEqual(reg.getTools().length, 0);
+  });
+
+  it("rejects invalid providers", () => {
+    const reg = new McpProviderRegistry();
+    assert.throws(() => reg.register(makeFakeProvider("")), /provider\.id must be a non-empty string/);
+    assert.throws(
+      () => reg.register(makeFakeProvider("x", { listOfferings: undefined as never })),
+      /must define listOfferings/,
+    );
+    assert.throws(
+      () => reg.register(makeFakeProvider("x", { callTool: undefined as never })),
+      /must define callTool/,
+    );
+  });
+
+  it("duplicate id: last registration wins (Cursor extHost parity)", () => {
+    const reg = new McpProviderRegistry();
+    const first = makeFakeProvider("demo");
+    const second = makeFakeProvider("demo", { instructions: "second" });
+    reg.register(first);
+    reg.register(second);
+    assert.strictEqual(reg.get("demo")?.instructions, "second");
+  });
+
+  it("dispose is idempotent; unregister unknown id returns false", () => {
+    const reg = new McpProviderRegistry();
+    const handle = reg.register(makeFakeProvider("demo"));
+    handle.dispose();
+    handle.dispose();
+    assert.strictEqual(reg.unregister("demo"), false);
+    assert.strictEqual(reg.unregister("nope"), false);
+  });
+
+  it("callTool dispatches with Cursor-verbatim errors", async () => {
+    const reg = new McpProviderRegistry();
+    const provider = makeFakeProvider("demo");
+    reg.register(provider);
+    await reg.refreshOfferings("demo");
+    await assert.rejects(
+      reg.callTool("missing", "ping", {}, {}),
+      /MCP provider with id 'missing' not found/,
+    );
+    await assert.rejects(
+      reg.callTool("demo", "nope", {}, {}),
+      /Tool "nope" was not found on "demo"\./,
+    );
+    const raw = await reg.callTool("demo", "ping", { msg: "hi" }, { composerId: "c1" });
+    assert.deepStrictEqual(raw, { content: [{ type: "text", text: "ok:ping" }] });
+    assert.deepStrictEqual(provider.calls[0], {
+      name: "ping",
+      args: { msg: "hi" },
+      ctx: { composerId: "c1" },
+    });
+  });
+
+  it("notifyTurnEnded fans out; one failing provider does not break others", async () => {
+    const reg = new McpProviderRegistry();
+    const good = makeFakeProvider("good");
+    const bad = makeFakeProvider("bad", {
+      async onTurnEnded() {
+        throw new Error("boom");
+      },
+    });
+    const silent = makeFakeProvider("silent", { onTurnEnded: undefined });
+    reg.register(good);
+    reg.register(bad);
+    reg.register(silent);
+    await reg.notifyTurnEnded({ conversationId: "conv-1" });
+    assert.deepStrictEqual(good.turnEnded, [{ conversationId: "conv-1" }]);
+  });
+
+  it("onDidChange fires on register / refresh / unregister", async () => {
+    const reg = new McpProviderRegistry();
+    const kinds: string[] = [];
+    const sub = reg.onDidChange((e) => kinds.push(e.kind));
+    const handle = reg.register(makeFakeProvider("demo"));
+    await reg.refreshOfferings("demo");
+    handle.dispose();
+    sub.dispose();
+    assert.ok(kinds.includes("providersChanged"), `expected providersChanged, got ${kinds}`);
+    assert.ok(kinds.includes("toolsChanged"), `expected toolsChanged, got ${kinds}`);
+  });
+});
+
+describe("mcp provider via McpService (cursor.registerMcpProvider)", () => {
+  const makeService = (approvalResult: { optionId: string } = { optionId: "approve-once" }) => {
+    const approvals: Array<{ toolCallId: string; label: string }> = [];
+    const fakeComposer = {
+      composerId: "composer-9",
+      reviews: {
+        requestApproval: async (toolCallId: string, label: string) => {
+          approvals.push({ toolCallId, label });
+          return approvalResult;
+        },
+      },
+    };
+    const globalStateBacking = new Map<string, unknown>();
+    const service = new McpService(
+      {
+        subscriptions: [],
+        // McpService persists "Always allow" grants to globalState
+        // (composerState.mcpAllowedTools, Cursor parity).
+        globalState: {
+          get<T>(key: string, def: T): T {
+            return (globalStateBacking.has(key) ? globalStateBacking.get(key) : def) as T;
+          },
+          update(key: string, value: unknown): Promise<void> {
+            globalStateBacking.set(key, value);
+            return Promise.resolve();
+          },
+        },
+      } as never,
+      () => fakeComposer as never,
+    );
+    return { service, approvals, fakeComposer };
+  };
+
+  it("register → tool appears in getTools() with mcp__<server>__<tool>; dispose → disappears", async () => {
+    const { service } = makeService();
+    try {
+      const provider = makeFakeProvider("demo");
+      const handle = service.registerMcpProvider(provider);
+      assert.deepStrictEqual(service.getProviderIds(), ["demo"]);
+      await service.refreshProviderTools("demo");
+      const tools = service.getTools();
+      const ping = tools.find((t) => t.namespacedName === "mcp__demo__ping");
+      assert.ok(ping, `expected mcp__demo__ping in ${tools.map((t) => t.namespacedName)}`);
+      assert.strictEqual(ping.serverId, "demo");
+      assert.strictEqual(ping.toolName, "ping");
+      assert.strictEqual(ping.description, "Reply with pong.");
+      assert.deepStrictEqual(ping.inputSchema, {
+        type: "object",
+        properties: { msg: { type: "string" } },
+      });
+      assert.ok(tools.some((t) => t.namespacedName === "mcp__demo__add"));
+
+      handle.dispose();
+      assert.strictEqual(
+        service.getTools().some((t) => t.namespacedName === "mcp__demo__ping"),
+        false,
+        "provider tools must vanish after unregister",
+      );
+      assert.deepStrictEqual(service.getProviderIds(), []);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("callTool runs the approval gate then dispatches to the provider", async () => {
+    const { service, approvals } = makeService();
+    try {
+      const provider = makeFakeProvider("demo");
+      service.registerMcpProvider(provider);
+      await service.refreshProviderTools("demo");
+      const result = await service.callTool("mcp__demo__ping", { msg: "hi" }, { toolCallId: "t1" });
+      assert.strictEqual(result.text, "ok:ping");
+      assert.strictEqual(result.isError, false);
+      // Approval flow preserved: card requested with the MCP:<tool> label.
+      assert.strictEqual(approvals.length, 1);
+      assert.strictEqual(approvals[0].toolCallId, "t1");
+      assert.strictEqual(approvals[0].label, "MCP:ping");
+      // Provider receives (name, args, { composerId }).
+      assert.deepStrictEqual(provider.calls[0], {
+        name: "ping",
+        args: { msg: "hi" },
+        ctx: { composerId: "composer-9" },
+      });
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("callTool denied at the approval card throws without touching the provider", async () => {
+    const { service } = makeService({ optionId: "skip" });
+    try {
+      const provider = makeFakeProvider("demo");
+      service.registerMcpProvider(provider);
+      await service.refreshProviderTools("demo");
+      await assert.rejects(
+        service.callTool("mcp__demo__ping", {}, { toolCallId: "t2" }),
+        /skipped by user/,
+      );
+      assert.strictEqual(provider.calls.length, 0, "provider must not be called on skip");
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("approve-once writes a chat-scoped grant: second call in the same chat skips the card", async () => {
+    // Binary: case DJ.RUN (unless allowOnce) → mcpAllowedToolsForChat.
+    const { service, approvals } = makeService({ optionId: "approve-once" });
+    try {
+      const provider = makeFakeProvider("demo");
+      service.registerMcpProvider(provider);
+      await service.refreshProviderTools("demo");
+      await service.callTool("mcp__demo__ping", {}, { toolCallId: "t1" });
+      assert.strictEqual(approvals.length, 1, "first call shows the card");
+      await service.callTool("mcp__demo__ping", {}, { toolCallId: "t2" });
+      assert.strictEqual(approvals.length, 1, "second call in the same chat must not re-prompt");
+      assert.strictEqual(provider.calls.length, 2);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("approve-always writes a user-global grant visible to other chats", async () => {
+    // Binary: ALLOWLIST_TOOL → composerState.mcpAllowedTools (no TTL).
+    const { service, approvals, fakeComposer } = makeService({ optionId: "approve-always" });
+    try {
+      const provider = makeFakeProvider("demo");
+      service.registerMcpProvider(provider);
+      await service.refreshProviderTools("demo");
+      await service.callTool("mcp__demo__ping", {}, { toolCallId: "t1" });
+      assert.strictEqual(approvals.length, 1);
+      await service.callTool("mcp__demo__ping", {}, { toolCallId: "t2" });
+      assert.strictEqual(approvals.length, 1, "global grant silences the card afterwards");
+      // A different composer sees the same global grant.
+      fakeComposer.composerId = "composer-other";
+      await service.callTool("mcp__demo__ping", {}, { toolCallId: "t3" });
+      assert.strictEqual(approvals.length, 1, "global grant applies to other chats too");
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("unknown provider id falls through to the server path (not configured)", async () => {
+    const { service } = makeService();
+    try {
+      await assert.rejects(
+        service.callTool("mcp__nosuch__ping", {}, { toolCallId: "t3" }),
+        /MCP server "nosuch" is not configured/,
+      );
+    } finally {
+      service.dispose();
+    }
+  });
+});
+
+describe("cursor api surface (createCursorApi)", () => {
+  const makeService = () => {
+    const fakeComposer = {
+      composerId: "composer-9",
+      reviews: { requestApproval: async () => ({ optionId: "approve-once" }) },
+    };
+    return new McpService({ subscriptions: [] } as never, () => fakeComposer as never);
+  };
+
+  it("registerMcpProvider exposes tools; pushMcpSnapshots refreshes them", async () => {
+    const service = makeService();
+    try {
+      const api = createCursorApi(service);
+      const provider = makeFakeProvider("demo");
+      const handle = api.registerMcpProvider(provider);
+      await service.refreshProviderTools("demo");
+      assert.ok(service.getTools().some((t) => t.namespacedName === "mcp__demo__ping"));
+
+      // Offerings change → snapshot push refreshes the tool list.
+      provider.setTools([
+        { name: "brand-new", description: "New tool.", parameters: { type: "object", properties: {} } },
+      ]);
+      await api.pushMcpSnapshots([
+        {
+          serverIdentifier: "demo",
+          serverName: "demo",
+          snapshotEpoch: Date.now(),
+          snapshotRevision: 2,
+          status: "connected",
+          tools: [],
+          resources: [],
+          prompts: [],
+          instructions: "",
+        },
+      ]);
+      const names = service.getTools().map((t) => t.namespacedName);
+      assert.ok(names.includes("mcp__demo__brand-new"), `after push: ${names}`);
+      assert.ok(!names.includes("mcp__demo__ping"), `stale tool gone: ${names}`);
+
+      // Unknown serverIdentifier in a push is ignored, not fatal.
+      await api.pushMcpSnapshots([
+        {
+          serverIdentifier: "ghost",
+          serverName: "ghost",
+          snapshotEpoch: 0,
+          snapshotRevision: 1,
+          status: "connected",
+          tools: [],
+          resources: [],
+          prompts: [],
+          instructions: "",
+        },
+      ]);
+
+      handle.dispose();
+      assert.strictEqual(
+        service.getTools().some((t) => t.namespacedName.startsWith("mcp__demo__")),
+        false,
+      );
+    } finally {
+      service.dispose();
+    }
+  });
+});
+
+/* ---------- DEV-GAPS-88: built-in cursor-ide-browser provider ---------- */
+
+describe("cursor-ide-browser provider (DEV-GAPS-88)", () => {
+  /** Fake BrowserService: records the caller id the tools were built with. */
+  const makeFakeBrowserService = () => {
+    const state = {
+      tabsCalls: [] as Array<{ agentId: string; action: string }>,
+      lockCalls: [] as Array<{ agentId: string; action: string }>,
+    };
+    const fake = {
+      tabs: async (agentId: string, action: "list" | "new" | "close" | "select") => {
+        state.tabsCalls.push({ agentId, action });
+        return { tabs: [], activeViewId: undefined };
+      },
+      lock: async (_sessionId: string | undefined, agentId: string) => {
+        state.lockCalls.push({ agentId, action: "lock" });
+      },
+      unlock: async (_sessionId: string | undefined, agentId: string) => {
+        state.lockCalls.push({ agentId, action: "unlock" });
+      },
+    };
+    return { service: fake as unknown as BrowserService, state };
+  };
+
+  it("id + instructions are the binary-verbatim values", () => {
+    const { service } = makeFakeBrowserService();
+    const provider = createCursorIdeBrowserProvider({ getBrowserService: async () => service });
+    assert.strictEqual(provider.id, "cursor-ide-browser");
+    assert.strictEqual(CURSOR_IDE_BROWSER_PROVIDER_ID, "cursor-ide-browser");
+    assert.strictEqual(provider.featureGateName, undefined);
+    assert.ok(
+      provider.instructions.startsWith(
+        "The cursor-ide-browser MCP server provides a Cursor-owned browser tab plus a raw Chrome DevTools Protocol command tool.",
+      ),
+    );
+    assert.strictEqual(provider.instructions, CURSOR_IDE_BROWSER_INSTRUCTIONS);
+    assert.ok(provider.instructions.includes("CORE WORKFLOW:"));
+    assert.ok(provider.instructions.includes("CRITICAL - Lock/unlock workflow:"));
+  });
+
+  it("listOfferings returns exactly Cursor's 16 tools, in binary order, without starting a browser", async () => {
+    let serviceRequested = false;
+    const { service } = makeFakeBrowserService();
+    const provider = createCursorIdeBrowserProvider({
+      getBrowserService: async () => {
+        serviceRequested = true;
+        return service;
+      },
+    });
+    const offerings = await provider.listOfferings();
+    assert.deepStrictEqual(
+      offerings.tools.map((t) => t.name),
+      [...CURSOR_IDE_BROWSER_TOOL_NAMES],
+    );
+    assert.strictEqual(offerings.tools.length, 16);
+    assert.deepStrictEqual(offerings.prompts, []);
+    assert.deepStrictEqual(offerings.resources, []);
+    // Fork extras must NOT be offered (Cursor registers exactly 16).
+    for (const extra of ["browser_screenshot", "browser_pick_element", "browser_close", "browser_fill_form", "browser_hover"]) {
+      assert.ok(!offerings.tools.some((t) => t.name === extra), `${extra} must not be offered`);
+    }
+    // Every offering carries a description + an object parameters schema.
+    for (const t of offerings.tools) {
+      assert.ok(t.description.length > 0, `${t.name} description`);
+      assert.strictEqual((t.parameters as { type?: unknown }).type, "object", `${t.name} parameters`);
+    }
+    assert.strictEqual(serviceRequested, false, "listing offerings must not start the browser service");
+  });
+
+  it("callTool dispatches to the real browser tools with ownerAgentId = context.composerId", async () => {
+    const { service, state } = makeFakeBrowserService();
+    const provider = createCursorIdeBrowserProvider({ getBrowserService: async () => service });
+    const out = await provider.callTool("browser_tabs", { action: "list" }, { composerId: "composer-42" });
+    assert.deepStrictEqual(out, { tabs: [], activeViewId: undefined });
+    assert.deepStrictEqual(state.tabsCalls, [{ agentId: "composer-42", action: "list" }]);
+
+    await provider.callTool("browser_lock", { action: "lock" }, {});
+    assert.deepStrictEqual(state.lockCalls, [{ agentId: "default-agent", action: "lock" }]);
+  });
+
+  it("callTool rejects tools Cursor does not register (Unknown tool)", async () => {
+    const { service } = makeFakeBrowserService();
+    const provider = createCursorIdeBrowserProvider({ getBrowserService: async () => service });
+    await assert.rejects(provider.callTool("browser_fill_form", {}, {}), /Unknown tool: browser_fill_form/);
+    await assert.rejects(provider.callTool("browser_close", {}, {}), /Unknown tool: browser_close/);
+  });
+
+  it("registers in McpService: tools surface as mcp__cursor-ide-browser__*; lookup by id works", async () => {
+    const fakeComposer = {
+      composerId: "composer-9",
+      reviews: { requestApproval: async () => ({ optionId: "approve-once" }) },
+    };
+    const globalStateBacking = new Map<string, unknown>();
+    const service = new McpService(
+      {
+        subscriptions: [],
+        globalState: {
+          get<T>(key: string, def: T): T {
+            return (globalStateBacking.has(key) ? globalStateBacking.get(key) : def) as T;
+          },
+          update(key: string, value: unknown): Promise<void> {
+            globalStateBacking.set(key, value);
+            return Promise.resolve();
+          },
+        },
+      } as never,
+      () => fakeComposer as never,
+    );
+    try {
+      const { service: browserService, state } = makeFakeBrowserService();
+      let browserRequested = false;
+      const provider = createCursorIdeBrowserProvider({
+        getBrowserService: async () => {
+          browserRequested = true;
+          return browserService;
+        },
+      });
+      provider.initialize?.("/tmp/fake-global-storage");
+      const handle = service.registerMcpProvider(provider);
+      assert.deepStrictEqual(service.getProviderIds(), ["cursor-ide-browser"]);
+      await service.refreshProviderTools("cursor-ide-browser");
+      const names = service.getTools().map((t) => t.namespacedName);
+      assert.strictEqual(names.length, 16, `expected 16 namespaced tools, got ${names.join(",")}`);
+      assert.ok(names.includes("mcp__cursor-ide-browser__browser_navigate"));
+      assert.ok(names.includes("mcp__cursor-ide-browser__browser_cdp"));
+      assert.ok(names.includes("mcp__cursor-ide-browser__browser_lock"));
+      assert.strictEqual(browserRequested, false, "registration/listing must not start the browser");
+
+      const result = await service.callTool(
+        "mcp__cursor-ide-browser__browser_tabs",
+        { action: "list" },
+        { toolCallId: "gaps88-1" },
+      );
+      assert.strictEqual(result.isError, false);
+      assert.strictEqual(browserRequested, true, "callTool resolves the real browser service");
+      assert.deepStrictEqual(state.tabsCalls, [{ agentId: "composer-9", action: "list" }]);
+
+      handle.dispose();
+      assert.deepStrictEqual(service.getProviderIds(), []);
+      assert.strictEqual(
+        service.getTools().some((t) => t.namespacedName.startsWith("mcp__cursor-ide-browser__")),
+        false,
+      );
+    } finally {
+      service.dispose();
+    }
+  });
+});
+
+/* ---------- GAPS-22D: wake/retry config keys — real Cursor keys only ---------- */
+
+describe("fix GAPS-22D: wake/retry config uses verified Cursor keys", () => {
+  it("policy keys are exactly the verified Cursor keys (no fabrications)", () => {
+    const keys = Object.keys(DEFAULT_MCP_RECONNECT_POLICY).sort();
+    assert.deepStrictEqual(keys, [
+      "networkResumeReconnectDebounceMs",
+      "networkResumeReconnectEnabled",
+      "retryNonRetryableOnWake",
+    ]);
+  });
+
+  it("fabricated keys connectOnWake/retryOnWake do not exist", () => {
+    const policy = DEFAULT_MCP_RECONNECT_POLICY as unknown as Record<string, unknown>;
+    assert.ok(!("connectOnWake" in policy), "connectOnWake is fabricated (0 hits in 3.25.9)");
+    assert.ok(!("retryOnWake" in policy), "retryOnWake is fabricated (0 hits in 3.25.9)");
+    assert.ok("retryNonRetryableOnWake" in policy, "real Cursor key must exist");
+  });
+
+  it("networkResumeReconnectDebounceMs default is the observed 3.25.9 value (5000ms)", () => {
+    assert.strictEqual(DEFAULT_MCP_RECONNECT_POLICY.networkResumeReconnectDebounceMs, 5000);
+  });
+
+  it("manager exposes the merged policy; overrides apply", () => {
+    const mgr = new McpServerManager(
+      {
+        id: "project-keyprobe",
+        displayName: "keyprobe",
+        scope: "project",
+        sourcePath: "/tmp/keyprobe-mcp.json",
+        config: { args: [], url: "http://127.0.0.1:1/mcp" },
+        transport: "streamableHttp",
+      },
+      [],
+      silentLogger,
+      { retryNonRetryableOnWake: true, networkResumeReconnectDebounceMs: 100 },
+    );
+    const policy = mgr.reconnectPolicy;
+    assert.strictEqual(policy.retryNonRetryableOnWake, true);
+    assert.strictEqual(policy.networkResumeReconnectDebounceMs, 100);
+    assert.strictEqual(policy.networkResumeReconnectEnabled, true);
+    assert.ok(!("connectOnWake" in policy) && !("retryOnWake" in policy));
+    mgr.stop();
+  });
+});
+
+describe("fix GAPS-22D: handleWake reconnect semantics", () => {
+  /** HTTP MCP server that always 401s the initialize handshake (auth = non-retryable). */
+  function startAuthFailingServer() {
+    return startHttpServer((req, res) => {
+      if (req.method === "GET") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        return;
+      }
+      res.writeHead(401);
+      res.end();
+    });
+  }
+
+  function makeManager(port: number, policy?: McpReconnectPolicy) {
+    return new McpServerManager(
+      {
+        id: "project-wakeprobe",
+        displayName: "wakeprobe",
+        scope: "project",
+        sourcePath: "/tmp/wakeprobe-mcp.json",
+        config: { args: [], url: `http://127.0.0.1:${port}/mcp` },
+        transport: "streamableHttp",
+      },
+      [],
+      silentLogger,
+      policy,
+    );
+  }
+
+  async function waitForState(mgr: McpServerManager, state: string, ms = 5000): Promise<void> {
+    if (mgr.currentState === state) return;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`never reached state ${state}`)), ms);
+      const off = mgr.onEvent((e) => {
+        if (e.kind === "stateChanged" && mgr.currentState === state) {
+          clearTimeout(timer);
+          off();
+          resolve();
+        }
+      });
+    });
+  }
+
+  it("auth failure -> failed; wake does NOT retry when retryNonRetryableOnWake=false", async () => {
+    const { server, port } = await startAuthFailingServer();
+    const mgr = makeManager(port);
+    try {
+      mgr.start();
+      await waitForState(mgr, "failed");
+      const failuresBefore = mgr.failureCount;
+      mgr.handleWake();
+      // Wait longer than a connect attempt could take; no new attempt may start.
+      await new Promise((r) => setTimeout(r, 600));
+      assert.strictEqual(mgr.currentState, "failed", "must stay failed");
+      assert.strictEqual(mgr.failureCount, failuresBefore, "no new attempt may start");
+    } finally {
+      mgr.stop();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("auth failure -> failed; wake DOES retry when retryNonRetryableOnWake=true", async () => {
+    const { server, port } = await startAuthFailingServer();
+    const mgr = makeManager(port, {
+      retryNonRetryableOnWake: true,
+      networkResumeReconnectDebounceMs: 0,
+    });
+    try {
+      mgr.start();
+      await waitForState(mgr, "failed");
+      const failuresBefore = mgr.failureCount;
+      mgr.handleWake();
+      await waitForState(mgr, "failed"); // it fails again (still 401) — the point is it retried
+      assert.ok(
+        mgr.failureCount > failuresBefore,
+        `expected a new attempt (failures ${failuresBefore} -> ${mgr.failureCount})`,
+      );
+    } finally {
+      mgr.stop();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("wake is debounced: burst of wake signals triggers one attempt", async () => {
+    const { server, port } = await startHttpServer((req, res) => {
+      res.writeHead(401);
+      res.end();
+    });
+    const mgr = makeManager(port, {
+      retryNonRetryableOnWake: true,
+      networkResumeReconnectDebounceMs: 1000,
+    });
+    try {
+      mgr.start();
+      await waitForState(mgr, "failed");
+      const failuresBefore = mgr.failureCount;
+      for (let i = 0; i < 10; i++) mgr.handleWake();
+      await new Promise((r) => setTimeout(r, 400));
+      assert.strictEqual(
+        mgr.failureCount,
+        failuresBefore + 1,
+        `burst must collapse to one attempt (failures ${failuresBefore} -> ${mgr.failureCount})`,
+      );
+    } finally {
+      mgr.stop();
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("networkResumeReconnectEnabled=false disables wake reconnect entirely", async () => {
+    const { server, port } = await startHttpServer((req, res) => {
+      res.writeHead(401);
+      res.end();
+    });
+    const mgr = makeManager(port, {
+      retryNonRetryableOnWake: true,
+      networkResumeReconnectEnabled: false,
+    });
+    try {
+      mgr.start();
+      await waitForState(mgr, "failed");
+      const failuresBefore = mgr.failureCount;
+      mgr.handleWake();
+      await new Promise((r) => setTimeout(r, 400));
+      assert.strictEqual(mgr.currentState, "failed");
+      assert.strictEqual(mgr.failureCount, failuresBefore);
+    } finally {
+      mgr.stop();
+      server.closeAllConnections();
       server.close();
     }
   });

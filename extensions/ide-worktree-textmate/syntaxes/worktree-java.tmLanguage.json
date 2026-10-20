@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-java",
+  "patterns": [
+    {
+      "include": "source.java"
+    }
+  ]
+}

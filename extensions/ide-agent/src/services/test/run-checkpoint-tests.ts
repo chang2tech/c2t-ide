@@ -297,3 +297,99 @@ describe("bubbleStore.truncateAfter — transcript rewind on restore", () => {
     assert.strictEqual(store.getOrderedIds().length, 4);
   });
 });
+
+/* ---------- per-record isNewlyCreated (Cursor record shape, OBSERVED) ---------- */
+describe("computeRestorePlan — per-record isNewlyCreated", () => {
+  function newSnap(uri: string, contents: string): FileSnapshot {
+    return { uri, contents, isNewlyCreated: true };
+  }
+
+  function planInput(
+    overrides: Partial<Parameters<typeof computeRestorePlan>[0]>,
+  ): Parameters<typeof computeRestorePlan>[0] {
+    return {
+      targetFiles: [],
+      laterFiles: [],
+      newlyCreatedFiles: [],
+      newlyCreatedFolders: [],
+      existingFolders: new Set<string>(),
+      activeInlineDiffs: [],
+      currentContents: current(),
+      ...overrides,
+    };
+  }
+
+  it("deletes a later-record file flagged isNewlyCreated even when the legacy list is empty", () => {
+    // The per-record flag drives the delete decision on its own.
+    const plan = computeRestorePlan(
+      planInput({
+        laterFiles: [newSnap("/w/flagged.ts", "created")],
+        currentContents: current(["/w/flagged.ts", "created"]),
+      }),
+    );
+    assert.strictEqual(plan.isSame, false);
+    assert.deepStrictEqual(plan.filesToDelete, ["/w/flagged.ts"]);
+    assert.deepStrictEqual(plan.filesToRevert, []);
+  });
+
+  it("a target-snapshotted path wins over a later record's isNewlyCreated flag (revert, not delete)", () => {
+    // f.ts existed at target time (target snapshot, not flagged), was deleted
+    // and re-created later; the later record flags it newly created. Restore
+    // must revert to the target contents, not delete.
+    const plan = computeRestorePlan(
+      planInput({
+        targetFiles: [snap("/w/f.ts", "original")],
+        laterFiles: [newSnap("/w/f.ts", "recreated")],
+        currentContents: current(["/w/f.ts", "recreated"]),
+      }),
+    );
+    assert.deepStrictEqual(plan.filesToDelete, []);
+    assert.deepStrictEqual(
+      plan.filesToRevert.map((f) => f.uri),
+      ["/w/f.ts"],
+    );
+    assert.strictEqual(plan.filesToRevert[0].contents, "original");
+  });
+
+  it("reverts (never deletes) a target snapshot flagged isNewlyCreated (created by an earlier turn)", () => {
+    // Sticky session flag: the file was created in an earlier turn but
+    // existed at target time — the target's own flag must not cause deletion.
+    const plan = computeRestorePlan(
+      planInput({
+        targetFiles: [newSnap("/w/early.ts", "at-target")],
+        currentContents: current(["/w/early.ts", "modified-later"]),
+      }),
+    );
+    assert.deepStrictEqual(plan.filesToDelete, []);
+    assert.deepStrictEqual(
+      plan.filesToRevert.map((f) => f.uri),
+      ["/w/early.ts"],
+    );
+    assert.strictEqual(plan.filesToRevert[0].contents, "at-target");
+  });
+
+  it("legacy records without the field fall back to the newlyCreatedFiles[] list", () => {
+    const legacySnap: FileSnapshot = { uri: "/w/z.ts", contents: "created contents" };
+    assert.strictEqual("isNewlyCreated" in legacySnap, false, "legacy shape has no field");
+    const plan = computeRestorePlan(
+      planInput({
+        laterFiles: [legacySnap],
+        newlyCreatedFiles: ["/w/z.ts"],
+        currentContents: current(["/w/z.ts", "created contents"]),
+      }),
+    );
+    assert.deepStrictEqual(plan.filesToRevert, []);
+    assert.deepStrictEqual(plan.filesToDelete, ["/w/z.ts"]);
+  });
+
+  it("isSame when a flagged file is already gone and nothing else changed", () => {
+    const plan = computeRestorePlan(
+      planInput({
+        laterFiles: [newSnap("/w/gone.ts", "x")],
+        currentContents: current(["/w/gone.ts", undefined]),
+      }),
+    );
+    assert.deepStrictEqual(plan.filesToDelete, []);
+    assert.strictEqual(plan.isSame, true);
+  });
+});

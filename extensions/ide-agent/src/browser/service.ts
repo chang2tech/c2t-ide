@@ -14,6 +14,7 @@
  * main-process BrowserView service can back it without logic changes.
  */
 import { CdpPageDriver } from "./driver";
+import { NativeBrowserPageDriver } from "./nativeDriver";
 import { PickerController } from "./picker";
 import { captureForAgent } from "./screenshot";
 import { SnapshotController } from "./snapshot";
@@ -1128,6 +1129,21 @@ export class BrowserService {
 export function createCdpDriverFactory(host: string, port: number): DriverFactory {
   return async () => {
     const driver = await CdpPageDriver.attach(host, port);
+    return driver as unknown as ServiceDriver;
+  };
+}
+
+/**
+ * Native driver factory: one Integrated Browser tab (WebContentsView) per
+ * session via the proposed `vscode.window.openBrowserTab` API — the
+ * Cursor-equivalent path. This is the factory the 16 browser MCP tools
+ * (createBrowserMcpTools) run on. Throws when the native tab API is
+ * unavailable; callers fall back to createCdpDriverFactory in that case.
+ */
+export function createNativeDriverFactory(initialUrl = "about:blank"): DriverFactory {
+  return async () => {
+    const driver = new NativeBrowserPageDriver();
+    await driver.open(initialUrl);
     return driver as unknown as ServiceDriver;
   };
 }

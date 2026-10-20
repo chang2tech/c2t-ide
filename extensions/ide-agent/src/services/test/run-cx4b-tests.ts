@@ -2,8 +2,9 @@
  * CX4b regression tests (node:test, vscode stubbed via ./vscode-stub).
  *
  * Covers the DEV-FIX-CX4B round:
- *  - MessageQueueService caps (P2 CX4b — already fixed by DEV-FIX-QAF4, locked
- *    in here so the bound can't regress silently).
+ *  - MessageQueueService is UNBOUNDED (DIG-CONTINUOUS 2026-10-19 debunked the
+ *    10-message / 20k-char caps — Cursor's addToQueue has no caps; locked in
+ *    here so a cap can't regress silently).
  *  - HumanReviewService per-approval timeout (P2 CX4b).
  *  - Session 404 helpers: sessionIdFromApiPath + httpStatusCode (P2 CX4b).
  *
@@ -19,16 +20,17 @@ import { httpStatusCode, sessionIdFromApiPath } from "../ideCodeEngineAdapter";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-describe("MessageQueueService caps (restored 2026-10-19 — curation keeps prompts focused)", () => {
-  it("caps at 10 messages — the 11th drops the oldest with a warning", () => {
+describe("MessageQueueService — unbounded (DIG-CONTINUOUS 2026-10-19: Cursor's addToQueue has no caps)", () => {
+  it("does NOT cap at 10 messages — all 11 stay queued, no warning", () => {
     windowStub.consumeWarning();
     const q = new MessageQueueService();
     for (let i = 1; i <= 11; i++) {
       q.enqueue(`msg-${i}`, "agent");
     }
-    assert.strictEqual(q.length, 10);
+    assert.strictEqual(q.length, 11);
     const drained = q.drain().map((m) => m.text);
     assert.deepStrictEqual(drained, [
+      "msg-1",
       "msg-2",
       "msg-3",
       "msg-4",
@@ -40,26 +42,21 @@ describe("MessageQueueService caps (restored 2026-10-19 — curation keeps promp
       "msg-10",
       "msg-11",
     ]);
-    const warning = windowStub.consumeWarning();
-    assert.ok(
-      warning?.includes("dropped 1 oldest"),
-      `expected drop warning, got: ${warning}`,
-    );
+    assert.strictEqual(windowStub.consumeWarning(), undefined, "no drop warning expected");
   });
 
-  it("caps total chars at 20000 — a giant message evicts older ones", () => {
+  it("does NOT cap total chars — a giant message is kept alongside the others", () => {
     windowStub.consumeWarning();
     const q = new MessageQueueService();
     q.enqueue("small-1", "agent");
     q.enqueue("small-2", "agent");
     q.enqueue("x".repeat(19_999), "agent");
-    // 7 + 7 + 19999 = 20013 > 20000 → the two small ones must be dropped.
-    assert.strictEqual(q.length, 1);
+    // 7 + 7 + 19999 chars — unbounded, so nothing is dropped.
+    assert.strictEqual(q.length, 3);
     const drained = q.drain();
-    assert.strictEqual(drained.length, 1);
-    assert.strictEqual(drained[0].text.length, 19_999);
-    const warning = windowStub.consumeWarning();
-    assert.ok(warning?.includes("dropped 2 oldest"), `expected drop warning, got: ${warning}`);
+    assert.strictEqual(drained.length, 3);
+    assert.strictEqual(drained[2]!.text.length, 19_999);
+    assert.strictEqual(windowStub.consumeWarning(), undefined, "no drop warning expected");
   });
 
   it("preserves each message's queued mode", () => {

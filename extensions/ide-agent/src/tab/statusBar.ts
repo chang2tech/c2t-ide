@@ -5,6 +5,14 @@
  * (ignore-pattern match, the .cursorignore analog). Click opens the status
  * quick-pick; hover shows global + per-language toggles, the model picker and
  * snooze actions (Cursor's `cpp-status-bar-hover-element`).
+ *
+ * DD-SB-4 / honest divergence: Cursor's `Cursor Tab` item has a LOGGED-OUT
+ * state — text `Cursor Tab`, tooltip `Please log in`, click runs
+ * `editor.cpp.login`. We have no login/auth system, so there is no logged-out
+ * branch here: the item always reflects the real local state (enabled /
+ * snoozed via `ide.tab` config + SnoozeManager / ignored via ignore
+ * patterns). If an auth layer is ever added, the logged-out branch belongs
+ * here (tooltip `Please log in`, click → login command).
  */
 
 import * as vscode from 'vscode';
@@ -18,6 +26,11 @@ export interface TabStatusInfo {
   languageDisabled: boolean;
   modelName: string;
   snoozedUntil?: number;
+  /**
+   * True when no model backend is wired (stub engine mode). Tab is silent in
+   * this state — the item says so instead of pretending to work.
+   */
+  noBackend: boolean;
 }
 
 export interface TabStatusActions {
@@ -38,13 +51,26 @@ export class TabStatusBar implements vscode.Disposable {
   }
 
   refresh(info: TabStatusInfo): void {
-    this.item.text = info.snoozed ? 'IDE Tab (Snoozed)' : info.ignored ? 'IDE Tab (Ignored)' : 'IDE Tab';
+    this.item.text = info.noBackend
+      ? 'IDE Tab (no model backend)'
+      : info.snoozed
+        ? 'IDE Tab (Snoozed)'
+        : info.ignored
+          ? 'IDE Tab (Ignored)'
+          : 'IDE Tab';
 
     const md = new vscode.MarkdownString('', true);
     md.isTrusted = true;
     md.supportHtml = false;
     const lines: string[] = ['**IDE Tab**', ''];
-    if (!info.enabled) {
+    if (info.noBackend) {
+      lines.push(
+        'No model backend connected — suggestions are off (nothing is faked).',
+        '',
+        'Set `ide.agent.engineMode` to `sidecar` and reload to enable real Tab completions.',
+        '',
+      );
+    } else if (!info.enabled) {
       lines.push('Tab completion is disabled globally.', '');
       lines.push('[Enable IDE Tab](command:ide.enableTabGlobally)');
     } else if (info.snoozed) {
@@ -66,9 +92,8 @@ export class TabStatusBar implements vscode.Disposable {
     }
     md.value = lines.join('\n\n');
     this.item.tooltip = md;
-    this.item.backgroundColor = info.snoozed
-      ? new vscode.ThemeColor('statusBarItem.warningBackground')
-      : undefined;
+    this.item.backgroundColor =
+      info.snoozed || info.noBackend ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
   }
 
   dispose(): void {

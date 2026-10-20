@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-protobuf",
+  "patterns": [
+    {
+      "include": "source.proto"
+    }
+  ]
+}

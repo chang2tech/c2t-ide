@@ -337,7 +337,7 @@ export function renderBrowserTabHtml(nonce: string, initial: BrowserTabState): s
         placeholder="Search or enter URL" aria-label="Address bar" />
     </div>
     <button class="btn" id="shotBtn" title="Screenshot — send to chat">${ICONS.camera}</button>
-    <button class="btn ${s.pickerMode ? "active" : ""}" id="pickBtn" title="Pick element — send to chat">${ICONS.picker}</button>
+    <button class="btn ${s.pickerMode ? "active" : ""}" id="pickBtn" title="Select element">${ICONS.picker}</button>
     <div id="menuWrap">
       <button class="btn" id="moreBtn" title="Browser Menu" aria-label="Browser options" aria-haspopup="menu">${ICONS.ellipsis}</button>
       <div id="moreMenu" role="menu" aria-label="Browser options">

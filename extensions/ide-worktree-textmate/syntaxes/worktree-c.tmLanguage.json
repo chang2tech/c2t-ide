@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-c",
+  "patterns": [
+    {
+      "include": "source.c"
+    }
+  ]
+}

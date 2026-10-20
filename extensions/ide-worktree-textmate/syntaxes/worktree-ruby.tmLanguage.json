@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-ruby",
+  "patterns": [
+    {
+      "include": "source.ruby"
+    }
+  ]
+}

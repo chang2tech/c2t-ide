@@ -26,6 +26,7 @@ import {
   HookResult,
   isKnownEvent,
   LoadedHook,
+  getHookMatcherValue,
   MATCHER_FIELDS,
   SourceLoadResult,
 } from "./hookTypes";
@@ -59,9 +60,41 @@ export interface ToolGateResult {
   reason?: string;
   /** Follow-up context the hooks produced (appended to the turn). */
   contextAdditions: string[];
+  /**
+   * IDE-CODE (hooks-deny-message-routing): concatenated `user_message`
+   * values from every hook that ran in the gate. Cursor parity — binary
+   * (cursor-agent-exec/dist/main.js, 3.25.6): on deny the agent-facing
+   * denial embeds it, e.g. `${tool} blocked by preToolUse hook:
+   * ${userMessage}`, delivered as a rejected tool result; official docs
+   * (cursor.com/docs/agent/hooks): "Message shown to the user when the
+   * action is denied". The adapter routes these into the engine request
+   * context (permission reply `message`) and the user-facing tool card.
+   */
+  userMessages: string[];
+  /**
+   * IDE-CODE (hooks-deny-message-routing): concatenated `agent_message`
+   * values from every hook that ran in the gate. Cursor official docs:
+   * "Message fed back to the agent when the action is denied". The adapter
+   * routes these into the engine request context (permission reply
+   * `message`) on deny.
+   */
+  agentMessages: string[];
 }
 
 const DECISION_RANK: Record<HookDecision, number> = { allow: 1, ask: 2, deny: 3 };
+
+/**
+ * DEV-GAPS-112: events whose responses may carry `additional_context` —
+ * Cursor's dXi set verbatim (desk@16519397): sessionStart,
+ * beforeSubmitPrompt, preToolUse, postToolUse, postToolUseFailure.
+ */
+const ADDITIONAL_CONTEXT_EVENTS: ReadonlySet<HookEventName> = new Set([
+  "sessionStart",
+  "beforeSubmitPrompt",
+  "preToolUse",
+  "postToolUse",
+  "postToolUseFailure",
+]);
 
 /** Events whose deny decision can actually block something. */
 const BLOCKING_EVENTS: ReadonlySet<HookEventName> = new Set([
@@ -69,6 +102,11 @@ const BLOCKING_EVENTS: ReadonlySet<HookEventName> = new Set([
   "beforeShellExecution",
   "beforeMCPExecution",
   "beforeReadFile",
+  // DEV-GAPS-34 (hooks-21-events): docs list beforeTabFileRead as a
+  // permission hook. It was missing here, which made the tab provider's
+  // `hr.blocked` check dead code — a deny/exit-2 from a beforeTabFileRead
+  // hook could never suppress a suggestion.
+  "beforeTabFileRead",
   "beforeSubmitPrompt",
   "subagentStart",
   // A deny from a stop/subagentStop hook blocks the stop itself — the turn
@@ -107,6 +145,43 @@ export class HookService {
   private static readonly MAX_CONTEXT_PER_SCOPE = 200;
   private readonly conversationId: string;
   private generationSeq = 0;
+  /**
+   * DEV-GAPS-112 (hooks-sessionstart-payload): session environments —
+   * Cursor's `sessionEnvironments` map (cursorHooksService, desk@32514563).
+   * `env` returned by a sessionStart hook is stored per session and merged
+   * into the environment of every subsequent hook execution in that
+   * session (_buildHookEnvironment: `Object.assign(o, sessionEnv)`).
+   * Key: the fork's per-composer scope (= composerId — ComposerDataService
+   * `composerId` getter returns its hookScope), falling back to the
+   * payload's session_id/conversation_id for unscoped callers.
+   */
+  private readonly sessionEnvironments = new Map<string, Record<string, string>>();
+
+  /** Cursor `setSessionEnvironment` (desk@32514563): per-key merge, later wins. */
+  setSessionEnvironment(sessionId: string, env: Record<string, string>): void {
+    if (!sessionId || Object.keys(env).length === 0) {
+      return;
+    }
+    const existing = this.sessionEnvironments.get(sessionId) ?? {};
+    this.sessionEnvironments.set(sessionId, { ...existing, ...env });
+    this.logLine(`session environment updated for ${sessionId}: ${Object.keys(env).join(", ")}`);
+  }
+
+  /** Cursor `getSessionEnvironment` (desk@32514563). */
+  getSessionEnvironment(sessionId: string): Record<string, string> | undefined {
+    const env = this.sessionEnvironments.get(sessionId);
+    return env ? { ...env } : undefined;
+  }
+
+  /** Cursor `clearSessionEnvironment` (part of cleanupSessionTracking). */
+  clearSessionEnvironment(sessionId: string): void {
+    this.sessionEnvironments.delete(sessionId);
+  }
+
+  /** Resolve the session-env key for one run (see sessionEnvironments). */
+  private sessionKeyFor(payload: HookPayload, scope: string): string {
+    return scope || payload.session_id || payload.conversation_id || this.conversationId;
+  }
 
   constructor(private readonly opts: HookServiceOptions) {
     this.conversationId = opts.conversationId ?? randomUUID();
@@ -170,6 +245,14 @@ export class HookService {
   }
 
   /**
+   * Clear the hook execution log (Customize view "Clear log").
+   * Mirrors Cursor's `clearHookExecutionLog` ([CustomizeEditor] bundle).
+   */
+  clearExecutionLog(): void {
+    this.execLog.length = 0;
+  }
+
+  /**
    * Drain hook stdout accumulated for the agent's context.
    * P2 (QA-CHATTABS-01): scoped — each chat tab drains only its own
    * composer's scope, so hook output never crosses tabs.
@@ -216,7 +299,7 @@ export class HookService {
   }
 
   private buildPayload(event: HookEventName, extras: Record<string, unknown> = {}): HookPayload {
-    return {
+    const payload: HookPayload = {
       conversation_id: this.conversationId,
       generation_id: `gen-${++this.generationSeq}`,
       hook_event_name: event,
@@ -226,6 +309,13 @@ export class HookService {
       transcript_path: this.opts.transcriptPath,
       ...extras,
     };
+    // DEV-GAPS-112: Cursor's executeHookForStep (desk@32523436) synthesizes
+    // session_id for every event except workspaceOpen (the only member of
+    // its Zoh list): session_id = payload.session_id ?? conversation_id.
+    if (event !== "workspaceOpen" && typeof payload.session_id !== "string") {
+      payload.session_id = payload.conversation_id;
+    }
+    return payload;
   }
 
   private matches(entry: LoadedHook, payload: HookPayload): boolean {
@@ -233,10 +323,12 @@ export class HookService {
     if (!matcher) {
       return true;
     }
-    const field = MATCHER_FIELDS[entry.event];
-    const value = field ? payload[field] : undefined;
+    // DEV-GAPS-34 (hooks-21-events): docs matcher table
+    // (getHookMatcherValue) — constants like `Read`/`TabRead`/`Stop` are
+    // tested verbatim per cursor.com/docs/hooks.
+    const value = getHookMatcherValue(entry.event, payload);
     if (typeof value !== "string") {
-      return true; // no matcher field for this event — run it
+      return true; // no matcher value for this event — run it
     }
     try {
       return new RegExp(matcher).test(value);
@@ -282,6 +374,7 @@ export class HookService {
       followupMessages: [],
       contextAdditions: [],
       pluginPaths: [],
+      env: {},
       outcomes: [],
     };
     const candidates = this.hooks.filter((h) => h.event === event);
@@ -290,6 +383,10 @@ export class HookService {
     }
     const payload = this.buildPayload(event, extras);
     const blocking = BLOCKING_EVENTS.has(event);
+    // DEV-GAPS-112: session env for this run (Cursor _buildHookEnvironment
+    // merges getSessionEnvironment(conversation) into every hook's env).
+    const sessionKey = this.sessionKeyFor(payload, scope);
+    const sessionEnv = this.getSessionEnvironment(sessionKey);
 
     for (const hook of candidates) {
       if (!this.matches(hook, payload)) {
@@ -319,7 +416,10 @@ export class HookService {
       const outcome = await runHookProcess(hook, payload, {
         cwd: this.opts.workspaceRoots[0] ?? process.cwd(),
         appVersion: this.opts.appVersion,
-        extraEnv: this.opts.extraEnv,
+        // Session env (from this session's sessionStart) overrides the
+        // service's static extraEnv — Cursor assigns it last into the
+        // hook environment object (_buildHookEnvironment, desk@32514563).
+        extraEnv: { ...this.opts.extraEnv, ...sessionEnv },
       });
       result.outcomes.push(outcome);
       this.record({
@@ -350,6 +450,26 @@ export class HookService {
       if (outcome.pluginPaths) {
         result.pluginPaths.push(...outcome.pluginPaths);
       }
+      // DEV-GAPS-112 (hooks-sessionstart-payload): sessionStart outputs.
+      // Cursor Qe_ merge (desk@16516541): `env` merges per key (later hook
+      // wins per key) ONLY for sessionStart; `additional_context` joins
+      // with "\n\n---\n\n" for the dXi events (sessionStart,
+      // beforeSubmitPrompt, preToolUse, postToolUse, postToolUseFailure).
+      if (event === "sessionStart" && outcome.env) {
+        result.env = { ...result.env, ...outcome.env };
+      }
+      if (outcome.additionalContext && ADDITIONAL_CONTEXT_EVENTS.has(event)) {
+        result.additionalContext = result.additionalContext
+          ? `${result.additionalContext}\n\n---\n\n${outcome.additionalContext}`
+          : outcome.additionalContext;
+        // The fork's context-injection path: the composer drains scoped
+        // additions into its next turn. For sessionStart (fired at session
+        // creation, before the first turn) this lands in the first turn's
+        // context — the fork equivalent of Cursor's call site storing it
+        // as the composer's hooksAdditionalContext (desk@31874628).
+        result.contextAdditions.push(outcome.additionalContext);
+        this.appendContextAddition(scope, outcome.additionalContext);
+      }
       // Raw stdout (non-JSON) flows into the agent's context.
       if (outcome.stdout.trim().length > 0 && !looksLikeJsonBlob(outcome.stdout)) {
         result.contextAdditions.push(outcome.stdout);
@@ -364,6 +484,20 @@ export class HookService {
           this.logLine(`${event}: hook wanted to block, but "${event}" is not a blocking event — recorded only.`);
         }
       }
+    }
+    // DEV-GAPS-112: Cursor's sessionStart call site applies the merged env
+    // (desk@31874628: `if (F?.env && Object.keys(F.env).length > 0)
+    // setSessionEnvironment(g, F.env)`). The fork's adapter call site is
+    // fire-and-forget and discards the result, so the service (the fork's
+    // cursorHooksService analogue, owner of the sessionEnvironments map)
+    // applies it here — same store, same key, same merge.
+    if (event === "sessionStart" && Object.keys(result.env).length > 0) {
+      this.setSessionEnvironment(sessionKey, result.env);
+    }
+    // Cursor's fireSessionEndHookAsync always ends with
+    // cleanupSessionTracking (desk@31865732), which clears the session env.
+    if (event === "sessionEnd") {
+      this.clearSessionEnvironment(sessionKey);
     }
     return result;
   }
@@ -386,12 +520,20 @@ export class HookService {
       sessionID: ctx.sessionID,
     };
     const contextAdditions: string[] = [];
+    // IDE-CODE (hooks-deny-message-routing): Cursor parity — user_message /
+    // agent_message from the hooks are routed to the caller (the engine
+    // adapter delivers them to the agent as the denial feedback and shows
+    // user_message to the user). They must never be silently dropped.
+    const userMessages: string[] = [];
+    const agentMessages: string[] = [];
 
     // preToolUse always fires (matcher: tool type, incl. MCP:<tool>).
     const pre = await this.runHooks("preToolUse", baseExtras, scope);
     contextAdditions.push(...pre.contextAdditions);
+    userMessages.push(...pre.userMessages);
+    agentMessages.push(...pre.agentMessages);
     if (pre.blocked) {
-      return { blocked: true, reason: pre.blockReason, contextAdditions };
+      return { blocked: true, reason: pre.blockReason, contextAdditions, userMessages, agentMessages };
     }
 
     // Specialized before* event for the tool kind.
@@ -422,8 +564,10 @@ export class HookService {
     }
     if (specialized) {
       contextAdditions.push(...specialized.contextAdditions);
+      userMessages.push(...specialized.userMessages);
+      agentMessages.push(...specialized.agentMessages);
       if (specialized.blocked) {
-        return { blocked: true, reason: specialized.blockReason, contextAdditions };
+        return { blocked: true, reason: specialized.blockReason, contextAdditions, userMessages, agentMessages };
       }
       // "ask" escalates: the caller must show the approval card instead of
       // auto-allowing. Surface it as a non-blocking signal.
@@ -433,7 +577,7 @@ export class HookService {
     } else if (pre.decision === "ask") {
       contextAdditions.push("[hooks] a hook returned \"ask\" — escalate to user approval.");
     }
-    return { blocked: false, contextAdditions };
+    return { blocked: false, contextAdditions, userMessages, agentMessages };
   }
 }
 
@@ -447,7 +591,9 @@ function looksLikeJsonBlob(stdout: string): boolean {
     const v = JSON.parse(t) as Record<string, unknown>;
     return (
       typeof v === "object" && v !== null &&
-      ("decision" in v || "reason" in v || "followup_message" in v || "pluginPaths" in v)
+      // DEV-GAPS-112: env/additional_context blobs are structured hook
+      // output (sessionStart), not raw context text.
+      ("decision" in v || "reason" in v || "followup_message" in v || "pluginPaths" in v || "env" in v || "additional_context" in v)
     );
   } catch {
     return false;

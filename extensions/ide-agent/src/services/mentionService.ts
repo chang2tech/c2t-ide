@@ -30,9 +30,8 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { searchCodebase } from "./codebaseIndexService";
+import { gitExecFile } from "./gitExec";
 import {
   MentionChip,
   MentionItem,
@@ -87,8 +86,6 @@ interface MentionProvider {
   queryOnly?: boolean;
   getItems(query: string): Promise<MentionItem[]>;
 }
-
-const execFileAsync = promisify(execFile);
 
 function workspaceRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -374,7 +371,9 @@ const pastChatsProvider: MentionProvider = {
 
 async function gitDiff(cwd: string, args: string[]): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
+    // DEV-GAPS-14 `ext-git-sanitize`: URL credentials stripped, safe `-c`
+    // configs forced before the subcommand.
+    const { stdout } = await gitExecFile(cwd, args, { timeoutMs: 15_000, maxBuffer: 4 * 1024 * 1024 });
     return stdout;
   } catch {
     return undefined;
@@ -788,6 +787,12 @@ export class MentionService {
         case "browserConnection": {
           // Marker the engine's browser tool path understands.
           return "browser playwright mcp tools use-browser";
+        }
+        case "linkSelection": {
+          // GAPS-131: a pasted-URL link chip — the URL itself is the
+          // attached context (Cursor's linksSelections carry the url;
+          // the agent's web-fetch path consumes it from the prompt).
+          return p.url;
         }
         case "docSelection":
         case "pastChatSelection":

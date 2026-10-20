@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-yaml",
+  "patterns": [
+    {
+      "include": "source.yaml"
+    }
+  ]
+}

@@ -77,9 +77,45 @@ function readConfigFile(filePath: string, logger: McpLogger): McpConfigFile | un
   }
 }
 
+/**
+ * IDE-CODE (deeplink-mcp-install): pure merge of one server entry into an
+ * mcp.json document. Cursor parity — mirrors
+ * MCPInstallationService.installProposedServer (3.25.6 bundle): read the
+ * user config; if it parses to an object keep it (even with a missing/bad
+ * `mcpServers`, which is reset), otherwise start from `{ mcpServers: {} }`
+ * (the binary logs the read error and keeps `n = { mcpServers: {} }`); set
+ * `mcpServers[name] = server`; write back `JSON.stringify(doc, null, 2)`.
+ * Pure (no file IO) so it is unit-testable; the service adds the file IO.
+ */
+export function mergeServerIntoMcpConfig(
+  existingRaw: string | undefined,
+  name: string,
+  server: McpServerConfig,
+): string {
+  let doc: { mcpServers?: Record<string, unknown>; [key: string]: unknown } = { mcpServers: {} };
+  if (existingRaw !== undefined) {
+    try {
+      const parsed: unknown = JSON.parse(existingRaw);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        doc = parsed as { mcpServers?: Record<string, unknown>; [key: string]: unknown };
+      }
+    } catch {
+      // Corrupt JSON — fall through with the fresh document.
+    }
+  }
+  if (
+    doc.mcpServers === null ||
+    typeof doc.mcpServers !== "object" ||
+    Array.isArray(doc.mcpServers)
+  ) {
+    doc.mcpServers = {};
+  }
+  (doc.mcpServers as Record<string, unknown>)[name] = server;
+  return JSON.stringify(doc, null, 2);
+}
+
 /** Minimal dotenv parser for `envFile` (KEY=VALUE, # comments, quotes). */
-export function parseEnvFile(content: string): Record<string, string> {
-  const out: Record<string, string> = {};
+export function parseEnvFile(content: string): Record<string, string> {  const out: Record<string, string> = {};
   for (const line of content.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -263,6 +299,9 @@ export function discoverServers(ctx: McpDiscoveryContext): ConfiguredServer[] {
           `[mcp] server "${name}": no transport detected (needs "command" for stdio or "url" for HTTP) — server will stay disabled`,
         );
       }
+      // WORKER-GAPS-32C (mcp-transport-types): Cursor's hosted gateway id,
+      // extracted from the URL path when it matches the gateway shape.
+      const gatewayServerId = extractRestMcpServerId(expanded.url);
       out.push({
         id: serverId(candidate.scope, name),
         displayName: name,
@@ -270,6 +309,7 @@ export function discoverServers(ctx: McpDiscoveryContext): ConfiguredServer[] {
         sourcePath: candidate.path,
         config: { args: [], ...expanded },
         transport: transport === "unknown" ? "stdio" : transport,
+        ...(gatewayServerId !== undefined ? { gatewayServerId } : {}),
       });
     }
   }
@@ -278,12 +318,39 @@ export function discoverServers(ctx: McpDiscoveryContext): ConfiguredServer[] {
 
 /**
  * Type detection (parity §B2): `command` present → stdio; `url` present →
- * streamable_http (unsupported); else unknown.
+ * streamableHttp (unsupported); else unknown.
+ *
+ * WORKER-GAPS-32C (mcp-transport-types): Cursor's binary enum is camelCase
+ * `streamableHttp` (cursor-mcp/dist/main.js 3.25.9: `"streamableHttp"===n.type`),
+ * so both `streamableHttp` and the legacy snake_case `streamable_http` are
+ * recognized; url-based configs default to the canonical `streamableHttp`.
  */
-export function detectTransport(cfg: McpServerConfig): "stdio" | "streamable_http" | "sse" | "unknown" {
+export function detectTransport(cfg: McpServerConfig): "stdio" | "streamableHttp" | "sse" | "unknown" {
   if (cfg.command) return "stdio";
   if (cfg.url) {
-    return cfg.transportType === "sse" ? "sse" : "streamable_http";
+    return cfg.transportType === "sse" ? "sse" : "streamableHttp";
   }
   return "unknown";
+}
+
+/**
+ * Cursor's hosted MCP gateway detection (parity: cursor-mcp/dist/main.js
+ * 3.25.9, `function d(e){if(void 0===e)return;let t;try{t=new URL(e)}catch{return}
+ * const r=/^\/rest-mcp\/([^/]+)\/mcp\/?$/.exec(t.pathname);return r?.[1]}`).
+ *
+ * Returns the gateway server id when `url`'s pathname matches
+ * `^/rest-mcp/([^/]+)/mcp/?$`; otherwise undefined (undefined input,
+ * unparseable URL, or non-gateway path all → undefined, exactly like the
+ * binary).
+ */
+export function extractRestMcpServerId(url: string | undefined): string | undefined {
+  if (url === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const m = /^\/rest-mcp\/([^/]+)\/mcp\/?$/.exec(parsed.pathname);
+  return m?.[1];
 }

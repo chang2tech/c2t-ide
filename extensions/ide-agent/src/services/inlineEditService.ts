@@ -3,6 +3,20 @@ import * as vscode from "vscode";
 import { IdeCodeEngineAdapter } from "./ideCodeEngineAdapter";
 import { defaultEnginePath } from "./composerDataService";
 import { takePendingSelection } from "./inlinePromptSelection";
+import { tryGetAiCodeTracking } from "./aiCodeTracking";
+
+/**
+ * DD-SB-5: file key for aiCodeTracking attribution — workspace-relative when
+ * possible (matches repo-relative paths at score time for the common
+ * workspace-root repo layout), else the absolute path.
+ */
+function trackingFileKey(uri: vscode.Uri): string {
+  try {
+    return vscode.workspace.asRelativePath(uri);
+  } catch {
+    return uri.fsPath;
+  }
+}
 
 /**
  * InlineEditService — Cursor-style Cmd+K inline edit.
@@ -30,14 +44,16 @@ import { takePendingSelection } from "./inlinePromptSelection";
 
 export const INLINE_EDIT_CONTEXT_KEY = "ideAgent.inlineEditPending";
 
-// NOTE (user directive 2026-10-19, refined same day): keep the curation caps
-// that shape MODEL INPUT — focused context is a big part of why the agent
-// feels smart (user: "không chừng nhờ cắt vậy mà chat cursor mới thông minh").
-// Removed only the hostile refusal (MAX_TARGET_CHARS): the user's selection
-// is the edit target, the model must see it whole — never refuse it.
-const CONTEXT_LINES = 40;
-const CONTEXT_CHARS = 4_000;
-const MAX_FOLLOWUP_HISTORY_CHARS = 6_000;
+// NOTE (binary evidence, 2026-10-19, Cursor 3.25.9 glass bundle):
+// zero hits for 6000/60000; no escalation/question flows in CmdK; Cursor
+// sends the full `query_history` linked list via proto `CmdKQueryHistory`.
+// The inline-edit char caps (follow-up history 6000, escalation 4000,
+// question 8000) were fabricated — they are removed. The target/selection
+// and prior attempts are passed to the model whole; any real token limits
+// are enforced server-side by the model endpoint, not by client truncation.
+const CONTEXT_LINES = 40; // UNKNOWN: no binary evidence for a Cursor-side
+const CONTEXT_CHARS = 4_000; // surrounding-context window — kept as a local
+// default only; do NOT claim parity with Cursor.
 
 /** One contiguous changed region between the original and proposed text. */
 export interface DiffHunk {
@@ -175,6 +191,152 @@ export function lineDiff(a: string[], b: string[]): DiffHunk[] {
   return hunks;
 }
 
+// ------------------------------------------------------------------
+// Partial-diff core (Cursor 3.25.9 parity).
+//
+// Binary evidence (dig-continuous-inline-edit-2026-10-19, §3.3/§5):
+// - `inlineDiffController.showDiff()`: each diff has `zoneWidgets` and
+//   `partialWidgets` (id = diffId + "-partial" + index) — every individual
+//   hunk/change gets its own accept/reject controls, not just accept-all.
+// - Commands: `editor.action.inlineDiffs.acceptPartialEdit`
+//   ("Accept Partial Edit", Win Ctrl+Shift+Y / mac Cmd+Y, weight 500) and
+//   `editor.action.inlineDiffs.rejectPartialEdit`
+//   ("Reject Partial Edit", Ctrl/Cmd+N, weight 500).
+// - Telemetry: "Accepted Partial Diff" / "Rejected Partial Diff"
+//   (distinct from "Accepted Diff" / "Rejected Diff").
+// - Navigation: Alt+J/K next/previous change, Alt+H/L next/previous diff
+//   file.
+//
+// All helpers below are pure (no VS Code dependency) and unit-tested in
+// src/services/test/run-partial-diff-tests.ts.
+// ------------------------------------------------------------------
+
+/**
+ * Per-hunk resolution state inside a pending inline-edit preview.
+ * "pending" = shown as proposed, awaiting a decision;
+ * "accepted" = committed to the file (partial accept);
+ * "rejected" = reverted to the original lines (partial reject).
+ */
+export type InlineHunkState = "pending" | "accepted" | "rejected";
+
+/** Merged text plus where each hunk landed inside it. */
+export interface MergedHunks {
+  lines: string[];
+  /**
+   * hunkRanges[i] = 0-based [start, end) line range of hunk i inside
+   * `lines`. Index-aligned with the hunks passed to mergeHunks.
+   */
+  hunkRanges: Array<{ start: number; end: number }>;
+}
+
+/**
+ * Merge original/proposed line arrays according to per-hunk states.
+ * Pending and accepted hunks contribute the proposed lines (the preview
+ * already shows them); rejected hunks contribute the original lines.
+ * Pure — no VS Code dependency.
+ */
+export function mergeHunks(
+  origLines: string[],
+  newLines: string[],
+  hunks: DiffHunk[],
+  states: readonly InlineHunkState[],
+): MergedHunks {
+  if (hunks.length !== states.length) {
+    throw new Error(
+      `mergeHunks: got ${hunks.length} hunks but ${states.length} states`,
+    );
+  }
+  const lines: string[] = [];
+  const hunkRanges: Array<{ start: number; end: number }> = [];
+  let o = 0;
+  for (let i = 0; i < hunks.length; i++) {
+    const h = hunks[i]!;
+    // Equal prefix between the previous hunk and this one — identical in
+    // both texts by construction of lineDiff.
+    while (o < h.origStart) {
+      lines.push(origLines[o]!);
+      o++;
+    }
+    const start = lines.length;
+    if (states[i] === "rejected") {
+      for (let k = h.origStart; k < h.origEnd; k++) {
+        lines.push(origLines[k]!);
+      }
+    } else {
+      for (let k = h.newStart; k < h.newEnd; k++) {
+        lines.push(newLines[k]!);
+      }
+    }
+    hunkRanges.push({ start, end: lines.length });
+    o = h.origEnd;
+  }
+  while (o < origLines.length) {
+    lines.push(origLines[o]!);
+    o++;
+  }
+  return { lines, hunkRanges };
+}
+
+/**
+ * Immutable per-hunk state transition. Throws RangeError on a bad index —
+ * callers resolve the index via nextPendingHunkIndex first.
+ */
+export function setHunkState(
+  states: readonly InlineHunkState[],
+  index: number,
+  state: InlineHunkState,
+): InlineHunkState[] {
+  if (!Number.isInteger(index) || index < 0 || index >= states.length) {
+    throw new RangeError(
+      `setHunkState: hunk index ${index} out of range (0..${states.length - 1})`,
+    );
+  }
+  const next = states.slice();
+  next[index] = state;
+  return next;
+}
+
+/**
+ * Next/previous PENDING hunk index, wrapping around the hunk list.
+ * direction: +1 (Alt+J) / -1 (Alt+K).
+ * `fromIndex` is the navigation cursor and may be -1 (unset): +1 starts at
+ * the first hunk, -1 at the last hunk; an out-of-range cursor is treated as
+ * unset. Returns -1 when no hunk is pending.
+ */
+export function nextPendingHunkIndex(
+  states: readonly InlineHunkState[],
+  fromIndex: number,
+  direction: 1 | -1,
+): number {
+  const total = states.length;
+  if (total === 0) return -1;
+  const mod = (v: number): number => ((v % total) + total) % total;
+  const start =
+    fromIndex >= 0 && fromIndex < total ? mod(fromIndex + direction) : direction === 1 ? 0 : total - 1;
+  for (let step = 0; step < total; step++) {
+    const idx = mod(start + direction * step);
+    if (states[idx] === "pending") return idx;
+  }
+  return -1;
+}
+
+/**
+ * Cursor 3.25.9 inline-diff analytics event names, verbatim from the glass
+ * bundle (dig-continuous-inline-edit-2026-10-19 §4).
+ *
+ * HONEST DIVERGENCE: this codebase has no telemetry backend, so the
+ * service only records these names into an in-memory per-preview log
+ * (see InlineSession.telemetry / getTelemetryLog). The names are kept
+ * verbatim so a future backend sends exactly what Cursor sends.
+ */
+export const INLINE_EDIT_TELEMETRY = {
+  acceptedDiff: "Accepted Diff",
+  rejectedDiff: "Rejected Diff",
+  acceptedPartialDiff: "Accepted Partial Diff",
+  rejectedPartialDiff: "Rejected Partial Diff",
+  cancelledDiff: "Cancelled Diff",
+} as const;
+
 const FENCE_ALIASES: Record<string, string> = {
   typescript: "ts",
   javascript: "js",
@@ -205,6 +367,117 @@ export function extractCodeBlock(text: string, languageId: string): string | und
   return hit.code.replace(/\n+$/, "");
 }
 
+/**
+ * PERF-PROTECTION (Cursor parity — binary evidence 2026-10-19, Cursor 3.25.9
+ * glass bundle):
+ * - Setting `cursor.inlineDiff.enablePerformanceProtection` (default true):
+ *   "Enable performance protection for inline diffs. When enabled, inline
+ *   diff decorations will be suppressed if there are too many changes to
+ *   prevent editor unresponsiveness."
+ * - Threshold from experiment `inline_diff_performance_config.maxDecorations`
+ *   (default 100). Over the threshold Cursor suppresses decorations
+ *   (`s && this.changes.length > o && r.splice(0)`), calls
+ *   `notifySuppressedDiffVisible`, and shows a notification dismissible via
+ *   `neverShowAgain: {id: "inlineDiff.tooManyChangesWarning"}`.
+ * Ours: `ide.inlineDiff.enablePerformanceProtection` /
+ * `ide.inlineDiff.maxDecorations`. `this.changes` maps to our diff `hunks`.
+ */
+
+/** Configuration section for the inline-diff perf-protection settings. */
+export const INLINE_DIFF_PERF_CONFIG_SECTION = "ide.inlineDiff";
+/** Default threshold — verbatim from `inline_diff_performance_config.maxDecorations`. */
+export const INLINE_DIFF_MAX_DECORATIONS_DEFAULT = 100;
+/**
+ * Verbatim warning id (Cursor's `neverShowAgain` id). The public VS Code API
+ * has no `neverShowAgain` option (Cursor uses its internal notification
+ * service), so the dismissal is persisted in extension globalState instead.
+ */
+export const INLINE_DIFF_TOO_MANY_CHANGES_WARNING_ID = "ide.inlineDiff.tooManyChangesWarning";
+
+export interface InlineDiffPerfProtection {
+  enablePerformanceProtection: boolean;
+  maxDecorations: number;
+}
+
+export function readInlineDiffPerfConfig(
+  cfg: Pick<vscode.WorkspaceConfiguration, "get"> = vscode.workspace.getConfiguration(
+    INLINE_DIFF_PERF_CONFIG_SECTION,
+  ),
+): InlineDiffPerfProtection {
+  return {
+    enablePerformanceProtection: cfg.get<boolean>("enablePerformanceProtection", true),
+    maxDecorations: cfg.get<number>("maxDecorations", INLINE_DIFF_MAX_DECORATIONS_DEFAULT),
+  };
+}
+
+/**
+ * PARTIAL-ACCEPTS TOGGLE for inline-edit hunk accept/reject.
+ *
+ * HONEST-DIVERGENCE (WORKER-GAPS-11A, binary re-verified 2026-10-20): this is
+ * NOT verbatim Cursor parity. Cursor 3.25.9's `cursor.cpp.enablePartialAccepts`
+ * (workbench.desktop.main.js) is registered in the "cpp" (Cursor Tab) settings
+ * section with description "Enable partial accepts for Cursor Tab, using the
+ * editor.action.inlineSuggest.acceptNextWord keybinding" and default FALSE — it
+ * gates Tab's next-WORD partial accept (`acceptNextWord()` returns false unless
+ * the setting is true), NOT inline-diff hunk accept/reject. Cursor's inline-diff
+ * commands `editor.action.inlineDiffs.acceptPartialEdit` / `rejectPartialEdit`
+ * have NO config gate in the binary (only a shouldHideInlineDiffs session guard).
+ * The true Cursor equivalent of that toggle is `ide.tab.enablePartialAccepts`
+ * (core composerConfiguration.ts, wired to the partial-accept keybinding).
+ *
+ * Ours: `ide.cpp.enablePartialAccepts` (registered in the extension package.json,
+ * "IDE CPP" section, default true) is an IDE-CODE extension of the concept:
+ * when disabled, partial accept/reject of individual hunks is turned off —
+ * only the full Accept/Reject of the whole inline edit apply.
+ */
+
+/** Configuration section for the `ide.cpp.*` settings. */
+export const CPP_CONFIG_SECTION = "ide.cpp";
+/** Default of `ide.cpp.enablePartialAccepts` — IDE-CODE choice (Cursor's Tab toggle defaults to false; see PARTIAL-ACCEPTS TOGGLE above). */
+export const PARTIAL_ACCEPTS_DEFAULT = true;
+
+export function readPartialAcceptsEnabled(
+  cfg: Pick<vscode.WorkspaceConfiguration, "get"> = vscode.workspace.getConfiguration(
+    CPP_CONFIG_SECTION,
+  ),
+): boolean {
+  return cfg.get<boolean>("enablePartialAccepts", PARTIAL_ACCEPTS_DEFAULT);
+}
+
+/**
+ * Pure suppression decision. Mirrors the binary: `s &&
+ * this.changes.length > o` — s = protection enabled, o = maxDecorations.
+ * Boundary is strictly greater-than: exactly `maxDecorations` changes still
+ * render decorations normally.
+ */
+export function shouldSuppressInlineDiffDecorations(
+  changeCount: number,
+  perf: InlineDiffPerfProtection,
+): boolean {
+  return perf.enablePerformanceProtection && changeCount > perf.maxDecorations;
+}
+
+/**
+ * Cursor's `notifySuppressedDiffVisible` analog: warn the user that the
+ * inline-diff decorations were suppressed, with a "Don't show again" action
+ * that persists the dismissal under `ide.inlineDiff.tooManyChangesWarning`.
+ */
+export async function showInlineDiffTooManyChangesWarning(
+  changeCount: number,
+  globalState: vscode.Memento,
+): Promise<void> {
+  if (globalState.get<boolean>(INLINE_DIFF_TOO_MANY_CHANGES_WARNING_ID, false)) {
+    return; // user dismissed it before — stay silent
+  }
+  const choice = await vscode.window.showWarningMessage(
+    `IDE Agent: the inline diff has ${changeCount} changes — diff decorations were suppressed to keep the editor responsive.`,
+    "Don't show again",
+  );
+  if (choice === "Don't show again") {
+    await globalState.update(INLINE_DIFF_TOO_MANY_CHANGES_WARNING_ID, true);
+  }
+}
+
 interface InlineTarget {
   document: vscode.TextDocument;
   /** Range in the document that will be replaced (zero-width when inserting). */
@@ -228,6 +501,36 @@ interface InlineSession {
   proposedText: string;
   /** Document version right after the preview was applied. */
   previewVersion: number;
+  /**
+   * DD-SB-5: `linesAdded + linesRemoved` of the proposed diff (Cursor's
+   * per-event unit for `composer.diff_summary` / `composer.accept_diff`),
+   * computed from the preview hunks in showPreview.
+   */
+  suggestLines: number;
+  /** 0-based line arrays of the original vs proposed text (merge sources). */
+  origLines: string[];
+  newLines: string[];
+  /** Diff hunks between origLines and newLines, in document order. */
+  hunks: DiffHunk[];
+  /** Per-hunk resolution state, index-aligned with `hunks`. */
+  hunkStates: InlineHunkState[];
+  /** Per-hunk 0-based line ranges inside `mergedLines`, index-aligned. */
+  hunkRanges: Array<{ start: number; end: number }>;
+  /** Text currently applied in the document (merged per `hunkStates`). */
+  mergedLines: string[];
+  /** Navigation cursor: index into `hunks`, or -1 when unset. */
+  currentHunk: number;
+  /**
+   * In-memory log of INLINE_EDIT_TELEMETRY event names for this preview
+   * (partial vs full accept/reject are logged distinctly, like Cursor).
+   * Snapshotted to `lastTelemetryLog` when the session clears.
+   */
+  telemetry: string[];
+  /**
+   * PERF-PROTECTION: when true, decorations were suppressed at preview
+   * time (too many changes) and renderHunkDecorations stays a no-op.
+   */
+  decorationsSuppressed: boolean;
 }
 
 export class InlineEditService implements vscode.Disposable {
@@ -237,11 +540,23 @@ export class InlineEditService implements vscode.Disposable {
   private addedDeco?: vscode.TextEditorDecorationType;
   private removedDeco?: vscode.TextEditorDecorationType;
   private statusBar?: vscode.StatusBarItem;
+  /**
+   * WORKER-GAPS-34C (inline-edit-command-ids): cancels the in-flight
+   * generation turn (the `editor.action.inlineDiffs.cancelEdits` fallback,
+   * weight 600). Set inside runEngineTurn for edit generations only —
+   * question-mode turns pass no tracker.
+   */
+  private generationCancel: (() => void) | undefined;
   /** C7 — LRU of recently active file paths for default context gathering. */
   private readonly recentFiles: string[] = [];
+  /**
+   * Verbatim Cursor telemetry event names from the most recently closed
+   * preview (the live session's log is on InlineSession.telemetry).
+   */
+  private lastTelemetryLog: string[] = [];
 
   constructor(
-    _context: vscode.ExtensionContext,
+    private readonly context: vscode.ExtensionContext,
     private readonly opts: { prefillChat: (text: string) => Promise<void> },
   ) {
     const record = vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -259,6 +574,16 @@ export class InlineEditService implements vscode.Disposable {
     return this.session !== undefined;
   }
 
+  /**
+   * WORKER-GAPS-34C (inline-edit-command-ids): `ide.cancelInlineEditGeneration`
+   * — the web/aux fallback for `editor.action.inlineDiffs.cancelEdits`.
+   * Aborts the in-flight edit generation; the turn stream breaks and
+   * runGeneration exits without a preview.
+   */
+  cancelGeneration(): void {
+    this.generationCancel?.();
+  }
+
   /** Entry point for `ide.openInlinePrompt`. Re-entrant: acts as follow-up while a preview is pending. */
   async openPrompt(): Promise<void> {
     if (this.session) {
@@ -273,8 +598,10 @@ export class InlineEditService implements vscode.Disposable {
       return;
     }
     // KEYBOARD-PARITY (K-08): a selection attached via
-    // `ide.addSelectionToInlinePrompt` (Ctrl/Cmd+Shift+K) wins over the live
+    // `ide.addSelectionToInlinePrompt` wins over the live
     // cursor selection. Stale or foreign-document attachments are discarded.
+    // (GAPS-171: the Ctrl/Cmd+Shift+K chord was reassigned to
+    // `aipopup.action.modal.generate` per the Cursor 3.25.9 binary.)
     const pendingSel = takePendingSelection();
     const target =
       pendingSel &&
@@ -299,14 +626,274 @@ export class InlineEditService implements vscode.Disposable {
 
   /** `ide.acceptInlineEdit` — keep the previewed change. */
   accept(): void {
-    if (!this.session) return;
+    const s = this.session;
+    if (!s) return;
+    this.logTelemetry(s, INLINE_EDIT_TELEMETRY.acceptedDiff);
+    // DD-SB-5: aiCodeTracking `composer.accept_diff` analog — the accepted
+    // diff's lines plus per-file attribution for commit scoring.
+    try {
+      const t = tryGetAiCodeTracking();
+      if (t) {
+        // Hunks already attributed by acceptPartial are skipped; only the
+        // still-pending hunks are counted here (with no partial ops this is
+        // exactly the old suggestLines whole-diff recording).
+        let lines = 0;
+        for (let i = 0; i < s.hunks.length; i++) {
+          if (s.hunkStates[i] !== "pending") continue;
+          const h = s.hunks[i]!;
+          lines += h.newEnd - h.newStart + (h.origEnd - h.origStart);
+        }
+        if (lines > 0) {
+          t.recordAccept("COMPOSER", lines);
+          const acceptedText = mergeHunks(
+            s.origLines,
+            s.newLines,
+            s.hunks,
+            s.hunkStates.map((st) => (st === "rejected" ? "rejected" : "accepted")),
+          ).lines.join("\n");
+          t.recordAcceptedLines("COMPOSER", trackingFileKey(s.target.document.uri), acceptedText);
+        }
+      }
+    } catch {
+      /* stats must never break the accept flow */
+    }
     this.clearSession();
   }
 
-  /** Compute the exact range the preview now occupies: original start + proposed-text extent. */
+  /** In-memory log of Cursor-verbatim telemetry event names (partial vs full are distinct). */
+  getTelemetryLog(): readonly string[] {
+    return this.session ? [...this.session.telemetry] : [...this.lastTelemetryLog];
+  }
+
+  /** Append a Cursor-verbatim analytics event name to the session log. */
+  private logTelemetry(s: InlineSession, event: string): void {
+    s.telemetry.push(event);
+  }
+
+  /**
+   * `ide.acceptPartialInlineEdit` — accept ONLY the current hunk
+   * (Cursor: `editor.action.inlineDiffs.acceptPartialEdit`,
+   * "Accept Partial Edit", Win Ctrl+Shift+Y / mac Cmd+Y).
+   * The hunk's text is committed; the remaining hunks stay pending.
+   * Telemetry: "Accepted Partial Diff" (distinct from "Accepted Diff").
+   */
+  async acceptPartial(): Promise<void> {
+    // WORKER-P3-QUICK-FIXES (Finding 1 — inline-diff-partial-accept-toggle),
+    // corrected WORKER-GAPS-11A: IDE-CODE's `ide.cpp.enablePartialAccepts`
+    // gates partial accept/reject (HONEST-DIVERGENCE — Cursor's similarly named
+    // toggle is a Cursor Tab next-word setting with no gate on inline-diff
+    // partial edit; see PARTIAL-ACCEPTS TOGGLE above).
+    // When disabled, individual hunk accepts are refused — only the full
+    // accept() of the whole inline edit applies.
+    if (!readPartialAcceptsEnabled()) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: partial accept is disabled (ide.cpp.enablePartialAccepts). Use Accept to apply all changes.",
+      );
+      return;
+    }
+    const s = this.session;
+    if (!s) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: no inline edit preview is open — nothing to accept.",
+      );
+      return;
+    }
+    const idx = this.resolvePartialTarget(s);
+    if (idx < 0) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: every change in this preview is already resolved — use accept/reject to finish.",
+      );
+      return;
+    }
+    s.hunkStates = setHunkState(s.hunkStates, idx, "accepted");
+    this.logTelemetry(s, INLINE_EDIT_TELEMETRY.acceptedPartialDiff);
+    // DD-SB-5: attribute the accepted hunk's lines immediately (a later
+    // accept() only counts hunks that are still pending).
+    try {
+      const t = tryGetAiCodeTracking();
+      if (t) {
+        const h = s.hunks[idx]!;
+        t.recordAccept("COMPOSER", h.newEnd - h.newStart + (h.origEnd - h.origStart));
+        t.recordAcceptedLines(
+          "COMPOSER",
+          trackingFileKey(s.target.document.uri),
+          s.newLines.slice(h.newStart, h.newEnd).join("\n"),
+        );
+      }
+    } catch {
+      /* stats must never break the accept flow */
+    }
+    // The accepted hunk already shows the proposed text — only the
+    // decorations and the navigation cursor change.
+    this.renderHunkDecorations(s);
+    this.advancePartialCursor(s, 1);
+  }
+
+  /**
+   * `ide.rejectPartialInlineEdit` — reject ONLY the current hunk
+   * (Cursor: `editor.action.inlineDiffs.rejectPartialEdit`,
+   * "Reject Partial Edit", Ctrl/Cmd+N).
+   * The hunk's lines revert to the original; remaining hunks stay pending.
+   * Telemetry: "Rejected Partial Diff" (distinct from "Rejected Diff").
+   */
+  async rejectPartial(): Promise<void> {
+    // WORKER-P3-QUICK-FIXES (Finding 1 — inline-diff-partial-accept-toggle),
+    // corrected WORKER-GAPS-11A: IDE-CODE's `ide.cpp.enablePartialAccepts`
+    // gates partial accept/reject (HONEST-DIVERGENCE — Cursor's similarly named
+    // toggle is a Cursor Tab next-word setting with no gate on inline-diff
+    // partial edit; see PARTIAL-ACCEPTS TOGGLE above).
+    // When disabled, individual hunk rejects are refused — only the full
+    // reject() of the whole inline edit applies.
+    if (!readPartialAcceptsEnabled()) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: partial reject is disabled (ide.cpp.enablePartialAccepts). Use Reject to discard all changes.",
+      );
+      return;
+    }
+    const s = this.session;
+    if (!s) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: no inline edit preview is open — nothing to reject.",
+      );
+      return;
+    }
+    const idx = this.resolvePartialTarget(s);
+    if (idx < 0) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: every change in this preview is already resolved — use accept/reject to finish.",
+      );
+      return;
+    }
+    const document = s.target.document;
+    if (document.version !== s.previewVersion) {
+      const choice = await vscode.window.showWarningMessage(
+        "IDE Agent: the file changed during the preview. Rejecting this change will overwrite those edits.",
+        { modal: true },
+        "Reject anyway",
+        "Keep",
+      );
+      if (choice !== "Reject anyway") return;
+    }
+    s.hunkStates = setHunkState(s.hunkStates, idx, "rejected");
+    this.logTelemetry(s, INLINE_EDIT_TELEMETRY.rejectedPartialDiff);
+    const merged = mergeHunks(s.origLines, s.newLines, s.hunks, s.hunkStates);
+    try {
+      const ok = await s.editor.edit((builder) =>
+        builder.replace(this.previewRange(s), merged.lines.join("\n")),
+      );
+      if (!ok) {
+        // Roll back so the document and the hunk states stay consistent.
+        s.hunkStates = setHunkState(s.hunkStates, idx, "pending");
+        s.telemetry.pop();
+        void vscode.window.showErrorMessage(
+          "IDE Agent: could not reject this change — the preview was not modified.",
+        );
+        return;
+      }
+    } catch (err) {
+      s.hunkStates = setHunkState(s.hunkStates, idx, "pending");
+      s.telemetry.pop();
+      const message = err instanceof Error ? err.message : String(err);
+      void vscode.window.showErrorMessage(
+        `IDE Agent: could not reject this change — ${message}`,
+      );
+      return;
+    }
+    s.mergedLines = merged.lines;
+    s.hunkRanges = merged.hunkRanges;
+    s.previewVersion = document.version;
+    this.renderHunkDecorations(s);
+    this.advancePartialCursor(s, 1);
+  }
+
+  /** `ide.nextInlineChange` — Alt+J: jump to the next pending change. */
+  nextChange(): void {
+    this.gotoChange(1);
+  }
+
+  /** `ide.previousInlineChange` — Alt+K: jump to the previous pending change. */
+  previousChange(): void {
+    this.gotoChange(-1);
+  }
+
+  /**
+   * `ide.nextInlineDiffFile` — Alt+L. Cursor jumps across files that have
+   * diffs; this service holds a single pending preview, so this is a
+   * graceful no-op (the command/keybinding exist so the surface matches
+   * Cursor 1:1; multi-diff navigation is future work).
+   */
+  nextDiffFile(): void {
+    void vscode.window.showInformationMessage(
+      "IDE Agent: only one inline diff is open — there is no next diff file.",
+    );
+  }
+
+  /** `ide.previousInlineDiffFile` — Alt+H (same single-session caveat). */
+  previousDiffFile(): void {
+    void vscode.window.showInformationMessage(
+      "IDE Agent: only one inline diff is open — there is no previous diff file.",
+    );
+  }
+
+  /** Move the navigation cursor to the next/previous pending hunk and reveal it. */
+  private gotoChange(direction: 1 | -1): void {
+    const s = this.session;
+    if (!s) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: no inline edit preview is open.",
+      );
+      return;
+    }
+    const idx = nextPendingHunkIndex(s.hunkStates, s.currentHunk, direction);
+    if (idx < 0) {
+      void vscode.window.showInformationMessage(
+        "IDE Agent: no unresolved changes left in this preview.",
+      );
+      return;
+    }
+    s.currentHunk = idx;
+    const mr = s.hunkRanges[idx]!;
+    const baseLine = s.target.range.start.line;
+    const lastDocLine = s.editor.document.lineCount - 1;
+    // A pending pure-deletion hunk occupies zero merged lines; still land
+    // the cursor on its anchor line so navigation never jumps nowhere.
+    const startLine = Math.min(baseLine + mr.start, lastDocLine);
+    const endLine = Math.min(baseLine + Math.max(mr.end - 1, mr.start), lastDocLine);
+    const range = new vscode.Range(
+      startLine,
+      0,
+      endLine,
+      s.editor.document.lineAt(endLine).range.end.character,
+    );
+    s.editor.selection = new vscode.Selection(range.start, range.end);
+    s.editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+  }
+
+  /**
+   * Which hunk a partial accept/reject applies to: the navigation cursor
+   * when it points at a pending hunk, else the next pending hunk after it.
+   * Returns -1 when no hunk is pending.
+   */
+  private resolvePartialTarget(s: InlineSession): number {
+    if (
+      s.currentHunk >= 0 &&
+      s.currentHunk < s.hunkStates.length &&
+      s.hunkStates[s.currentHunk] === "pending"
+    ) {
+      return s.currentHunk;
+    }
+    return nextPendingHunkIndex(s.hunkStates, s.currentHunk, 1);
+  }
+
+  /** Advance the navigation cursor past just-resolved hunks. */
+  private advancePartialCursor(s: InlineSession, direction: 1 | -1): void {
+    s.currentHunk = nextPendingHunkIndex(s.hunkStates, s.currentHunk, direction);
+  }
+
+  /** Compute the exact range the preview now occupies: original start + merged-text extent. */
   private previewRange(s: InlineSession): vscode.Range {
     const start = s.target.range.start;
-    const lines = s.proposedText.split("\n");
+    const lines = s.mergedLines;
     const end =
       lines.length === 1
         ? start.translate(0, lines[0]!.length)
@@ -331,6 +918,12 @@ export class InlineEditService implements vscode.Disposable {
       );
       if (choice !== "Reject anyway") return;
     }
+    // UNKNOWN (binary has no evidence either way): a full "Undo Edits"
+    // restores the whole preview region to the pre-preview original text,
+    // including hunks already committed via partial accept — per-hunk
+    // commits are NOT preserved across a full reject. This keeps the
+    // pre-partial reject() semantics.
+    this.logTelemetry(s, INLINE_EDIT_TELEMETRY.rejectedDiff);
     try {
       await s.editor.edit((builder) => builder.replace(this.previewRange(s), s.target.originalText));
     } catch (err) {
@@ -376,12 +969,9 @@ export class InlineEditService implements vscode.Disposable {
     const endLine = target.insertMode
       ? startLine
       : target.range.end.line + 1;
-    // Curation restored (user directive 2026-10-19 refined): the escalated
-    // chat prompt carries a focused slice of the code, not the whole file.
-    const code =
-      target.originalText.length > 4000
-        ? target.originalText.slice(0, 4000) + "\n…(truncated)"
-        : target.originalText;
+    // Binary evidence: Cursor CmdK has no escalation truncation — the
+    // selected code is sent as-is (full query_history via proto).
+    const code = target.originalText;
     const fence = FENCE_ALIASES[target.languageId.toLowerCase()] ?? target.languageId;
     const text = [
       instruction,
@@ -420,8 +1010,9 @@ export class InlineEditService implements vscode.Disposable {
     const endLine = insertMode ? startLine : range.end.line;
     const beforeStart = Math.max(0, startLine - CONTEXT_LINES);
     const afterEnd = Math.min(document.lineCount - 1, endLine + CONTEXT_LINES);
-    // Curation cap restored (user directive 2026-10-19 refined): surrounding
-    // context is auto-attached — keep it focused so the model stays sharp.
+    // UNKNOWN (no binary evidence for Cursor's surrounding-context
+    // window; see header note): surrounding context is auto-attached and
+    // bounded by a local default so a huge file can't blow up the prompt.
     const cap = (text: string): string =>
       text.length > CONTEXT_CHARS ? text.slice(0, CONTEXT_CHARS) + "\n…(truncated)" : text;
     const contextBefore =
@@ -525,7 +1116,7 @@ export class InlineEditService implements vscode.Disposable {
   private ensureAdapter(): IdeCodeEngineAdapter | undefined {
     if (this.adapter) return this.adapter;
     const cfg = vscode.workspace.getConfiguration("ide.agent");
-    if (cfg.get<string>("engineMode", "stub") !== "sidecar") {
+    if (cfg.get<string>("engineMode", "sidecar") !== "sidecar") {
       // Honest precondition, not a scaffold: the whole extension (chat
       // included) needs the sidecar engine + a configured model to generate.
       void vscode.window
@@ -678,10 +1269,20 @@ export class InlineEditService implements vscode.Disposable {
   }
 
   /** Run one generation turn against the engine and return the raw text. */
-  private async runEngineTurn(prompt: string, title: string): Promise<string | undefined> {
+  private async runEngineTurn(
+    prompt: string,
+    title: string,
+    trackCancel?: (cancel: (() => void) | undefined) => void,
+  ): Promise<string | undefined> {
     const adapter = this.ensureAdapter();
     if (!adapter) return undefined;
     let cancelled = false;
+    const cancel = () => {
+      cancelled = true;
+    };
+    // WORKER-GAPS-34C: expose the in-flight turn to `cancelGeneration()`
+    // (the `editor.action.inlineDiffs.cancelEdits` fallback path).
+    trackCancel?.(cancel);
     try {
       const raw = await vscode.window.withProgress<string | undefined>(
         { location: vscode.ProgressLocation.Notification, title, cancellable: true },
@@ -707,6 +1308,8 @@ export class InlineEditService implements vscode.Disposable {
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`IDE Agent: inline edit failed — ${message}`);
       return undefined;
+    } finally {
+      trackCancel?.(undefined);
     }
   }
 
@@ -716,10 +1319,24 @@ export class InlineEditService implements vscode.Disposable {
     instruction: string,
     history: string[],
   ): Promise<void> {
-    const raw = await this.runEngineTurn(
-      await this.buildEditPrompt(target, instruction, history),
-      "IDE Agent: generating inline edit…",
-    );
+    // WORKER-GAPS-34C: mirror the core `hasActivelyGeneratingDiff` key for
+    // the web/aux fallback path (the core
+    // `editor.action.inlineDiffs.cancelEdits` precondition).
+    this.generationCancel = undefined;
+    void vscode.commands.executeCommand("setContext", "hasActivelyGeneratingDiff", true);
+    let raw: string | undefined;
+    try {
+      raw = await this.runEngineTurn(
+        await this.buildEditPrompt(target, instruction, history),
+        "IDE Agent: generating inline edit…",
+        (cancel) => {
+          this.generationCancel = cancel;
+        },
+      );
+    } finally {
+      this.generationCancel = undefined;
+      void vscode.commands.executeCommand("setContext", "hasActivelyGeneratingDiff", false);
+    }
     if (raw === undefined) return; // cancelled, engine missing, or error (already reported)
     const code = extractCodeBlock(raw, target.languageId);
     if (!code) {
@@ -745,16 +1362,25 @@ export class InlineEditService implements vscode.Disposable {
       );
       return;
     }
-    const hunks = lineDiff(target.originalText.split("\n"), proposedText.split("\n"));
+    const origLines = target.originalText.split("\n");
+    const newLines = proposedText.split("\n");
+    const hunks = lineDiff(origLines, newLines);
     if (hunks.length === 0) {
       void vscode.window.showInformationMessage(
         "IDE Agent: the engine returned the code unchanged — nothing to preview.",
       );
       return;
     }
+    // PARTIAL-DIFF: every hunk starts "pending"; the merged text below is
+    // identical to proposedText in this state, but all later renders go
+    // through mergeHunks so partial accept/reject stay consistent.
+    const hunkStates: InlineHunkState[] = hunks.map(() => "pending");
+    const merged = mergeHunks(origLines, newLines, hunks, hunkStates);
     let applied = false;
     try {
-      applied = await editor.edit((builder) => builder.replace(target.range, proposedText));
+      applied = await editor.edit((builder) =>
+        builder.replace(target.range, merged.lines.join("\n")),
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`IDE Agent: could not apply the preview — ${message}`);
@@ -765,22 +1391,111 @@ export class InlineEditService implements vscode.Disposable {
       return;
     }
 
-    const baseLine = target.range.start.line;
+    // PERF-PROTECTION: suppress ALL inline-diff decorations when the change
+    // count exceeds maxDecorations (binary: `s && this.changes.length > o &&
+    // r.splice(0)`). The preview edit itself stays applied; only the
+    // decorations are dropped, and the user gets the too-many-changes
+    // warning (Cursor's `notifySuppressedDiffVisible` analog).
+    const decorationsSuppressed = shouldSuppressInlineDiffDecorations(
+      hunks.length,
+      readInlineDiffPerfConfig(),
+    );
+    if (decorationsSuppressed) {
+      await showInlineDiffTooManyChangesWarning(hunks.length, this.context.globalState);
+    } else {
+      // SETTINGS-PARITY: `ide.cmdk.useThemedDiffBackground` (mirrors
+      // cursor.cmdk.useThemedDiffBackground2). Off = fixed neutral greens.
+      const useThemedDiff = vscode.workspace
+        .getConfiguration("ide.cmdk")
+        .get<boolean>("useThemedDiffBackground", true);
+      this.addedDeco = vscode.window.createTextEditorDecorationType({
+        backgroundColor: useThemedDiff
+          ? new vscode.ThemeColor("diffEditor.insertedTextBackground")
+          : "rgba(120, 180, 90, 0.25)",
+        isWholeLine: true,
+      });
+      this.removedDeco = vscode.window.createTextEditorDecorationType({});
+    }
+
+    this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
+    this.statusBar.text =
+      "$(diff) Inline edit — Ctrl+Enter: accept · Esc: reject · " +
+      "Ctrl+Shift+Y: accept change · Ctrl+N: reject change · Alt+J/K: changes";
+    this.statusBar.tooltip = "IDE Agent inline edit preview";
+    this.statusBar.show();
+
+    // DD-SB-5: aiCodeTracking `composer.diff_summary` analog — the proposed
+    // diff's linesAdded + linesRemoved (Cursor diffs previous vs updated
+    // content per event; the preview hunks are exactly that diff).
+    let suggestLines = 0;
+    for (const hunk of hunks) {
+      suggestLines += hunk.newEnd - hunk.newStart + (hunk.origEnd - hunk.origStart);
+    }
+    try {
+      tryGetAiCodeTracking()?.recordSuggest("COMPOSER", suggestLines);
+    } catch {
+      /* stats must never break the preview */
+    }
+
+    this.session = {
+      target,
+      editor,
+      instruction,
+      history,
+      proposedText,
+      previewVersion: document.version,
+      suggestLines,
+      origLines,
+      newLines,
+      hunks,
+      hunkStates,
+      hunkRanges: merged.hunkRanges,
+      mergedLines: merged.lines,
+      currentHunk: nextPendingHunkIndex(hunkStates, -1, 1),
+      telemetry: [],
+      decorationsSuppressed,
+    };
+    this.renderHunkDecorations(this.session);
+    await vscode.commands.executeCommand("setContext", INLINE_EDIT_CONTEXT_KEY, true);
+    // WORKER-GAPS-34C: mirror the binary-verbatim precondition key for the
+    // `editor.action.inlineDiffs.*` family on the web/aux fallback path
+    // (the core service sets the same key on desktop).
+    await vscode.commands.executeCommand("setContext", "inlineDiffs.activeEditorWithDiffs", true);
+  }
+
+  /**
+   * (Re)compute per-hunk decorations for the session's current merged text.
+   * Called from showPreview and after every partial accept/reject, because
+   * hunk line ranges shift whenever a hunk is rejected. Rejected hunks
+   * already show the original lines, so they get no decorations. No-op
+   * when decorations were suppressed by perf protection.
+   */
+  private renderHunkDecorations(s: InlineSession): void {
+    if (s.decorationsSuppressed) return;
+    if (!this.addedDeco || !this.removedDeco) return;
+    const editor = s.editor;
+    const baseLine = s.target.range.start.line;
     const addedRanges: vscode.Range[] = [];
     const removedOptions: vscode.DecorationOptions[] = [];
-    const oldLines = target.originalText.split("\n");
-    for (const hunk of hunks) {
-      if (hunk.newEnd > hunk.newStart) {
+    const oldLines = s.origLines;
+    for (let i = 0; i < s.hunks.length; i++) {
+      if (s.hunkStates[i] === "rejected") continue;
+      const h = s.hunks[i]!;
+      const mr = s.hunkRanges[i]!;
+      if (mr.end > mr.start) {
         addedRanges.push(
-          new vscode.Range(baseLine + hunk.newStart, 0, baseLine + hunk.newEnd - 1, 0),
+          new vscode.Range(baseLine + mr.start, 0, baseLine + mr.end - 1, 0),
         );
       }
-      if (hunk.origEnd > hunk.origStart) {
+      if (h.origEnd > h.origStart) {
         const removedText = oldLines
-          .slice(hunk.origStart, hunk.origEnd)
+          .slice(h.origStart, h.origEnd)
           .map((line) => `- ${line}`)
           .join("\n");
-        const anchorLine = Math.min(baseLine + hunk.newStart, document.lineCount - 1);
+        const anchorLine = Math.min(
+          baseLine + mr.start,
+          editor.document.lineCount - 1,
+        );
         removedOptions.push({
           range: new vscode.Range(anchorLine, 0, anchorLine, 0),
           renderOptions: {
@@ -793,35 +1508,8 @@ export class InlineEditService implements vscode.Disposable {
         });
       }
     }
-    // SETTINGS-PARITY: `ide.cmdk.useThemedDiffBackground` (mirrors
-    // cursor.cmdk.useThemedDiffBackground2). Off = fixed neutral greens.
-    const useThemedDiff = vscode.workspace
-      .getConfiguration("ide.cmdk")
-      .get<boolean>("useThemedDiffBackground", true);
-    this.addedDeco = vscode.window.createTextEditorDecorationType({
-      backgroundColor: useThemedDiff
-        ? new vscode.ThemeColor("diffEditor.insertedTextBackground")
-        : "rgba(120, 180, 90, 0.25)",
-      isWholeLine: true,
-    });
-    this.removedDeco = vscode.window.createTextEditorDecorationType({});
     editor.setDecorations(this.addedDeco, addedRanges);
     editor.setDecorations(this.removedDeco, removedOptions);
-
-    this.statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
-    this.statusBar.text = "$(diff) Inline edit — Ctrl+Enter: accept · Esc: reject";
-    this.statusBar.tooltip = "IDE Agent inline edit preview";
-    this.statusBar.show();
-
-    this.session = {
-      target,
-      editor,
-      instruction,
-      history,
-      proposedText,
-      previewVersion: document.version,
-    };
-    await vscode.commands.executeCommand("setContext", INLINE_EDIT_CONTEXT_KEY, true);
   }
 
   private async followUp(): Promise<void> {
@@ -843,16 +1531,14 @@ export class InlineEditService implements vscode.Disposable {
       return;
     }
     // Revert the current preview silently, then regenerate from the original
-    // with the previous attempt recorded in history.
-    // Follow-up history curation restored (user directive 2026-10-19 refined):
-    // the model gets the gist of the previous attempt, not megabytes of it.
-    const cappedPrev =
-      s.proposedText.length > MAX_FOLLOWUP_HISTORY_CHARS
-        ? s.proposedText.slice(0, MAX_FOLLOWUP_HISTORY_CHARS) + "\n…(truncated)"
-        : s.proposedText;
+    // with the previous attempt recorded in history. Binary evidence:
+    // Cursor sends the full `query_history` linked list via proto
+    // `CmdKQueryHistory` — the previous attempt is recorded whole, not
+    // truncated to a fabricated cap.
+    const prevAttempt = s.proposedText;
     const historyEntry =
       `Previous instruction: "${s.instruction}". ` +
-      `Previous result (refine it, do not repeat its mistakes):\n${cappedPrev}`;
+      `Previous result (refine it, do not repeat its mistakes):\n${prevAttempt}`;
     const newHistory = [...s.history, historyEntry];
     const { editor, target } = s;
     if (!(await this.revertSessionText(s))) return; // must land before regenerating
@@ -881,11 +1567,9 @@ export class InlineEditService implements vscode.Disposable {
     target: InlineTarget,
     question: string,
   ): Promise<void> {
-    // Curation restored (user directive 2026-10-19 refined).
-    const code =
-      target.originalText.length > 8000
-        ? target.originalText.slice(0, 8000) + "\n…(truncated)"
-        : target.originalText;
+    // Binary evidence: no truncation in Cursor CmdK — the code is sent
+    // as-is for question mode.
+    const code = target.originalText;
     const fence = FENCE_ALIASES[target.languageId.toLowerCase()] ?? target.languageId;
     const prompt = [
       "You are an expert programming assistant. Answer the question about the code below.",
@@ -925,6 +1609,9 @@ export class InlineEditService implements vscode.Disposable {
   }
 
   private clearSession(): void {
+    if (this.session) {
+      this.lastTelemetryLog = [...this.session.telemetry];
+    }
     this.session = undefined;
     if (this.addedDeco) {
       this.addedDeco.dispose();
@@ -939,5 +1626,6 @@ export class InlineEditService implements vscode.Disposable {
       this.statusBar = undefined;
     }
     void vscode.commands.executeCommand("setContext", INLINE_EDIT_CONTEXT_KEY, false);
+    void vscode.commands.executeCommand("setContext", "inlineDiffs.activeEditorWithDiffs", false);
   }
 }

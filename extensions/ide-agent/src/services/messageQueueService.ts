@@ -21,27 +21,17 @@ export class MessageQueueService {
   private readonly emitter = new vscode.EventEmitter<QueuedMessage[]>();
   readonly onDidChangeQueue = this.emitter.event;
 
-  /**
-   * Curation restored (user directive 2026-10-19 refined): caps prevent a
-   * spam-queued backlog from merging into one giant unfocused prompt on
-   * drain. Oldest messages drop first (FIFO) with a visible warning — in
-   * practice users never hit 10 queued follow-ups.
-   */
-  private static readonly MAX_MESSAGES = 10;
-  private static readonly MAX_CHARS = 20_000;
+  // DIG-CONTINUOUS (2026-10-19, binary-verified): Cursor's `addToQueue` is
+  // UNBOUNDED — `isValidQueueItem` is just "non-empty query OR context
+  // override", and all cap strings are 0 hits in the client and the daemon.
+  // The 10-message / 20k-char caps we shipped were fabricated; this queue is
+  // unbounded, like Cursor's.
 
-  /**
-   * Overdue-steer rule (Cursor parity — deepdig-runtime-agent-loop §3:
-   * `resyncOverduePendingSteerFallback`). A queued message admitted while a
-   * turn runs but still undelivered after 5 minutes is "overdue": it is
-   * retagged to the next turn as a queued follow-up instead of being merged
-   * into the current turn's context. `isOverdue` lets the UI badge it.
-   */
-  static readonly OVERDUE_MS = 300_000;
-
-  isOverdue(message: QueuedMessage, now: number = Date.now()): boolean {
-    return now - message.enqueuedAt >= MessageQueueService.OVERDUE_MS;
-  }
+  // DIG-CONTINUOUS (2026-10-19, binary-verified): there is NO overdue concept
+  // in Cursor's queue UI (0 hits for `overdue`). The real 5-minute rule is
+  // daemon-side `resyncOverduePendingSteerFallback` (admitted-but-undelivered
+  // steer retag) — no badge, no toast, no client state. Our 5-minute overdue
+  // badge and `isOverdue` were fabricated; removed.
 
   /** Remove one queued message by id (queue list UI). Returns true if removed. */
   remove(id: string): boolean {
@@ -81,18 +71,6 @@ export class MessageQueueService {
     mode: string,
     attachments?: import("./mentionService").FileAttachment[],
   ): QueuedMessage {
-    // REVERIFY-P3-9 (H4): a single message larger than the entire char
-    // budget can never fit — reject it upfront with an accurate message
-    // instead of enqueueing it, dropping it as "oldest", and returning a
-    // dead id.
-    if (text.length > MessageQueueService.MAX_CHARS) {
-      void vscode.window.showWarningMessage(
-        `IDE Agent: message too large (${text.length.toLocaleString()} characters) — ` +
-          `the queue holds at most ${MessageQueueService.MAX_CHARS.toLocaleString()} characters total. ` +
-          `Please shorten the message.`,
-      );
-      throw new Error(`Queued message exceeds ${MessageQueueService.MAX_CHARS} characters`);
-    }
     queueSeq += 1;
     const message: QueuedMessage = {
       id: `q-${queueSeq}`,
@@ -102,30 +80,20 @@ export class MessageQueueService {
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
     };
     this.queue.push(message);
-    this.enforceCaps("front");
     this.emitter.fire([...this.queue]);
     return message;
   }
 
   /**
-   * Insert at the FRONT of the queue (Cursor "stop-and-send": the message
-   * runs as soon as the aborted turn winds down, ahead of older queued
-   * messages). Caps still apply — oldest (back) messages drop first.
+   * Insert at the FRONT of the queue so the message runs ahead of older
+   * queued messages. The queue is unbounded (Cursor's addToQueue has no
+   * caps) — nothing is dropped.
    */
   enqueueFront(
     text: string,
     mode: string,
     attachments?: import("./mentionService").FileAttachment[],
   ): QueuedMessage {
-    // REVERIFY-P3-9 (H4): same single-oversize guard as enqueue().
-    if (text.length > MessageQueueService.MAX_CHARS) {
-      void vscode.window.showWarningMessage(
-        `IDE Agent: message too large (${text.length.toLocaleString()} characters) — ` +
-          `the queue holds at most ${MessageQueueService.MAX_CHARS.toLocaleString()} characters total. ` +
-          `Please shorten the message.`,
-      );
-      throw new Error(`Queued message exceeds ${MessageQueueService.MAX_CHARS} characters`);
-    }
     queueSeq += 1;
     const message: QueuedMessage = {
       id: `q-${queueSeq}`,
@@ -135,44 +103,8 @@ export class MessageQueueService {
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
     };
     this.queue.unshift(message);
-    this.enforceCaps("back");
     this.emitter.fire([...this.queue]);
     return message;
-  }
-
-  /**
-   * Drop messages while over cap. `front` drops the oldest (FIFO order —
-   * used after a back-push); `back` drops from the tail (used after a
-   * front-insert, where the head is the newest priority message).
-   */
-  private enforceCaps(from: "front" | "back"): void {
-    let dropped = 0;
-    while (
-      this.queue.length > MessageQueueService.MAX_MESSAGES ||
-      this.totalChars() > MessageQueueService.MAX_CHARS
-    ) {
-      if (from === "front") {
-        this.queue.shift();
-      } else {
-        this.queue.pop();
-      }
-      dropped += 1;
-    }
-    if (dropped > 0) {
-      void vscode.window.showWarningMessage(
-        `IDE Agent: message queue is full — dropped ${dropped} oldest queued message(s). ` +
-          `The queue holds at most ${MessageQueueService.MAX_MESSAGES} messages / ` +
-          `${MessageQueueService.MAX_CHARS} characters.`,
-      );
-    }
-  }
-
-  private totalChars(): number {
-    let total = 0;
-    for (const m of this.queue) {
-      total += m.text.length;
-    }
-    return total;
   }
 
   drain(): QueuedMessage[] {
@@ -187,4 +119,72 @@ export class MessageQueueService {
   get length(): number {
     return this.queue.length;
   }
+
+  /**
+   * D4 (dig-debug-multitask-2026-10-19 §3.4) — dispatch hold while the agent
+   * waits for the user to reproduce the bug (Cursor's `heldForDebugRepro` /
+   * `debugReproWaitingForUser`). While the hold is set, queued items must NOT
+   * be dispatched: the dispatch decision point (`tryDispatchNextQueueItem`)
+   * consults the hold.
+   */
+  private dispatchHold = false;
+
+  /** D4: engage or release the dispatch hold. */
+  setDispatchHold(held: boolean): void {
+    this.dispatchHold = held;
+    this.emitter.fire([...this.queue]);
+  }
+
+  /** D4: whether queue dispatch is currently held (debug repro wait). */
+  isDispatchHeld(): boolean {
+    return this.dispatchHold;
+  }
+
+  /**
+   * D4: the single dispatch decision point. While the hold is active, queued
+   * items resolve `{shouldDispatch:false, heldForDebugRepro:true}` and stay
+   * queued — they are NOT dispatched. Otherwise the head item is dequeued
+   * for dispatch.
+   */
+  tryDispatchNextQueueItem(): QueueDispatchDecision {
+    if (this.dispatchHold) {
+      return { shouldDispatch: false, heldForDebugRepro: true };
+    }
+    const item = this.queue.shift();
+    if (item) {
+      this.emitter.fire([...this.queue]);
+    }
+    return { shouldDispatch: true, item };
+  }
+
+  /**
+   * D4: Cursor's `retryDispatchHeldForDebugRepro()` — clear the hold and
+   * dispatch every held item through `onDispatch`, in FIFO order. Called
+   * without a dispatcher it just clears the hold (the next drain picks the
+   * items up).
+   */
+  releaseDispatchHold(onDispatch?: (item: QueuedMessage) => void): QueuedMessage[] {
+    this.dispatchHold = false;
+    const dispatched: QueuedMessage[] = [];
+    if (!onDispatch) {
+      return dispatched;
+    }
+    for (;;) {
+      const decision = this.tryDispatchNextQueueItem();
+      if (!decision.shouldDispatch || !decision.item) {
+        break;
+      }
+      dispatched.push(decision.item);
+      onDispatch(decision.item);
+    }
+    return dispatched;
+  }
 }
+
+/**
+ * D4 dispatch decision (dig-debug-multitask §3.4): a held queue resolves
+ * `{shouldDispatch:false, heldForDebugRepro:true}` instead of dispatching.
+ */
+export type QueueDispatchDecision =
+  | { shouldDispatch: true; item: QueuedMessage | undefined }
+  | { shouldDispatch: false; heldForDebugRepro: true };

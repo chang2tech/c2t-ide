@@ -1,24 +1,41 @@
 /**
- * MCP approval integration — parity §B5.
+ * MCP approval integration — Cursor 3.25.9 parity (WORKER-GAPS-30D,
+ * audit items `mcp-approval-persistence` + `mcp-chat-scoped-grant-on-run`).
  *
- * Agent loop calls `mcpAllowlistPrecheck` before executing an MCP tool.
- * Sources (per workspace folder):
- *   .cursor/permissions.json      { "mcpAllowlist": ["server:tool", "server:*", "*:tool", "*:*"] }
- *   .cursor/mcp-approvals.json    { "approvals": { "<server>:<tool>": "allow"|"deny"|"ask" } }
- * Merge: deny > ask > allow. A "deny" auto-rejects (no card); "allow" runs
- * silently; "ask" (or no rule) goes through the HumanReviewService approval
- * card with trigger reason `mcpToolsProtection`.
+ * Binary evidence (workbench.glass.main.js 3.25.9, self-verified 2026-10-20):
+ * - `mcp-approvals.json` = 0 hits in the glass AND desktop bundles — Cursor
+ *   has NO project-level approvals file. The old `<project>/.cursor/
+ *   mcp-approvals.json` persistence (with allow|deny|ask per-tool decisions)
+ *   was our invention and is REMOVED here. Legacy files already on disk are
+ *   simply never read again (left untouched, not deleted).
+ * - "Always allow" → user-global reactive storage
+ *   `composerState.mcpAllowedTools` (6
+ *   `setApplicationUserPersistentStorage("composerState","mcpAllowedTools",…)`
+ *   call sites; normalized `server:tool` strings; no TTL — see P0
+ *   `mcp-approval-ttl-claim-debunked`). In this extension that is
+ *   `ExtensionContext.globalState["composerState.mcpAllowedTools"]`.
+ * - One-shot RUN → per-composer memory `mcpAllowedToolsForChat`:
+ *   `case DJ.RUN: if(A&&!A.allowOnce){const W=I2i(N,O);…z("mcpAllowedToolsForChat",
+ *   K=>K?.includes(W)?K:[...K??[],W])}`. Our card has no `allowOnce` variant,
+ *   so every one-shot approval becomes a chat grant (Cursor's RUN default).
+ * - Consult = `[...getEffectiveMcpAllowlist(),
+ *   ...mcpAllowedToolsForChat??[]]`, case-insensitive. The effective
+ *   allowlist here = `.cursor/permissions.json` `mcpAllowlist` patterns
+ *   (real Cursor surface, kept) + the global grant array.
+ * - There is NO client-side persistent-deny store (no `mcpDeniedTools`-like
+ *   key anywhere in the binary): a card "Deny" rejects the current call
+ *   only. Lasting deny stays available via `.cursor/permissions.json`
+ *   blocklists (Cursor docs), not invented here.
+ *
+ * Merge order: allow (any source) → ask. The old deny>ask>allow ordering
+ * existed only because the invented approvals file could record denies.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { McpApprovalDecision, McpLogger, McpPrecheckResult } from "./types";
+import { McpGrantStore, McpLogger, McpPrecheckResult } from "./types";
 
 interface PermissionsFile {
   mcpAllowlist?: string[];
-}
-
-interface ApprovalsFile {
-  approvals?: Record<string, string>;
 }
 
 function readJson<T>(filePath: string, logger: McpLogger): T | undefined {
@@ -42,6 +59,11 @@ function readJson<T>(filePath: string, logger: McpLogger): T | undefined {
  * Match an allowlist pattern against server/tool.
  * Patterns: `server:tool`, `server:*`, `*:tool`, `*:*`.
  * Matching is case-sensitive on the server and tool names as configured.
+ *
+ * IDE-CODE EXTENSION of the concept (not verbatim Cursor): Cursor's
+ * permissions-file allowlist entries are exact `server:tool` strings; the
+ * wildcard forms are our documented convenience. Exact entries behave
+ * identically either way.
  */
 export function matchAllowlistPattern(pattern: string, server: string, tool: string): boolean {
   const colon = pattern.indexOf(":");
@@ -53,80 +75,63 @@ export function matchAllowlistPattern(pattern: string, server: string, tool: str
   return serverOk && toolOk;
 }
 
-function normalizeDecision(raw: string | undefined): McpApprovalDecision | undefined {
-  if (raw === "allow" || raw === "deny" || raw === "ask") return raw;
-  return undefined;
+/**
+ * Normalize one grant entry to `server:tool`.
+ *
+ * The binary's normalizer (`I2i(N,O)`) is minified and unrecovered; the
+ * audit records entries as normalized `server:tool` strings. Trimming is
+ * our best-effort normalization — case is PRESERVED (the binary dedupes
+ * case-sensitively on write: `K?.includes(W)`).
+ */
+export function normalizeGrantEntry(serverDisplayName: string, tool: string): string {
+  return `${serverDisplayName.trim()}:${tool.trim()}`;
+}
+
+/** Case-insensitive membership — the binary's `WFf` consult compare. */
+function grantsInclude(grants: readonly string[], entry: string): boolean {
+  const want = entry.toLowerCase();
+  return grants.some((g) => g.toLowerCase() === want);
 }
 
 export class McpAllowlist {
   private permissions = new Map<string, string[]>(); // root -> patterns
-  private approvals = new Map<string, Record<string, string>>(); // root -> map
 
+  /**
+   * @param grants approval grant storage. Optional for back-compat with
+   *   older call sites/tests: without it the precheck consults only
+   *   `.cursor/permissions.json` and the remember* methods log + no-op.
+   */
   constructor(
     private readonly workspaceFolders: string[],
     private readonly logger: McpLogger,
+    private readonly grants?: McpGrantStore,
   ) {
     this.reload();
   }
 
-  /** Re-read both files from every workspace folder. */
+  /** Re-read `.cursor/permissions.json` from every workspace folder. */
   reload(): void {
     this.permissions.clear();
-    this.approvals.clear();
     for (const root of this.workspaceFolders) {
       const perms = readJson<PermissionsFile>(path.join(root, ".cursor", "permissions.json"), this.logger);
       if (Array.isArray(perms?.mcpAllowlist)) {
         this.permissions.set(root, perms.mcpAllowlist.filter((p) => typeof p === "string"));
-      }
-      const appr = readJson<ApprovalsFile>(path.join(root, ".cursor", "mcp-approvals.json"), this.logger);
-      if (appr?.approvals && typeof appr.approvals === "object") {
-        this.approvals.set(root, appr.approvals);
       }
     }
   }
 
   /**
    * The precheck the agent loop must call before executing an MCP tool.
-   * Merge order across sources: deny > ask > allow; mcp-approvals.json beats
-   * permissions.json at equal severity.
    *
-   * Two-pass merge (P1-3): a "deny" recorded in ANY folder must win over an
-   * "allow" in another — the old first-folder-wins loop let an allow in
-   * folder A silently bypass a deny in folder B.
+   * Consult order (Cursor: `[...getEffectiveMcpAllowlist(),
+   * ...mcpAllowedToolsForChat??[]]`, case-insensitive):
+   *   1. `.cursor/permissions.json` `mcpAllowlist` patterns → allow
+   *   2. user-global grants (`composerState.mcpAllowedTools`) → allow
+   *   3. per-composer chat grants (`mcpAllowedToolsForChat`) → allow
+   *   4. otherwise → ask (approval card)
    */
-  precheck(serverDisplayName: string, tool: string): McpPrecheckResult {
-    const key = `${serverDisplayName}:${tool}`;
-    // Pass 1: any deny wins.
-    for (const [, map] of this.approvals) {
-      if (normalizeDecision(map[key]) === "deny") {
-        return {
-          decision: "deny",
-          reason: `Denied by .cursor/mcp-approvals.json (${key})`,
-          matchedRule: `${key}=deny`,
-        };
-      }
-    }
-    // Pass 2: any ask.
-    for (const [, map] of this.approvals) {
-      if (normalizeDecision(map[key]) === "ask") {
-        return {
-          decision: "ask",
-          reason: `mcpToolsProtection — .cursor/mcp-approvals.json requires approval (${key})`,
-          matchedRule: `${key}=ask`,
-        };
-      }
-    }
-    // Pass 3: any allow.
-    for (const [, map] of this.approvals) {
-      if (normalizeDecision(map[key]) === "allow") {
-        return {
-          decision: "allow",
-          reason: `Allowed by .cursor/mcp-approvals.json (${key})`,
-          matchedRule: `${key}=allow`,
-        };
-      }
-    }
-    // Pass 4: allowlist patterns (allow only).
+  precheck(serverDisplayName: string, tool: string, composerId?: string): McpPrecheckResult {
+    const entry = normalizeGrantEntry(serverDisplayName, tool);
     for (const [, patterns] of this.permissions) {
       const hit = patterns.find((p) => matchAllowlistPattern(p, serverDisplayName, tool));
       if (hit) {
@@ -137,7 +142,22 @@ export class McpAllowlist {
         };
       }
     }
-    // 5. Default: ask.
+    if (this.grants) {
+      if (grantsInclude(this.grants.getGlobalGrants(), entry)) {
+        return {
+          decision: "allow",
+          reason: "Allowed by user-global MCP allowlist (composerState.mcpAllowedTools)",
+          matchedRule: entry,
+        };
+      }
+      if (composerId && grantsInclude(this.grants.getChatGrants(composerId), entry)) {
+        return {
+          decision: "allow",
+          reason: "Allowed for this chat (mcpAllowedToolsForChat)",
+          matchedRule: entry,
+        };
+      }
+    }
     return {
       decision: "ask",
       reason: `mcpToolsProtection — "${serverDisplayName}" / ${tool} is not allowlisted`,
@@ -145,35 +165,30 @@ export class McpAllowlist {
   }
 
   /**
-   * Persist a per-tool decision ("allow" | "deny") into
-   * <root>/.cursor/mcp-approvals.json, merging with any existing content.
-   * Used by the approval card's "Always allow" / "Deny" options so the
-   * choice is remembered per server+tool across sessions (§B5).
+   * "Always allow" — append to the user-global persistent grant array
+   * (`composerState.mcpAllowedTools`). No TTL, like the binary.
    */
-  persistApproval(
-    root: string | undefined,
-    serverDisplayName: string,
-    tool: string,
-    decision: "allow" | "deny",
-  ): void {
-    if (!root) {
-      this.logger.appendLine(`[mcp] cannot persist approval for ${serverDisplayName}:${tool} — no workspace folder`);
+  rememberAlwaysAllow(serverDisplayName: string, tool: string): void {
+    if (!this.grants) {
+      this.logger.appendLine(
+        `[mcp] rememberAlwaysAllow(${serverDisplayName}:${tool}): no grant store configured — choice not persisted`,
+      );
       return;
     }
-    const filePath = path.join(root, ".cursor", "mcp-approvals.json");
-    let doc: ApprovalsFile = {};
-    const existing = readJson<ApprovalsFile>(filePath, this.logger);
-    if (existing && typeof existing === "object") doc = existing;
-    if (!doc.approvals || typeof doc.approvals !== "object") doc.approvals = {};
-    doc.approvals[`${serverDisplayName}:${tool}`] = decision;
-    try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(doc, null, 2) + "\n", "utf8");
-      this.logger.appendLine(`[mcp] persisted approval ${serverDisplayName}:${tool}=${decision} → ${filePath}`);
-    } catch (err) {
+    this.grants.addGlobalGrant(normalizeGrantEntry(serverDisplayName, tool));
+  }
+
+  /**
+   * One-shot RUN — append to the per-composer in-memory grant set
+   * (`mcpAllowedToolsForChat`). Dies with the chat; never persisted.
+   */
+  rememberChatGrant(composerId: string, serverDisplayName: string, tool: string): void {
+    if (!this.grants) {
       this.logger.appendLine(
-        `[mcp] failed to persist approval to ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        `[mcp] rememberChatGrant(${composerId}, ${serverDisplayName}:${tool}): no grant store configured`,
       );
+      return;
     }
+    this.grants.addChatGrant(composerId, normalizeGrantEntry(serverDisplayName, tool));
   }
 }

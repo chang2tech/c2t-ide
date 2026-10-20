@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-terraform-mock",
+  "patterns": [
+    {
+      "include": "source.hcl"
+    }
+  ]
+}

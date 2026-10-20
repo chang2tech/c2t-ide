@@ -7,7 +7,7 @@
  *
  * Run after `tsc`:  node --test out/services/test/run-newchat-tests.js
  */
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import * as assert from "node:assert";
 import Module from "node:module";
 
@@ -75,6 +75,35 @@ const origLoad = (Module as unknown as { _load: Function })._load;
   return origLoad.call(this, request, ...rest);
 };
 
+/**
+ * DEV-GAPS-36: every ComposerDataService created below is tracked so the
+ * file-level after() can dispose it. An undisposed composer leaks its
+ * CheckpointStorageCompareService scheduler (15 s ref'd activation timer →
+ * 10 min ref'd interval chain, per GAPS-25's root cause in
+ * checkpointStorageCompare.ts) and its `bun serve` sidecar
+ * (IdeCodeEngineAdapter — engineMode defaults to "sidecar"): the sidecar's
+ * piped stdio keeps the event loop alive, so node:test hangs at file level
+ * after all suites pass ("Promise resolution is still pending but the event
+ * loop has already resolved"). dispose() is idempotent, stops the
+ * checkpoint scheduler (via the GAPS-25 this.checkpoints.dispose()
+ * cascade) and kills the sidecar (SIGTERM, escalated to SIGKILL).
+ */
+const trackedDisposables = new Set<{ dispose(): void }>();
+function track<T extends { dispose(): void }>(d: T): T {
+  trackedDisposables.add(d);
+  return d;
+}
+after(() => {
+  for (const d of trackedDisposables) {
+    try {
+      d.dispose();
+    } catch {
+      /* teardown must never fail the run */
+    }
+  }
+  trackedDisposables.clear();
+});
+
 import { ComposerDataService } from "../composerDataService";
 import { BubbleData } from "../../model";
 
@@ -92,7 +121,7 @@ function makeBubble(id: string, text: string): BubbleData {
 function freshService(): ComposerDataService {
   calls.warnings.length = 0;
   calls.infos.length = 0;
-  return new ComposerDataService(undefined);
+  return track(new ComposerDataService(undefined));
 }
 
 describe("newChat (P1 CX1b)", () => {

@@ -1,8 +1,10 @@
 /**
  * inlinePromptSelection.ts
  *
- * Pending-selection store for the Cursor K-08 parity binding
- * (`ide.addSelectionToInlinePrompt`, Ctrl/Cmd+Shift+K — "Add selection to Cmd+K").
+ * Pending-selection store for the Cursor K-08 parity command
+ * (`ide.addSelectionToInlinePrompt` — "Add selection to Cmd+K"; its former
+ * Ctrl/Cmd+Shift+K chord was reassigned to `aipopup.action.modal.generate`
+ * by GAPS-171 per the Cursor 3.25.9 binary).
  *
  * Cursor lets you attach the current editor selection to the Cmd+K input and
  * then open the prompt later; the attached selection wins over the live cursor

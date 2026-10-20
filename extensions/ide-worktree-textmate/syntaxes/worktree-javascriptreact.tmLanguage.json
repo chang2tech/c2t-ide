@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-javascriptreact",
+  "patterns": [
+    {
+      "include": "source.jsx"
+    }
+  ]
+}

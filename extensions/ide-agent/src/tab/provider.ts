@@ -27,6 +27,11 @@ export interface TabProviderHooks {
   getClientConfig(): TabClientConfig;
   getPerLanguageState(): Record<string, 'disabled' | 'enabled' | undefined>;
   isSnoozed(): boolean;
+  /**
+   * False when no model backend is wired (stub engine mode). The provider
+   * stays silent then — Tab never fakes a suggestion.
+   */
+  isBackendAvailable(): boolean;
   /** Called when a suggestion passes the filter and is shown. */
   onSuggestionShown(requestId: string, text: string, displayId?: string): void;
   /** First-use Copilot interplay hook. */
@@ -150,6 +155,9 @@ export class TabCompletionProvider implements vscode.InlineCompletionItemProvide
     // 1. Enablement gates.
     if (!cfg.enabled) return undefined;
     if (this.hooks.isSnoozed()) return undefined;
+    // 1b. No model backend (stub engine mode): stay silent. A fake
+    // suggestion here would be worse than none — the status bar says why.
+    if (!this.hooks.isBackendAvailable()) return undefined;
     const gate = gateEditor({
       charCount: document.getText().length,
       fsPath: document.uri.fsPath,
@@ -250,6 +258,15 @@ export class TabCompletionProvider implements vscode.InlineCompletionItemProvide
           this.collectStream(document, position, requestId, triggerKind, abort.signal),
           timeoutPromise,
         ]);
+      } catch (err) {
+        // Backend failure (engine unreachable, timed out, aborted): record
+        // honestly and show nothing — never synthesize a suggestion.
+        this.telemetry.recordSessionEvent('tabBackendError', {
+          requestId,
+          triggerKind,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return undefined;
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
       }

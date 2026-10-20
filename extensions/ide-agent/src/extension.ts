@@ -4,59 +4,265 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as childProcess from "node:child_process";
 import { ModeName } from "./model";
-import { ComposerDataService, ComposerEvent } from "./services/composerDataService";
+import { ComposerDataService, ComposerEvent, defaultEnginePath } from "./services/composerDataService";
+import { buildPromptQualityPanelHtml, scorePrompt } from "./services/promptQualityService";
+import { forkInfoMessage, forkTabFromBubble } from "./services/chatForkFromBubble";
+import {
+  copyBubbleMessageToClipboard,
+  makeCopyMessageSeam,
+} from "./services/chatCopyMessageService";
+import {
+  COPY_PLAN_MARKDOWN_COMMAND_ID,
+  COPY_PLAN_MARKDOWN_TITLE,
+  copyPendingPlanMarkdownToClipboard,
+  makePlanCopySeam,
+} from "./services/planCopyService";
+import { normalizeChatWidth } from "./services/chatWidthService";
+import {
+  createNodeProbes,
+  formatDiagnosticResults,
+  requiredDomainsCopyText,
+  runNetworkDiagnostics,
+} from "./services/networkDiagnosticsService";
+import {
+  fixErrorWithAgent,
+  type FixRange as FixWithAgentRange,
+} from "./services/fixWithAgentService";
+import {
+  dispatchNativeBrowserChatAttachment,
+  NativeBrowserChatAttachment,
+} from "./services/nativeBrowserChatReceiver";
 import { ChatTabService, ChatTab } from "./services/chatTabService";
+import { AgentNotificationService, toNotificationTab } from "./services/agentNotifications";
+import { ChatTabBadgeSync } from "./services/chatTabBadgeSync";
 import { QueuedMessage, MessageQueueService } from "./services/messageQueueService";
 import {
   CHAT_EDITOR_VIEW_TYPE,
   ChatEditorProvider,
+  chatEditorUriForTab,
   openChatAsEditorTabs,
   openChatEditor,
   resolveChatEditorTab,
-  transcriptToMarkdown,
   type ChatEditorDeps,
 } from "./services/chatEditorProvider";
 import {
   addToChat as addToChatService,
+  buildEditorSelectionLabel,
   realVscodeSeam,
   sanitizeAddToChatArgs,
   type AddToChatArgs,
   type AddToChatHost,
 } from "./services/addToChat";
+import { emitTooltipEvent, forwardWebviewTooltipEvent } from "./services/tooltipEvents";
+import {
+  CUSTOMIZE_EDITOR_VIEW_TYPE,
+  CUSTOMIZE_IDE_OPEN_TAB_COMMANDS,
+  CUSTOMIZE_OPEN_TAB_COMMANDS,
+  CustomizeEditorProvider,
+  openCustomizeEditor,
+  type CustomizeHostDeps,
+  type CustomizeSectionId,
+  type CustomizeSnapshot,
+  type CustomizeSubagent,
+} from "./services/customizeView";
+import { mergeBuiltinSubagents } from "./services/builtinSubagents";
+import {
+  LocalScheduledTasksService,
+  normalizeScheduledTaskModelConfig,
+  type ScheduledTask,
+  type ScheduledTaskModelConfig,
+} from "./services/localScheduledTasksService";
 
 /**
- * Serialize queue items for the webview (adds the overdue-steer badge flag —
- * Cursor parity: messages admitted >5min ago are retagged to the next turn).
+ * Serialize queue items for the webview.
  */
 function serializeQueue(items: QueuedMessage[]): Array<{
   id: string;
   text: string;
   mode: string;
   enqueuedAt: number;
-  overdue: boolean;
 }> {
-  const now = Date.now();
   return items.map((m) => ({
     id: m.id,
     text: m.text,
     mode: m.mode,
     enqueuedAt: m.enqueuedAt,
-    overdue: now - m.enqueuedAt >= MessageQueueService.OVERDUE_MS,
   }));
 }
-import { MODES, DROPDOWN_MODES, modeDef, cycleMode } from "./services/modeService";
+
+/**
+ * GAPS-46D (agent-custom-modes): serialize the active custom mode for the
+ * webview badge (label + badge styling).
+ */
+function serializeCustomMode(session: CustomModeSession | null): {
+  label: string;
+  icon: string;
+  colorId: string;
+  turnsInMode: number;
+} | null {
+  if (!session) {
+    return null;
+  }
+  const badge = customModeBadgeAppearance(session);
+  return {
+    label: session.label,
+    icon: badge.icon,
+    colorId: badge.colorId,
+    turnsInMode: session.turnsInMode,
+  };
+}
+import { MODES, DROPDOWN_MODES, modeDef, cycleMode, customModeBadgeAppearance } from "./services/modeService";
+import type { CustomModeSession } from "./services/modeService";
 import { ApprovalRequest } from "./services/humanReviewService";
-import { WorktreeService } from "./services/worktreeService";
+import { BranchMenuService } from "./services/branchMenuService";
+import {
+  ChatHistoryService,
+  type ChatHistoryQuickPick,
+} from "./services/chatHistoryService";
+import { isShellToolApproval, decideCancelTerminalTarget } from "./services/shellApprovalKeyboard";
+import { ChatInboxService } from "./services/chatInboxService";
+import { ChatInboxTreeProvider } from "./services/chatInboxTreeProvider";
+import {
+  GET_CHAT_EXPORT_TRANSCRIPT_COMMAND,
+  chatTabToExportTranscript,
+  type ChatExportTranscript,
+} from "./services/chatExportService";
+// DEV-GAPS-77F (handler-less trap audit): the four services below shipped
+// with complete register functions + tests but no call site in activate() —
+// their commands silently did not exist at runtime. Wired below, right
+// after `tabs` is created.
+import { SideChatService, registerSideChatCommands } from "./services/sideChatService";
+import { registerChatGotoDefinition } from "./services/chatGotoDefinitionService";
+import { registerBrowserSplitCommands } from "./services/browserSplitService";
+import { registerChatDownloadFileCommand } from "./services/chatDownloadFileService";
+// WORKER-GAPS-11D (agent-subagent-preview-tray): Cursor
+// `glass.openSubagentPreviewInAgentsTray` parity.
+import {
+  OPEN_SUBAGENT_PREVIEW_IN_AGENTS_TRAY_COMMAND,
+  SubagentPreviewService,
+} from "./services/subagentPreviewService";
+// DEV-GAPS-10 (rex-004): `.cursor/permissions.json` loader.
+import { CursorPermissionsFileService } from "./services/permissionsFileService";
+// GAPS-11B (agent-git-branch-reminder): the pre-turn branch-change check now
+// lives inside ComposerDataService (per-composer TrackedGitRepoState,
+// binary-verified mechanism) — no extension-level watcher wiring needed.
+// DEV-GAPS-10 (bugbot-editor-review-cta): Cursor 3.25.9 `cursor.runEditorBugbot` parity.
+// DEV-GAPS-15 (bugbot-remaining-commands): + `cursor.openBugbotPane`,
+// `cursor.reviewBugbotFromAd`, `cursor.enableAutoReviewOnCommit` (DEEP-DIG-A,
+// Cursor 3.25.6 binary-verbatim ids).
+// WORKER-GAPS-42D (bugbot-auto-review): the auto-review mechanism corrected to
+// the binary-verbatim `cursor-commits` trigger (`bugbotCommitTrigger.ts`) and
+// the storage-backed `autoRunBugbotOnCommit` gate.
+import {
+  BUGBOT_RUN_EDITOR_REVIEW_COMMAND_ID,
+  BUGBOT_RUN_EDITOR_REVIEW_TITLE,
+  registerBugbotReviewCommand,
+  BUGBOT_OPEN_PANE_COMMAND_ID,
+  BUGBOT_OPEN_PANE_TITLE,
+  BUGBOT_REVIEW_FROM_AD_COMMAND_ID,
+  BUGBOT_REVIEW_FROM_AD_TITLE,
+  BUGBOT_ENABLE_AUTO_REVIEW_COMMAND_ID,
+  BUGBOT_ENABLE_AUTO_REVIEW_TITLE,
+  BUGBOT_AUTO_RUN_STORAGE_KEY,
+  BUGBOT_AUTO_REVIEW_CONFIG_SECTION,
+  BUGBOT_AUTO_REVIEW_CONFIG_KEY,
+  BugbotReviewHistory,
+  setBugbotAutoRunOnCommit,
+  registerBugbotAutoReviewEnableCommand,
+  registerBugbotFromAdCommand,
+  registerOpenBugbotPaneCommand,
+} from "./services/bugbotReviewService";
+import {
+  createBugbotGitRunner,
+  watchBugbotCommits,
+} from "./services/bugbotCommitTrigger";
+// DEV-GAPS-65 (cursor-install-cli): binary-verbatim `cursor.installCli`
+// ("Install Cursor CLI", workbench.desktop.main.js @36708706, Cursor 3.25.9)
+// — CLI detection + Panel-terminal install flow.
+import {
+  ALREADY_INSTALLED_MESSAGE,
+  CLI_DETECTION_STATUS_STORAGE_KEY,
+  INSTALL_CLI_COMMAND_ID,
+  buildCliDetectionStatus,
+  parseCliDetectionStatus,
+  probeCliExecutables,
+  runInstallCliFlow,
+  type CliDetectionStatus,
+  type CliProbeDeps,
+} from "./cli-install";
+import { OnboardingChecklistService } from "./services/onboardingChecklistService";
+import { OnboardingChecklistTreeProvider } from "./services/onboardingChecklistTreeProvider";
+import type { OnboardingTreeNode } from "./services/onboardingChecklistTreeProvider";
+import { WorktreeService, WorktreeCleanupScheduler } from "./services/worktreeService";
+import { gitExecFile } from "./services/gitExec";
+// DEV-GAPS-76 (W76B): REAL git blame backend for the Cursor Blame editors
+// (services/gitBlameService.ts) — the fork's analog of Cursor's
+// cursor-retrieval GitProvider; exposed to the workbench cursorBlame
+// contribution through the `ide.cursorBlame.*` commands registered in
+// activate() below (the fork's provider seam for Cursor's extHost
+// gitContextService proxy).
+import { gitBlameService } from "./services/gitBlameService";
+// DEV-GAPS-74 (W74C): ChatConflictService shipped with tests but no
+// activate() call site (same handler-less trap as DEV-GAPS-77F) — wired
+// below as the `ide.resolveConflictsInChat` command.
+import { ChatConflictService, type ResolveConflictsArgs } from "./services/chatConflictService";
+import {
+  buildCommitMessagePrompt,
+  cleanCommitMessage,
+  parseRecentCommitMessages,
+  COMMIT_MESSAGE_RECENT_COUNT,
+  type CommitDiffSource,
+} from "./commit-message";
 import { createComposer } from "./components/composer";
 import { activate as activateTab } from "./tab/extension";
+import { activateBrowserViewCommands } from "./services/browser/browserViewCommands";
 import { TerminalService } from "./services/terminalService";
 import { InlineEditService } from "./services/inlineEditService";
-import { activateMcp } from "./mcp";
+import { activateMcp, createCursorApi } from "./mcp";
+import { activateIntegrations } from "./integrations";
+import { createCursorIdeBrowserProvider } from "./browser/browserMcpProvider";
+import type { CursorApi } from "./mcp";
 import { SlashCommandService } from "./services/slashCommandService";
 import { attachPendingSelection } from "./services/inlinePromptSelection";
+import { showFindInChat, hideFindInChat, findNextInChat, findPreviousInChat, findBarContextUpdates } from "./services/findInChat";
+import { showFindInPlan, hideFindInPlan, findNextInPlan, findPreviousInPlan, planFindBarContextUpdates, planTrayContextUpdates } from "./services/findInPlan";
+import {
+  CHAT_INPUT_EMPTY_CONTEXT_KEY,
+  jumpToNextUserMessage,
+  jumpToPrevUserMessage,
+  scrollAgentPanelToEdge,
+} from "./services/chatJumpMessages";
+import {
+  CURSOR_MENTION_LINK_TOOLBAR_ID,
+  isMentionLinkToolbarPayload,
+  mentionLinkToolbarController,
+} from "./services/mentionLinkToolbar";
+import { playChime, defaultChimePath } from "./services/chime";
+import {
+  CONTINUE_INTERRUPTED_KEY,
+  CONTINUE_INTERRUPTED_SECTION,
+  INTERRUPTED_TURNS_STORAGE_KEY,
+  parseInterruptedTurnRecords,
+  runInterruptedAgentsResume,
+} from "./services/continueInterruptedAgents";
+import {
+  searchConversations as searchConversationIndex,
+  type SearchableSession,
+} from "./services/conversationSearch";
+import {
+  buildModelParameterDefinitions,
+  findCycleableParameters,
+  nextParameterOption,
+} from "./services/modelParameterService";
 import { MentionService, MentionChip, isMentionChip, FileAttachment } from "./services/mentionService";
 import { SubmitSendMode } from "./services/composerDataService";
+import { CONTEXT_REDUCTION_PROMPT } from "./services/contextUsageReport";
 import { EngineModelInfo, ModelRef } from "./services/agentService";
+import { IdeCodeEngineAdapter } from "./services/ideCodeEngineAdapter";
+import { initAiCodeTracking } from "./services/aiCodeTracking";
+import { AiCodeTrackingStatusBar } from "./services/aiCodeTrackingStatusBar";
+import { watchCommitsForScoring } from "./services/commitScoreWatcher";
+import { setSandboxDebugLogging, isSandboxDebugLogging } from "./sandbox/sandboxService";
 import {
   AUTO_MODEL_VALUE,
   CURSOR_DEFAULT_VALUE,
@@ -72,14 +278,45 @@ import {
   selectionValue,
 } from "./services/modelService";
 import { HookService } from "./hooks/hookService";
+import { DesktopBridgeServer } from "./services/desktopBridgeServer";
+import {
+  CHANGES_TAB_COMMAND_IDS,
+  normalizeOpenChangesTabArgs,
+} from "./services/changesTab";
 import { BrowserTabManager } from "./browser/browserTab";
 import { browserCaptureDir, screenshotFilename } from "./browser/chromium";
+import {
+  confirmStoreSkillsSynced,
+  defaultSkillStoreDir,
+  installSkill,
+  installedFromDir,
+  listInstalledSkills,
+  packSkillPlugin,
+  reloadAndConfirmResync,
+  reloadConfirmAndDeleteLocalSkill,
+  removePluginCache,
+  restoreLocalSkill,
+} from "./services/skillStoreService";
+import {
+  SkillMigrationController,
+  copySkillsFromStore,
+  copySkillsToStore,
+  cursorHomeSkillsDir,
+  migrateSkills,
+  moveSkillOutOfStore,
+  moveSkillToStore,
+  trashMigratedHomeSkills,
+  trashMigratedStoreSkills,
+} from "./services/skillMigrationService";
 
 /** Module-level hook service ref so deactivate() can fire sessionEnd hooks. */
 let hookServiceRef: HookService | undefined;
 
 /** Module-level browser tab manager ref so deactivate() can stop Chromium. */
 let browserTabsRef: BrowserTabManager | undefined;
+
+/** Module-level desktop bridge server ref so deactivate() can stop it (spec §5 P2). */
+let desktopBridgeServerRef: DesktopBridgeServer | undefined;
 
 /**
  * ide-agent — built-in AI agent extension for the ide-code VS Code fork.
@@ -95,7 +332,9 @@ let browserTabsRef: BrowserTabManager | undefined;
  *
  * SCAFFOLD STATUS: every command, view, keybinding and the chat participant
  * are real and registered. Behaviors needing the engine run against
- * StubEngineAdapter and are visibly labeled "engine wiring pending".
+ * StubEngineAdapter and are visibly labeled "engine wiring pending" —
+ * except the @ide chat participant, which runs the real sidecar engine
+ * (IdeCodeEngineAdapter) directly.
  */
 
 interface ScaffoldCommand {
@@ -107,32 +346,223 @@ interface ScaffoldCommand {
 
 const COMMANDS: ScaffoldCommand[] = [
   { id: "ide.newChat", title: "New Chat", does: "focus the IDE Agent chat view and start a fresh conversation" },
+  // WORKER-GAPS-22A (agent-new-agent-command-family, Cursor 3.25.9 parity):
+  // runtime targets of the workbench-core `glass.newAgent*` family. "New
+  // Agent" (palette, Ctrl+N) vs "New Agent Chat" (ide.newAgentChat) are
+  // distinct binary commands — do NOT merge them.
+  { id: "ide.newAgent", title: "New Agent", does: "open a new agent session (Cursor glass.newAgent parity: palette Ctrl+N / Ctrl+Alt+N variants, cloud-repo and folder target branches)" },
+  { id: "ide.newAgentWithModel", title: "New Agent with Model", does: "open a new agent session seeded with the given model id (Cursor glass.newAgentWithModel parity)" },
+  // WORKER-GAPS-40B (keybindings-inventory-newAgent-family, auditor run 30,
+  // Cursor 3.25.9 parity): runtime target of the workbench-core
+  // `glass.newProjectSubagent` (workbench.glass.main.js @45345673, title
+  // "New Agent", Ctrl+T, when JDi && !GMe && !focusInAny, f1:!1). The binary
+  // emits `newProjectSubagentRequested` (distinct from `newAgentRequested`);
+  // the fork has no separate project-subagent target (no project selector /
+  // workspace-target service), so the runtime creates a new agent session via
+  // the shared newAgent() path — the distinct emission name is preserved in
+  // the telemetry log for future divergence.
+  { id: "ide.newProjectSubagent", title: "New Agent", does: "open a new agent session (Cursor glass.newProjectSubagent parity: Ctrl+T, emits newProjectSubagentRequested)" },
+  { id: "ide.focusChatInput", title: "Focus Chat Input", does: "focus the chat composer input from anywhere (Cursor Ctrl+I parity)" },
+  // DEV-GAPS-3-HOTKEYS: "Focus Agent" (Cursor 3.25.9 composer.focusComposer
+  // parity) — reveals the chat surface and focuses the main input box. The
+  // binary constructor registers NO keybinding (Ctrl+. is Cursor's Open
+  // Workspace, not Focus Agent), so none is contributed here either.
+  { id: "ide.focusAgent", title: "Focus Agent", does: "reveal the agent chat surface and focus the main input box (Cursor composer.focusComposer parity; no default keybinding)" },
+  { id: "ide.investigateError", title: "Investigate Error in Chat", does: "send the current file/selection plus diagnostics to the agent (Cursor Ctrl+Shift+D parity)" },
+  // DEV-GAPS-83 (agent-fix-with-agent-error): runtime half of the core
+  // `editor.action.fixInAgent` command (Cursor 3.25.9
+  // workbench.contrib.aiFixCodeActions) — the "Fix in Agent" QuickFix code
+  // action and the marker-hover "Fix with Agent" button funnel here.
+  { id: "ide.fixWithAgent", title: "Fix with Agent", does: "send a diagnostic error to the agent with the verbatim Cursor fix prompt (editor.action.fixInAgent runtime)" },
+  { id: "ide.reopenChatTab", title: "Reopen Last Closed Chat Tab", does: "reopen the most recently closed chat tab (Cursor Ctrl+Shift+T parity; the transcript is not restored)" },
   { id: "ide.newFollowup", title: "Focus Chat Followup", does: "focus the follow-up input of the active chat" },
   { id: "ide.newAgentChat", title: "New Agent Chat", does: "open a new agent-mode chat tab" },
   { id: "ide.openInlinePrompt", title: "Open Inline Prompt", does: "open the Cmd+K-style inline prompt bar at the cursor" },
-  { id: "ide.acceptInlineEdit", title: "Accept Inline Edit", does: "accept the pending inline edit preview (Ctrl+Enter)" },
-  { id: "ide.rejectInlineEdit", title: "Reject Inline Edit", does: "revert the pending inline edit preview (Esc)" },
+  { id: "ide.acceptInlineEdit", title: "Accept Inline Edit", does: "accept the pending inline edit preview (Ctrl+Enter) — web/aux fallback for the core editor.action.inlineDiffs.acceptAll" },
+  { id: "ide.rejectInlineEdit", title: "Reject Inline Edit", does: "revert the pending inline edit preview (Esc) — web/aux fallback for the core editor.action.inlineDiffs.rejectAll" },
+  { id: "ide.cancelInlineEditGeneration", title: "Cancel Inline Edit Generation", does: "abort the in-flight inline edit generation — web/aux fallback for the core editor.action.inlineDiffs.cancelEdits (Ctrl/Cmd+Shift+Backspace, weight 600)" },
+  { id: "ide.acceptPartialInlineEdit", title: "Accept Partial Inline Edit", does: "accept only the current change in the pending inline edit preview (Ctrl+Shift+Y / Cmd+Y)" },
+  { id: "ide.rejectPartialInlineEdit", title: "Reject Partial Inline Edit", does: "reject only the current change in the pending inline edit preview (Ctrl+N)" },
+  { id: "ide.nextInlineChange", title: "Go to Next Inline Change", does: "jump to the next pending change in the inline edit preview (Alt+J)" },
+  { id: "ide.previousInlineChange", title: "Go to Previous Inline Change", does: "jump to the previous pending change in the inline edit preview (Alt+K)" },
+  { id: "ide.nextInlineDiffFile", title: "Go to Next Inline Diff File", does: "jump to the next file with a pending inline diff (Alt+L)" },
+  { id: "ide.previousInlineDiffFile", title: "Go to Previous Inline Diff File", does: "jump to the previous file with a pending inline diff (Alt+H)" },
   { id: "ide.sendToAgent", title: "Send Inline Prompt to Agent", does: "escalate the inline prompt into a full agent turn" },
+  // F2-A (2026-10-20): bridge for the workbench-core inline-edit flow — the
+  // core IInlineEditService escalates through this command (same behavior as
+  // the extension's own inline-edit prefillChat: submit to the ACTIVE
+  // composer + focus the chat surface).
+  { id: "ide.submitInlinePromptToChat", title: "Submit Inline Prompt to Chat", does: "submit an escalated inline-edit prompt to the active chat composer (core inline-edit bridge)" },
   { id: "ide.openModeMenu", title: "Open Mode Menu", does: "open the Plan/Debug/Multitask/Ask mode picker (Agent is the implicit default)" },
   { id: "ide.openModelPicker", title: "Open Model Picker", does: "open the model picker quickpick" },
   { id: "ide.manageModels", title: "Manage Models…", does: "enable or disable individual engine models (ide.agent.enabledModels)" },
-  { id: "ide.generateGitCommitMessage", title: "Generate Git Commit Message", does: "generate a commit message from the staged diff and fill the SCM input" },
+  // DEV-GAPS-54 (ai-commit-message-generation, Cursor 3.25.9 parity):
+  // cursor.generateGitCommitMessage ("Generate Commit Message", f1 palette,
+  // sparkle icon, menus.scm/inputBox when scmProvider==git). Collects staged
+  // (index-group) or working-tree files, fetches diffs + recent commit
+  // messages via the git provider, builds explicit context, generates an AI
+  // commit message, and writes it into the SCM input box.
+  { id: "ide.generateGitCommitMessage", title: "Generate Commit Message", does: "generate a commit message from the staged (or working-tree) diff plus recent commit style and fill the SCM input" },
   { id: "ide.cycleModel", title: "Cycle Model", does: "cycle to the next enabled model (skips models disabled in ide.agent.enabledModels)" },
+  // DEV-GAPS-29: separate command from ide.cycleModel (Cursor 3.25.9
+  // composer.cycleModelParameter parity): cycles the current model's
+  // cycleable parameter (isCycleableByHotkey && >1 option — the engine
+  // catalog's model variant) first, falls back to cycling the model.
+  { id: "ide.cycleModelParameter", title: "Cycle Model Parameter", does: "cycle the current model's cycleable parameter (model variant) or fall back to cycling the model" },
   { id: "ide.toggleChatAsEditor", title: "Toggle Chat as Editor", does: "toggle the chat between side view and editor tab" },
+  // DEV-FULLSCREEN-COMPOSER (Cursor 3.25.9 parity): binary-verified
+  // `glass.enterEditorPanelFullscreen` ("Enter Full Screen") /
+  // `glass.exitEditorPanelFullscreen` ("Exit Full Screen"), both on
+  // Ctrl/Cmd+Shift+M (Ctrl/Cmd+Shift+I is DevTools in Cursor — the
+  // dotcursorrules.com cheat sheet is wrong). Real implementations below.
+  { id: "ide.openFullscreenComposer", title: "Enter Full Screen", does: "open the chat composer maximized in the editor area (Cursor Ctrl/Cmd+Shift+M parity)" },
+  { id: "ide.exitFullscreenComposer", title: "Exit Full Screen", does: "restore the workbench layout after fullscreen composer" },
   { id: "ide.nextChatTab", title: "Next Chat Tab", does: "switch to the next chat tab" },
   { id: "ide.previousChatTab", title: "Previous Chat Tab", does: "switch to the previous chat tab" },
   { id: "ide.selectNextChat", title: "Select Next Chat", does: "select the next chat in the chat list" },
   { id: "ide.selectPreviousChat", title: "Select Previous Chat", does: "select the previous chat in the chat list" },
   { id: "ide.selectNextSubagentTab", title: "Select Next Subagent Tab", does: "switch to the next subagent tab" },
   { id: "ide.selectPreviousSubagentTab", title: "Select Previous Subagent Tab", does: "switch to the previous subagent tab" },
+  // DEV-GAPS-80 (W80C-R3): runtime targets of the binary-verbatim core
+  // actions `composer.selectNextSubComposerTab` /
+  // `composer.selectPreviousSubComposerTab` ("Select Next/Previous
+  // SubComposer Tab", workbench.glass.main.js 3.25.9 @15886358/@15886314;
+  // f1:false, Alt+CtrlCmd+→/← weight 200 when composerFocused). The
+  // binary fires a switch-subcomposer-tab request event for the selected
+  // composer's Best-of-N child tabs; the fork has no such child tabs, so
+  // ChatTabService.selectNext/PreviousSubComposerTab cycles the real
+  // tab ring instead (documented divergence in chatTabService.ts). The
+  // two ide.select*SubagentTab entries above share these same handlers —
+  // they were catalog-only traps falling into the dispatch default
+  // (W76D-R) until this wave.
+  { id: "ide.selectNextSubComposerTab", title: "Select Next SubComposer Tab", does: "switch to the next subcomposer tab (fork port: cycle the chat tab ring — no Best-of-N child tabs)" },
+  { id: "ide.selectPreviousSubComposerTab", title: "Select Previous SubComposer Tab", does: "switch to the previous subcomposer tab (fork port: cycle the chat tab ring — no Best-of-N child tabs)" },
   { id: "ide.closeChatTab", title: "Close Chat Tab", does: "close the active chat tab" },
-  { id: "ide.cancelAgentStep", title: "Cancel Agent Step", does: "cancel the currently running agent step" },
+  // DEV-GAPS-73 (chat-tab-close-actions, Cursor 3.25.9 parity): runtime
+  // targets of the workbench-core `composer.clearComposerTabs` ("Close
+  // All Tabs", ViewTitle group '0_chatManage' order 3, f1:true) and
+  // `composer.closeOtherComposerTabs` ("Close Other Tabs", f1:true,
+  // ViewTitle menu order 2). Per-tab closeTab semantics are reused (a running or
+  // draining turn asks first with the "Close Running Tab?" confirm dialog —
+  // DEV-GAPS-81; cancelling keeps the tab; the last chat stays open, cleared).
+  { id: "ide.closeAllChatTabs", title: "Close All Chat Tabs", does: "close every chat tab; a tab with a running turn asks for confirmation first (\"Close Running Tab?\"), and the last remaining chat is cleared instead of closed (Cursor always keeps one chat open)" },
+  { id: "ide.closeOtherChatTabs", title: "Close Other Chat Tabs", does: "close every chat tab except the active one; a tab with a running turn asks for confirmation first (\"Close Running Tab?\")" },
+  // W65D (chat-cancel-generation-shortcut, Cursor 3.25.9 parity): runtime
+  // for the binary-verbatim `composer.cancelComposerStep` /
+  // `composer.cancelComposerStepInputFocused` ("Cancel Chat",
+  // workbench.glass.main.js @39862622/@39865699). Cancels the active
+  // composer's running turn (the fork's cancelCurrentStep); the binary's
+  // accept/reject-all branch has no fork analog (the engine applies file
+  // edits directly), so it stays a documented no-op.
+  { id: "ide.cancelAgentStep", title: "Cancel Agent Step", does: "cancel the currently running agent step (Cursor composer.cancelComposerStep parity)" },
+  // DEV-GAPS-66/W66A (agent-accept-pending-decisions): runtime for the
+  // binary-verbatim `composer.acceptComposerStep` ("Accept pending agent
+  // pane action", workbench.glass.main.js 3.25.9 class LAb @39863346).
+  // Accepts EVERY item of the active composer's pending user-decision
+  // group (ComposerDataService.getPendingUserDecisionGroup — terminal
+  // decisions first, else the leading run of similar tools); when the
+  // group is empty it falls back to acceptNotification() (documented
+  // no-op in the fork — no host-owned composer notification service).
+  { id: "ide.acceptComposerStep", title: "Accept Pending Agent Pane Action", does: "accept every pending user decision of the active composer (Cursor composer.acceptComposerStep parity)" },
+  // GAPS-152 (agent-notification-actions): runtime for the binary-verbatim
+  // notification commands `composer.openComposerFromNotification` /
+  // `composer.acceptPendingFromNotification` /
+  // `composer.rejectPendingFromNotification` (workbench.desktop.main.js
+  // 3.25.9, CommandsRegistry @29946768 — no palette presence in the binary
+  // either; core registers the `composer.*` ids and delegates here).
+  // Invoked only from OS-notification clicks/actions with {composerId}.
+  { id: "ide.openComposerFromNotification", title: "Open Composer From Notification", does: "open the composer named by an OS notification click (Cursor composer.openComposerFromNotification parity)" },
+  { id: "ide.acceptPendingFromNotification", title: "Accept Pending From Notification", does: "accept the pending user-decision group of the named composer from an OS notification action (Cursor composer.acceptPendingFromNotification parity)" },
+  { id: "ide.rejectPendingFromNotification", title: "Reject Pending From Notification", does: "reject the pending user-decision group of the named composer from an OS notification action (Cursor composer.rejectPendingFromNotification parity)" },
+  // DEV-GAPS-56 (agent-resume-chat, Cursor 3.25.9 parity): runtime for the
+  // binary-verbatim `composer.resumeCurrentChat` ("Resume Current Chat",
+  // workbench.glass.main.js 3.25.9, class CAb): selected composer → handle
+  // must be loaded (else log-warn "Cannot resume: composer not loaded") →
+  // chatService.resumeChat(handle, {isAutoResume}) with failures caught and
+  // log-warned. ComposerDataService.resumeChat is the chatService port.
+  { id: "ide.resumeCurrentChat", title: "Resume Current Chat", does: "resume the active composer's interrupted turn (Cursor composer.resumeCurrentChat parity)" },
+  // W69C (changes-tab-base-branch-menu, Cursor 3.25.9 parity): runtime for
+  // the binary-verbatim `cursor.openBranchMenu` ("Open Branch Menu",
+  // workbench.glass.main.js 3.25.9 class JXl @27418510: f1:!0, keybinding
+  // CtrlCmd+Quote weight 600 when composerFocused). Fires the branch-menu
+  // request event for the active composer ONLY while its conversation is
+  // still empty (binary guard `isComposerConversationEmpty`); the
+  // BranchMenuService handler then opens the "Switch base branch (X)"
+  // picker. All guard failures are silent, exactly like the binary.
+  { id: "ide.openBranchMenu", title: "Open Branch Menu", does: "open the base-branch selector for the active (still-empty) composer (Cursor cursor.openBranchMenu parity)" },
+  // DEV-GAPS-106B (chat-history-command-palette, Cursor 3.25.9 parity):
+  // runtime for the binary-verbatim `composer.showComposerHistory`
+  // ("Show Chat History", workbench.desktop.main.js class Rgm @29919589:
+  // f1:!0, keybinding CtrlCmd+Alt+Quote weight 500, ViewTitle menu
+  // navigation@2). Resolves the composer (arg -> selected/active tab),
+  // then presents the history menu (eLS/QPS port in
+  // services/chatHistoryService.ts). Returns false only when no composer
+  // exists at all — the core Action2 then shows the binary's verbatim
+  // info "No active composer found. Start a new chat to view history."
+  { id: "ide.showComposerHistory", title: "Show Chat History", does: "show the chat history menu for the active composer (Cursor composer.showComposerHistory parity)" },
+  // DEV-GAPS-106B: runtime for the binary-verbatim
+  // `composer.showComposerHistoryEditor` ("Show Chat History (Editor)",
+  // class Mgm @29920334: f1:!0, EditorTitle menu navigation@2 titled
+  // "Show Chat History"). Same history menu, editor-anchored in the
+  // binary; silent when nothing resolves (no info fallback, unlike the
+  // pane variant).
+  { id: "ide.showComposerHistoryEditor", title: "Show Chat History (Editor)", does: "show the chat history menu for the composer in the active editor (Cursor composer.showComposerHistoryEditor parity)" },
+  // DEV-GAPS-74 (W74C): runtime for Cursor's binary-verbatim
+  // `composer.resolveAllConflictsInChat` ("Resolve All Conflicts in Chat",
+  // f1:false — programmatic only, see services/chatConflictService.ts
+  // header evidence). Fork `ide.*` alias following this catalog's
+  // convention for composer.* commands; the real implementation
+  // (ChatConflictService.resolveAllConflicts) is registered in the switch
+  // below — it shipped with tests but no call site (DEV-GAPS-77F trap).
+  { id: "ide.resolveConflictsInChat", title: "Resolve All Conflicts in Chat", does: "open a new chat tab with one context chip per merge-conflict hunk and the verbatim resolve prompt prefilled (Cursor composer.resolveAllConflictsInChat parity)" },
+  // DEV-GAPS-56 (deeplink-prompt-prefill, Cursor 3.25.9 parity): the
+  // internal command the cursor-deeplink extension fires after validating
+  // an `ide-code://anysphere.ide-code-deeplink/prompt?text=…[&workspace=…]
+  // [&mode=…]` URL — the binary's verbatim id `deeplink.prompt.prefill`,
+  // registered inside Cursor's workbench; the fork registers it here (the
+  // chat webview's host) and ide-deeplink executes it. Prefill only: the
+  // user reviews and sends (same contract as the webview `prefill`
+  // message); the optional mode is applied first.
+  { id: "deeplink.prompt.prefill", title: "Prefill Chat Prompt (Deeplink)", does: "prefill the chat input from a validated deeplink prompt (Cursor deeplink.prompt.prefill parity)" },
   { id: "ide.findInChat", title: "Find in Chat", does: "focus the find widget inside the chat view" },
   { id: "ide.hideFindInChat", title: "Hide Find in Chat", does: "hide the find widget inside the chat view" },
-  { id: "ide.openAddContextMenu", title: "Add Context…", does: "open the @-mention context picker (files, symbols, browser, images)" },
+  { id: "ide.findNextInChat", title: "Find Next in Chat", does: "advance to the next match in the chat find widget (Cursor composer.find.next parity)" },
+  { id: "ide.findPreviousInChat", title: "Find Previous in Chat", does: "go back to the previous match in the chat find widget (Cursor composer.find.previous parity)" },
+  // GAPS-157 (plan-find-in-plan): runtime half of Cursor's binary-verbatim
+  // pane-level plan find family (showPlanFind / hidePlanFind /
+  // nextPlanFindMatch / previousPlanFindMatch, Cursor 3.25.9 glass
+  // @45501537–@45502700) — the core Action2s in composerActions.ts
+  // delegate here; the handlers post to the active chat webview, whose
+  // plan find bar searches the pending plan's bubble (services/findInPlan.ts).
+  { id: "ide.showPlanFind", title: "Find in Plan", does: "show the find bar over the pending plan in the chat plan tray (Cursor showPlanFind parity)" },
+  { id: "ide.hidePlanFind", title: "Close Plan Find", does: "hide the plan find bar (Cursor hidePlanFind parity)" },
+  { id: "ide.findNextInPlan", title: "Find Next in Plan", does: "advance to the next match in the plan find bar (Cursor nextPlanFindMatch parity)" },
+  { id: "ide.findPreviousInPlan", title: "Find Previous in Plan", does: "go back to the previous match in the plan find bar (Cursor previousPlanFindMatch parity)" },
+  // DEV-GAPS-119 (chat-jump-messages-kbd): runtime half of Cursor's
+  // binary-verbatim glass commands jumpToNextUserMessage /
+  // jumpToPrevUserMessage / scrollAgentPanelToTop /
+  // scrollAgentPanelToBottom (Cmd/Ctrl+Up/Down, Cmd/Ctrl+Shift+Up/Down) —
+  // the core Action2s in composerActions.ts delegate here; the handlers
+  // post the binary's *Requested events to the active chat webview.
+  { id: "ide.jumpToNextUserMessage", title: "Jump to Next User Message", does: "scroll the chat transcript to the next own message (Cursor jumpToNextUserMessage parity)" },
+  { id: "ide.jumpToPrevUserMessage", title: "Jump to Previous User Message", does: "scroll the chat transcript to the previous own message (Cursor jumpToPrevUserMessage parity)" },
+  { id: "ide.scrollAgentPanelToTop", title: "Scroll Agent Panel to Top", does: "scroll the chat transcript to the top of the conversation (Cursor scrollAgentPanelToTop parity)" },
+  { id: "ide.scrollAgentPanelToBottom", title: "Scroll Agent Panel to Bottom", does: "scroll the chat transcript to the bottom of the conversation (Cursor scrollAgentPanelToBottom parity)" },
+  // GAPS-131 (mention-link-toolbar): runtime half of Cursor's
+  // binary-verbatim `cursor.mentionLinkToolbar` ("Mention Link Toolbar",
+  // f1:!1) — the core Action2 in composerActions.ts delegates here; the
+  // handler drives MentionLinkToolbarController (the uiOverlayService
+  // mirror) against the active chat webview.
+  { id: "ide.mentionLinkToolbar", title: "Mention Link Toolbar", does: "show the floating Open/Unlink toolbar for a link mention in the chat input (Cursor cursor.mentionLinkToolbar parity)" },
+  { id: "ide.openAddContextMenu", title: "Add Context…", does: "open the composer's add-context menu (modes, files via @-mention, model, MCP) — wired DEV-GAPS-76/W76D-R, see the ide.openAddContextMenu case" },
   { id: "ide.approveShellTool", title: "Approve Pending Shell Command", does: "approve the pending shell tool call once" },
   { id: "ide.approveShellToolAllowlist", title: "Approve Pending Shell Command and Allowlist It", does: "approve the pending shell tool call and add it to the allowlist" },
   { id: "ide.skipShellTool", title: "Skip Pending Shell Command", does: "skip the pending shell tool call" },
+  // GAPS-14 (agent-shell-approval-keyboard-flow): runtime half of Cursor's
+  // binary-verbatim `composer.cancelTerminalToolCall` ("Cancel Terminal
+  // Tool Call", Shift+Backspace) — cancels the RUNNING terminal tool call
+  // (Ctrl+C via TerminalService.cancelActiveRun).
+  { id: "ide.cancelTerminalToolCall", title: "Cancel Terminal Tool Call", does: "cancel the currently running terminal tool call (Cursor composer.cancelTerminalToolCall parity)" },
   { id: "ide.worktreeCommand", title: "Worktree Command (/worktree)", does: "create an isolated git worktree for the current task (Cursor /worktree parity)" },
   { id: "ide.listWorktrees", title: "List Worktrees", does: "show all git worktrees for the current repo" },
   { id: "ide.deleteWorktree", title: "Delete Worktree…", does: "remove a git worktree (Cursor /delete-worktree parity)" },
@@ -140,12 +570,15 @@ const COMMANDS: ScaffoldCommand[] = [
   { id: "ide.focusEditorFromDiff", title: "Focus Editor from Inline Diff", does: "return focus to the editor while the inline prompt bar is open" },
   { id: "ide.addSelectionToInlinePrompt", title: "Add Selection to Inline Prompt", does: "attach the current editor selection to the next inline edit prompt (Cursor K-08 parity)" },
   { id: "ide.acceptPlan", title: "Accept Plan", does: "accept the authored plan and start the build phase" },
+  { id: "ide.acceptPlanFromCore", title: "Accept Plan From Core", does: "run the build phase for a plan accepted through the core composer.acceptPlan command path (GAPS-181 consumer bridge)" },
+  { id: "ide.toggleSandboxDebugLogging", title: "Toggle Sandbox Debug Logging", does: "toggle verbose debug logging for the agent sandbox service (bridge for core composer.toggleSandboxDebugLogging)" },
   { id: "ide.cycleMode", title: "Cycle Mode", does: "cycle the chat mode Agent → Plan → Debug → Multitask → Ask (Shift+Tab)" },
   { id: "ide.setAgentMode", title: "Open Chat in Agent Mode", does: "switch the chat to Agent mode" },
   { id: "ide.setPlanMode", title: "Open Chat in Plan Mode", does: "switch the chat to Plan mode" },
   { id: "ide.setAskMode", title: "Open Chat in Ask Mode", does: "switch the chat to Ask mode" },
   { id: "ide.setDebugMode", title: "Open Chat in Debug Mode", does: "switch the chat to Debug mode" },
   { id: "ide.setMultitaskMode", title: "Open Chat in Multitask Mode", does: "switch the chat to Multitask mode" },
+  { id: "ide.startMultitasking", title: "Start Multitasking", does: "switch the chat to Multitask mode and start the parallel orchestration flow (queue-tray entrypoint)" },
   { id: "ide.restoreCheckpoint", title: "Restore Checkpoint…", does: "restore the conversation to a checkpointed message (checkout_to_message)" },
   // P2 (QA-FILE-07): ide.toggleTabCompletion / ide.snoozeTabCompletion /
   // ide.unsnoozeTabCompletion are registered with their real implementations
@@ -167,19 +600,86 @@ const COMMANDS: ScaffoldCommand[] = [
   { id: "ide.browserTab.clearBrowsingData", title: "Browser Tab: Clear Browsing Data", does: "clear history / cookies / cache with confirmation (Cursor: Clear Browsing History / Clear Cookies / Clear Cache)" },
   { id: "ide.browserTab.openDevTools", title: "Browser Tab: Open DevTools", does: "open the Chrome DevTools frontend for the tab in a side panel" },
   { id: "ide.reviewChanges", title: "Review Changes with Agent", does: "ask the agent to review the working-tree changes" },
+  // DEV-GAPS-10 (bugbot-editor-review-cta): binary-verbatim command id
+  // `cursor.runEditorBugbot` (Cursor 3.25.9). HONEST-DIVERGENCE: the title is
+  // INFERRED — the binary evidence only shows the command id + the
+  // `bug_bot.editor_review_cta_route` telemetry event. Real implementation
+  // registered below in the switch (runs an agent review on the active file).
+  { id: BUGBOT_RUN_EDITOR_REVIEW_COMMAND_ID, title: BUGBOT_RUN_EDITOR_REVIEW_TITLE, does: "run the bugbot auto-review entry on the latest commit (Cursor cursor.runEditorBugbot parity: storage+killswitch gate, branch review)" },
+  // DEV-GAPS-15 (bugbot-remaining-commands): binary-verbatim command ids
+  // from DEEP-DIG-A (Cursor 3.25.6). HONEST-DIVERGENCE: the titles are
+  // INFERRED — the binary evidence only shows the command ids. Real
+  // implementations are registered below in the switch.
+  { id: BUGBOT_OPEN_PANE_COMMAND_ID, title: BUGBOT_OPEN_PANE_TITLE, does: "open the Bugbot pane listing recent bugbot review runs (Cursor cursor.openBugbotPane parity)" },
+  { id: BUGBOT_REVIEW_FROM_AD_COMMAND_ID, title: BUGBOT_REVIEW_FROM_AD_TITLE, does: "start a bugbot review from an ad/CTA surface — same real review flow as cursor.runEditorBugbot (Cursor cursor.reviewBugbotFromAd parity)" },
+  { id: BUGBOT_ENABLE_AUTO_REVIEW_COMMAND_ID, title: BUGBOT_ENABLE_AUTO_REVIEW_TITLE, does: "enable bugbot auto-review on every git commit (sets the autoRunBugbotOnCommit storage flag; Cursor cursor.enableAutoReviewOnCommit parity)" },
+  // DEV-GAPS-65 (cursor-install-cli): binary-verbatim `cursor.installCli`
+  // ("Install Cursor CLI", @36708706) — detects the CLI via PATH +
+  // ~/.local/bin (keyed off the `agent` binary) and either toasts that it
+  // is already installed or opens a Panel terminal running the install
+  // command. HONEST-DIVERGENCE: the already-installed toast text is a
+  // placeholder (binary nls 10693 text UNKNOWN); detection persists in
+  // globalState (Cursor uses applicationUserPersistentStorage).
+  { id: INSTALL_CLI_COMMAND_ID, title: "Install Cursor CLI", does: "install the IDE Code CLI: detect the agent CLI binary (PATH + ~/.local/bin) and, unless already installed, open a Panel terminal running the verbatim install command (Cursor cursor.installCli parity)" },
+  // DEV-GAPS-10: Changes tab (Cursor `glass.openChangesTab` parity,
+  // audit-fix-queue run 24). Registered for real below — delegates to the
+  // canonical core action `composer.openChangesTab`.
+  { id: "ide.openChangesTab", title: "Changes", does: "open the Changes tab showing the agent's last turn changed files (Cursor glass.openChangesTab parity)" },
   { id: "ide.fixWithAI", title: "Fix with AI", does: "send the current selection (or file) plus diagnostics to the agent to fix" },
   { id: "ide.addToChat", title: "Add to Chat", does: "attach the current editor or terminal selection as context to the chat input (Cursor Ctrl+L parity)" },
-  { id: "ide.exportTranscript", title: "Export Transcript", does: "save the chat transcript to a Markdown file (Cursor chat title menu parity)" },
   { id: "ide.copyRequestId", title: "Copy Request ID", does: "copy the last turn's request id to the clipboard (Cursor chat title menu parity)" },
+  // DEV-GAPS-77 (W77D): Cursor `glass.copy-plan-markdown` parity (binary
+  // PlanTabContent `onCopyAsMarkdown`, 3.25.9 @32802481) — the plan tray's
+  // "Copy as Markdown" button plus this palette command copy the pending
+  // plan's serialized markdown with the binary-verbatim toast/log flow.
+  { id: COPY_PLAN_MARKDOWN_COMMAND_ID, title: COPY_PLAN_MARKDOWN_TITLE, does: "copy the pending plan's markdown to the clipboard (Cursor glass.copy-plan-markdown parity)" },
   { id: "ide.giveFeedback", title: "Give Feedback", does: "send feedback about the chat (Cursor chat title menu parity)" },
   { id: "ide.renameChat", title: "Rename Chat", does: "rename the chat tab (Cursor chat title menu parity)" },
   { id: "ide.forkChat", title: "Fork Chat", does: "open a new chat tab seeded from the current transcript (Cursor chat title menu parity)" },
+  { id: "ide.pinChat", title: "Pin Chat", does: "pin the chat to the top of the chat list (Cursor 2.1 parity)" },
+  { id: "ide.unpinChat", title: "Unpin Chat", does: "unpin the chat — it returns to time order in the chat list (Cursor 2.1 parity)" },
   { id: "ide.openAgentSettings", title: "Agent Settings", does: "open the IDE Agent settings (Cursor chat title menu parity)" },
+  // WORKER-GAPS-66A (chat-tab-title-menu-inventory): runtime target of the
+  // core action `composer.shareChat` ("Share Transcript", Cursor 3.25.9
+  // binary-verbatim @39835596 glass). The fork has no share backend, so the
+  // handler honestly reports unavailability; the core menu item is gated on
+  // `isSharedChatsEnabled` (stays false until a backend lands).
+  { id: "ide.shareChat", title: "Share Transcript", does: "share the chat transcript via a link (Cursor composer.shareChat parity — no share backend in this build yet)" },
+  { id: "ide.runNetworkDiagnostics", title: "Run Network Diagnostics", does: "check network connectivity to all Cursor services and open the verbatim-format results (Cursor Settings › Browser & Network 'Run Diagnostic' parity; aiserver health checks honestly reported as skipped cloud checks)" },
+  { id: "ide.copyNetworkRequiredDomains", title: "Copy Required Domains", does: "copy the Required Domains list (domains only, one per line) to the clipboard (Cursor Settings › Browser & Network 'Copy Domains' parity)" },
+  { id: "ide.openCustomize", title: "Open Customize", does: "open the Customize editor tab — plugins, MCPs, skills, subagents, rules, commands, hooks (Cursor parity)" },
+  { id: "workbench.action.openCustomizeEditor", title: "Open Customize Editor", does: "open the Customize editor tab (Cursor workbench.action.openCustomizeEditor parity)" },
+  { id: "workbench.action.customize.openPlugins", title: "Open Plugins", does: "open the Customize editor on the Plugins tab" },
+  { id: "workbench.action.customize.openMCPs", title: "Open MCPs", does: "open the Customize editor on the MCPs tab" },
+  { id: "workbench.action.customize.openSkills", title: "Open Skills", does: "open the Customize editor on the Skills tab" },
+  { id: "workbench.action.customize.openSubagents", title: "Open Subagents", does: "open the Customize editor on the Subagents tab" },
+  { id: "workbench.action.customize.openRules", title: "Open Rules", does: "open the Customize editor on the Rules tab" },
+  { id: "workbench.action.customize.openCommands", title: "Open Commands", does: "open the Customize editor on the Commands tab" },
+  { id: "workbench.action.customize.openHooks", title: "Open Hooks", does: "open the Customize editor on the Hooks tab" },
+  // DEV-GAPS-74: extension-owned aliases the workbench-core
+  // `workbench.action.customize.open*` actions delegate to (the core ids
+  // shadow same-id extension registrations). Same handlers as the
+  // workbench.action.* cases below — they open the real Customize editor.
+  { id: "ide.customize.openPlugins", title: "Open Plugins", does: "open the Customize editor on the Plugins tab (core-action delegate alias)" },
+  { id: "ide.customize.openMCPs", title: "Open MCPs", does: "open the Customize editor on the MCPs tab (core-action delegate alias)" },
+  { id: "ide.customize.openSkills", title: "Open Skills", does: "open the Customize editor on the Skills tab (core-action delegate alias)" },
+  { id: "ide.customize.openSubagents", title: "Open Subagents", does: "open the Customize editor on the Subagents tab (core-action delegate alias)" },
+  { id: "ide.customize.openRules", title: "Open Rules", does: "open the Customize editor on the Rules tab (core-action delegate alias)" },
+  { id: "ide.customize.openCommands", title: "Open Commands", does: "open the Customize editor on the Commands tab (core-action delegate alias)" },
+  { id: "ide.customize.openHooks", title: "Open Hooks", does: "open the Customize editor on the Hooks tab (core-action delegate alias)" },
   { id: "ide.terminalAiCommand", title: "Generate Terminal Command with AI", does: "describe a task and prefill the chat to generate a terminal command" },
   { id: "ide.searchConversations", title: "Search Conversations", does: "search across agent conversations" },
   { id: "ide.openSettings", title: "Open IDE Agent Settings", does: "open the IDE Agent settings UI" },
   { id: "ide.openDocs", title: "Open IDE Code Documentation", does: "open the IDE Code docs in the external browser (Cursor Docs-nav parity)" },
   { id: "ide.terminalRunBackground", title: "Run Command in Background", does: "run a shell command in the background IDE Agent terminal with output streaming to chat" },
+  // DD-SB-7: real implementation — registered below in the switch, NOT a scaffold.
+  { id: "aiCodeTracking.resetDailyStats", title: "Reset AI Code Tracking Stats", does: "reset today's AI code tracking counters (Tab + Agent stats)" },
+  // WORKER-GAPS-36D (rules-user): Cursor knowledge-base commands,
+  // binary-verified in 3.25.9 (editor.action.knowledgeBase.add = "Add User
+  // Rule", editor.action.knowledgeBase.list = "View User Rules", category
+  // "knowledge_base"). Real implementations registered below in the switch.
+  { id: "editor.action.knowledgeBase.add", title: "Add User Rule", does: "add a global User Rule — applies to all Agent chats (Cursor knowledgeBase parity)" },
+  { id: "editor.action.knowledgeBase.list", title: "View User Rules", does: "view, edit, and delete global User Rules (Cursor knowledgeBase parity)" },
 ];
 
 const PENDING = "engine wiring pending";
@@ -189,6 +689,8 @@ let activeChatView: ChatViewProvider | undefined;
 
 /** The chat editor provider, for posting to open chat editor tabs (P2-3). */
 let chatEditorProviderRef: ChatEditorProvider | undefined;
+/** The Customize editor provider (singleton view; per-tab open commands). */
+let customizeEditorProviderRef: CustomizeEditorProvider | undefined;
 
 function notifyScaffold(cmd: ScaffoldCommand): void {
   void vscode.window.showInformationMessage(
@@ -197,7 +699,434 @@ function notifyScaffold(cmd: ScaffoldCommand): void {
   );
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+import type { McpService } from "./mcp";
+
+/**
+ * Build the Customize view's host dependencies from the real extension
+ * services (DD-CV-1: wire real data where we have it).
+ *
+ * REAL: MCP servers (mcp.json via McpService), hook execution log
+ * (HookService), rules (.mdc via ProjectRulesService), skills
+ * (.cursor/skills via SlashCommandService), commands (.cursor/commands),
+ * plugins (installed extensions via vscode.extensions.all — the extension
+ * editor handles enable/disable/uninstall), subagents (engine agent
+ * markdown dirs {agent,agents}/**\/*.md — the engine's own store).
+ * PLACEHOLDER (labeled in the UI): installing a plugin from a GitHub
+ * repository URL — no vsix-packaging backend exists for that yet.
+ */
+function buildCustomizeHostDeps(
+  context: vscode.ExtensionContext,
+  tabs: ChatTabService,
+  slash: SlashCommandService,
+  hookService: HookService,
+  mcpService: McpService,
+): CustomizeHostDeps {
+  const homeDir = os.homedir();
+  const isUserPath = (p: string): boolean =>
+    p === homeDir || p.startsWith(homeDir + path.sep);
+  const firstWorkspaceRoot = (): string | undefined =>
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+  const ensureDir = (dir: string): void => {
+    fs.mkdirSync(dir, { recursive: true });
+  };
+
+  const openPath = async (filePath: string): Promise<void> => {
+    const doc = await vscode.workspace.openTextDocument(filePath);
+    await vscode.window.showTextDocument(doc, { preview: false });
+  };
+
+  const promptName = async (
+    title: string,
+    placeHolder: string,
+  ): Promise<string | undefined> => {
+    const raw = await vscode.window.showInputBox({
+      title,
+      placeHolder,
+      validateInput: (v) =>
+        /^[a-z0-9][a-z0-9-_]*$/i.test(v.trim())
+          ? undefined
+          : "Use letters, numbers, dashes and underscores, starting with a letter or number.",
+    });
+    return raw?.trim() || undefined;
+  };
+
+  // Subagent store: the ide-code engine discovers custom agents from markdown
+  // files in {agent,agents}/**/*.md under its config entries
+  // (packages/core/src/config/plugin/agent.ts). Mirror that discovery so the
+  // Subagents section lists exactly what the engine loads — creating a file
+  // here is picked up by the live engine (it watches config entries).
+  const ENGINE_CONFIG_DIR =
+    process.env.XDG_CONFIG_HOME && path.isAbsolute(process.env.XDG_CONFIG_HOME)
+      ? path.join(process.env.XDG_CONFIG_HOME, "opencode")
+      : path.join(homeDir, ".config", "opencode");
+
+  const readAgentDescription = (filePath: string): string => {
+    try {
+      const text = fs.readFileSync(filePath, "utf8");
+      const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+      if (!frontmatter) {
+        return "";
+      }
+      const desc = /^description\s*:\s*(.+)$/m.exec(frontmatter[1]);
+      if (!desc) {
+        return "";
+      }
+      return desc[1].trim().replace(/^["']|["']$/g, "");
+    } catch {
+      return "";
+    }
+  };
+
+  const discoverSubagents = (): CustomizeSubagent[] => {
+    const out: CustomizeSubagent[] = [];
+    const seen = new Set<string>();
+    const scanDir = (dir: string): void => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          scanDir(full);
+        } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+          if (seen.has(full)) {
+            continue;
+          }
+          seen.add(full);
+          out.push({
+            name: entry.name.replace(/\.md$/i, ""),
+            description: readAgentDescription(full),
+            filePath: full,
+            scope: isUserPath(full) ? "user" : "workspace",
+          });
+        }
+      }
+    };
+    for (const sub of ["agent", "agents"]) {
+      scanDir(path.join(ENGINE_CONFIG_DIR, sub));
+    }
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      for (const sub of ["agent", "agents"]) {
+        scanDir(path.join(folder.uri.fsPath, ".opencode", sub));
+      }
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  };
+
+  return {
+    getSnapshot(): CustomizeSnapshot {
+      const rules = tabs.activeComposer.projectRules.getRules();
+      const userRules = tabs.activeComposer.userRules.getRules();
+      return {
+        // Plugins ARE extensions in this IDE — the real installed set.
+        plugins: vscode.extensions.all.map((e) => ({
+          id: e.id,
+          displayName:
+            (e.packageJSON?.displayName as string | undefined) ?? e.id,
+          version: (e.packageJSON?.version as string | undefined) ?? "",
+          description: (e.packageJSON?.description as string | undefined) ?? "",
+        })),
+        mcps: mcpService.getServerStatuses().map((s) => ({
+          id: s.id,
+          name: s.displayName,
+          scope: s.scope === "user" || s.scope === "vscode" ? "user" : "workspace",
+          state: s.state,
+          toolCount: s.toolCount,
+          lastError: s.lastError,
+        })),
+        skills: slash.getSkills().map((s) => ({
+          name: s.name,
+          description: s.description,
+          filePath: s.filePath,
+          scope: isUserPath(s.filePath) ? "user" : "workspace",
+        })),
+        rules: [
+          ...rules.map((r) => ({
+            name: r.filename,
+            description: r.description,
+            filePath: r.fullPath,
+            workspaceRoot: r.workspaceRoot,
+            kind: "mdc" as const,
+          })),
+          // GAPS-36D (rules-user): global User Rules live in Customize →
+          // Rules alongside the .mdc project rules (docs:
+          // https://cursor.com/docs/rules). They have no file or workspace
+          // scope — clicking one opens the management flow.
+          ...userRules.map((r) => ({
+            name: r.title,
+            description:
+              r.content.length > 120 ? `${r.content.slice(0, 120)}…` : r.content,
+            filePath: "",
+            workspaceRoot: "",
+            kind: "user" as const,
+            userRuleId: r.id,
+          })),
+        ],
+        commands: slash.getCustomCommands().map((c) => ({
+          name: c.name,
+          description: c.description ?? "",
+          source: c.source,
+          filePath: c.filePath,
+        })),
+        // Subagents: the engine's real agent-markdown store (see
+        // discoverSubagents above) — exactly what the engine loads —
+        // PLUS Cursor's built-in subagents (DEV-GAPS-40, subagent-builtin:
+        // docs/rea/deep-docs-all.md "Built-in: explore (codebase search),
+        // browser (browser automation via MCP)"). Builtins come first and
+        // are marked builtin (no file, non-deletable); a user-defined
+        // agent with the same name overrides the builtin, matching the
+        // engine's own rule ("A user-configured agent named \"explore\"
+        // overrides the builtin" — packages/core/src/tool/plugin/subagent.ts).
+        agents: mergeBuiltinSubagents(discoverSubagents()),
+        hookLog: hookService.getExecutionLog().map((e) => ({
+          at: e.at,
+          event: e.event,
+          source: e.source,
+          command: e.command,
+          exitCode: e.exitCode,
+          durationMs: e.durationMs,
+          decision: e.decision,
+        })),
+        hookConfiguredCount: hookService.getLoadedHookCount(),
+        workspaces: (vscode.workspace.workspaceFolders ?? []).map((f) => ({
+          fsPath: f.uri.fsPath,
+          name: f.name,
+        })),
+        dataSource: {
+          plugins: "real",
+          mcps: "real",
+          skills: "real",
+          agents: "real",
+          rules: "real",
+          commands: "real",
+          hooks: "real",
+        },
+      };
+    },
+
+    refreshSources(): void {
+      hookService.refresh();
+      void slash.reloadCustomCommands();
+      void slash.reloadSkills();
+    },
+
+    clearHookLog(): void {
+      hookService.clearExecutionLog();
+    },
+
+    openDocumentation(_section: CustomizeSectionId): void {
+      // IDE Code has no docs site yet; Cursor's Documentation buttons open
+      // Cursor's docs, so this is the parity reference until ours exists.
+      void vscode.env.openExternal(vscode.Uri.parse("https://cursor.com/docs"));
+    },
+
+    browseMarketplace(): void {
+      // This IDE's plugins ARE extensions — the Extensions view is the real
+      // marketplace surface for browsing and installing them.
+      void vscode.commands.executeCommand("workbench.view.extensions");
+    },
+
+    openPlugin(id: string): void {
+      // The platform's extension editor is the real plugin manager:
+      // Enable / Disable / Uninstall all work from there.
+      void vscode.commands.executeCommand("extension.open", id);
+    },
+
+    addPluginFrom(source: "marketplace" | "github" | "local"): void {
+      if (source === "marketplace") {
+        void vscode.commands.executeCommand("workbench.view.extensions");
+        return;
+      }
+      if (source === "github") {
+        // Honest gap: cloning a repo and packaging it as an installable
+        // plugin needs a vsix-packaging backend that does not exist yet.
+        void vscode.window.showInformationMessage(
+          "IDE Agent: installing plugins from GitHub is not available in this build yet.",
+        );
+        return;
+      }
+      // A local plugin is a packaged .vsix — the platform installs it for real.
+      void vscode.commands.executeCommand(
+        "workbench.extensions.action.installVSIX",
+      );
+    },
+
+    createMcp(): void {
+      // "New" on the MCPs tab: open .cursor/mcp.json for editing (creates a
+      // starter file when missing) — the real config surface for our servers.
+      const root = firstWorkspaceRoot();
+      if (!root) {
+        void vscode.window.showWarningMessage(
+          "IDE Agent: open a workspace folder first to configure MCP servers.",
+        );
+        return;
+      }
+      const file = path.join(root, ".cursor", "mcp.json");
+      try {
+        if (!fs.existsSync(file)) {
+          ensureDir(path.dirname(file));
+          fs.writeFileSync(
+            file,
+            JSON.stringify({ mcpServers: {} }, null, 2) + "\n",
+            "utf8",
+          );
+        }
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`IDE Agent: could not create mcp.json — ${m}`);
+        return;
+      }
+      void openPath(file).then(
+        () => undefined,
+        () => undefined,
+      );
+    },
+
+    createSkill(): void {
+      const root = firstWorkspaceRoot();
+      if (!root) {
+        void vscode.window.showWarningMessage(
+          "IDE Agent: open a workspace folder first to create a skill.",
+        );
+        return;
+      }
+      void promptName("New skill", "my-skill").then((name) => {
+        if (!name) {
+          return;
+        }
+        const dir = path.join(root, ".cursor", "skills", name);
+        const file = path.join(dir, "SKILL.md");
+        try {
+          ensureDir(dir);
+          if (!fs.existsSync(file)) {
+            fs.writeFileSync(
+              file,
+              `---\nname: ${name}\ndescription: TODO — when Agent should use this skill\n---\n\n# ${name}\n\nTeach the agent domain-specific knowledge and workflows here.\n`,
+              "utf8",
+            );
+          }
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          void vscode.window.showErrorMessage(`IDE Agent: could not create skill — ${m}`);
+          return;
+        }
+        void openPath(file);
+      });
+    },
+
+    createSubagent(): void {
+      // Real subagent store: a markdown agent definition in the engine's
+      // {agent,agents}/ discovery dirs (see discoverSubagents above). The
+      // live engine watches these dirs and loads the new agent.
+      const root = firstWorkspaceRoot();
+      const dir = root
+        ? path.join(root, ".opencode", "agent")
+        : path.join(ENGINE_CONFIG_DIR, "agent");
+      void promptName("New subagent", "my-subagent").then((name) => {
+        if (!name) {
+          return;
+        }
+        const file = path.join(dir, `${name}.md`);
+        try {
+          ensureDir(dir);
+          if (!fs.existsSync(file)) {
+            fs.writeFileSync(
+              file,
+              `---\ndescription: TODO — when Agent should use this subagent\nmode: subagent\n---\n\n# ${name}\n\nYou are a specialized subagent. Describe when to use you, then define your behavior here.\n`,
+              "utf8",
+            );
+          }
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          void vscode.window.showErrorMessage(`IDE Agent: could not create subagent — ${m}`);
+          return;
+        }
+        void openPath(file);
+      });
+    },
+
+    createRule(): void {
+      const root = firstWorkspaceRoot();
+      if (!root) {
+        void vscode.window.showWarningMessage(
+          "IDE Agent: open a workspace folder first to create a rule.",
+        );
+        return;
+      }
+      void promptName("New rule", "my-rule").then((name) => {
+        if (!name) {
+          return;
+        }
+        const file = path.join(root, ".cursor", "rules", `${name}.mdc`);
+        try {
+          ensureDir(path.dirname(file));
+          if (!fs.existsSync(file)) {
+            fs.writeFileSync(
+              file,
+              `---\ndescription: TODO — what this rule is for\nglobs:\nalwaysApply: false\n---\n\n# ${name}\n\nPersistent, system-level instructions for the agent.\n`,
+              "utf8",
+            );
+          }
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          void vscode.window.showErrorMessage(`IDE Agent: could not create rule — ${m}`);
+          return;
+        }
+        void openPath(file);
+      });
+    },
+
+    createCommand(): void {
+      const root = firstWorkspaceRoot();
+      if (!root) {
+        void vscode.window.showWarningMessage(
+          "IDE Agent: open a workspace folder first to create a command.",
+        );
+        return;
+      }
+      void promptName("New command", "my-command").then((name) => {
+        if (!name) {
+          return;
+        }
+        const file = path.join(root, ".cursor", "commands", `${name}.md`);
+        try {
+          ensureDir(path.dirname(file));
+          if (!fs.existsSync(file)) {
+            fs.writeFileSync(
+              file,
+              `---\ndescription: TODO — what /${name} does\n---\n\n# /${name}\n\nReusable prompt: describe the workflow the agent should run.\n`,
+              "utf8",
+            );
+          }
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          void vscode.window.showErrorMessage(`IDE Agent: could not create command — ${m}`);
+          return;
+        }
+        void openPath(file);
+      });
+    },
+
+    openItem(_kind, filePath: string): void {
+      void openPath(filePath).then(
+        () => undefined,
+        () => undefined,
+      );
+    },
+    // GAPS-36D (rules-user): user rules have no file — open the "View User
+    // Rules" management flow (editor.action.knowledgeBase.list).
+    openUserRule(): void {
+      void vscode.commands.executeCommand("editor.action.knowledgeBase.list");
+    },
+  };
+}
+
+export function activate(context: vscode.ExtensionContext): { cursor: CursorApi } {
   // DEV-HOOKS: Cursor-style agent hooks (21 verified events). Config sources:
   // /etc/ide-code/hooks.json → ~/.ide-code/hooks.json → .ide-code/hooks.json
   // (per workspace) → ~/.cursor + .cursor compat → .claude/settings*.json.
@@ -216,11 +1145,318 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   }
 
+  // ---- AI code tracking (Cursor aiCodeTracking parity, DD-SB-1..7) --------
+  // Daily Tab/Agent suggestion-vs-accept line stats + commit scoring, with
+  // three display-only status-bar items. Initialized BEFORE the Tab engine
+  // and the command loop so both can use the shared singleton.
+  // Persistence: `aiCodeTracking.dailyStats.v1.5.{date}` in workspaceState
+  // (Cursor's WORKSPACE scope) and `aiCodeTracking.recentCommit` in
+  // globalState (Cursor's PROFILE scope) — verbatim key names.
+  const tracking = initAiCodeTracking(context.workspaceState, context.globalState);
+  const trackingStatusBar = new AiCodeTrackingStatusBar(tracking);
+  context.subscriptions.push(trackingStatusBar);
+  // Commit scoring (DD-SB-6): score HEAD commits made after activation via
+  // the built-in git extension; never throws, no-ops without git.
+  void watchCommitsForScoring(tracking)
+    .then((watcher) => context.subscriptions.push(watcher))
+    .catch(() => undefined);
+
   // ---- Chat tabs (doc-gap B8): each tab owns a full ComposerDataService —
   // its own bubbles/mode/queue/checkpoints/engine session. `tabs` is the
   // single owner; everything below resolves the active tab live.
   const tabs = new ChatTabService(context, hookService);
   context.subscriptions.push(tabs);
+  // GAPS-152 (agent-notification-actions): agent OS notifications —
+  // producers + `ide.*FromNotification` handlers (services/agentNotifications.ts).
+  // The core bridge (`composer.showAgentSystemNotification`, registered by
+  // AgentNotificationBridgeContribution) shows the real OS notification and
+  // routes clicks / Accept / Reject back to the payload's
+  // `composer.*FromNotification` commands, which core delegates here.
+  const agentNotifications = new AgentNotificationService({
+    executeCommand: (id, ...args) => Promise.resolve(vscode.commands.executeCommand(id, ...args)),
+    isWindowFocused: () => vscode.window.state.focused,
+    systemNotificationsEnabled: () =>
+      vscode.workspace.getConfiguration("ide.composer").get<boolean>("systemNotificationsEnabled", false),
+    getTab: (composerId) => {
+      const tab = tabs.listTabs().find((t) => t.id === composerId);
+      return tab ? toNotificationTab(tab) : undefined;
+    },
+    openTab: async (composerId) => {
+      tabs.switchTab(composerId);
+      await focusChatSurface(tabs);
+    },
+  });
+  tabs.setTurnCompletedHook((tab) => {
+    void agentNotifications.notifyTurnCompleted(toNotificationTab(tab));
+  });
+  // ---- DEV-GAPS-77F: wire the orphaned register functions (impl + tests
+  // existed, no activate() call site — the commands were dead at runtime).
+  // Side chat: the parent transcript comes from the owning tab's composer
+  // bubbles (same accessor chatExportService uses); reveal focuses the
+  // parent chat editor — there is no dedicated side-chat webview surface
+  // yet (Cursor's rendering is UNKNOWN, see sideChatService.ts header).
+  const sideChatService = new SideChatService({
+    getParentTranscript: (parentChatId) =>
+      tabs
+        .listTabs()
+        .find((t) => t.id === parentChatId)
+        ?.composer.bubbles.getAllInOrder()
+        .map((b) => ({ role: b.role, text: b.text ?? "" })) ?? [],
+    revealSideChat: (chat) => {
+      void openChatEditor(tabs, undefined, chat.parentChatId);
+    },
+    getActiveChatId: () => tabs.activeTab.id,
+  });
+  context.subscriptions.push(sideChatService);
+  registerSideChatCommands({ service: sideChatService, context });
+  registerChatGotoDefinition(context);
+  registerBrowserSplitCommands(context);
+  registerChatDownloadFileCommand(context);
+  // ---- DEV-GAPS-10: workspace agent policy + git branch tracking ---------
+  // Shared "IDE Agent" output channel for the services wired below.
+  const ideOutput = vscode.window.createOutputChannel("IDE Agent");
+  context.subscriptions.push(ideOutput);
+  // ---- W69C (changes-tab-base-branch-menu) --------------------------------
+  // BranchMenuService = the fork's composerEventService +
+  // backgroundComposerDataService port for the base-branch selector. The
+  // listener below is the fork's branch-selector component region
+  // (binary @27425412: on `onDidRequestOpenBranchMenu` for the selected
+  // composer, set "isBranchSelectorOpen" and show the selector labeled
+  // `Switch base branch (${base})`). The fork's selected composer is the
+  // active chat tab (the established selection mapping — the runtime only
+  // ever fires for the active composer). The binary's React popup is a
+  // QuickPick here (see branchMenuService.ts divergence notes).
+  const branchMenu = new BranchMenuService();
+  // ---- DEV-GAPS-106B (chat-history-command-palette) ----------------------
+  // ChatHistoryService = the fork port of Cursor's composer history menu
+  // (binary eLS/QPS, workbench.desktop.main.js @29777557/@29770163): the
+  // chat-data owner is ChatTabService (the fork's composer registry —
+  // open tabs only; no persisted/archived composers exist in the fork,
+  // see chatHistoryService.ts divergence notes). The binary's React
+  // dropdown is a VS Code QuickPick here; opening an entry activates its
+  // tab and focuses the chat surface, and "Find with Agent" creates a
+  // new agent-mode tab and auto-submits the query (binary:
+  // createComposer({partialState:{text, unifiedMode:"agent"},
+  // autoSubmit:!0})).
+  const chatHistory = new ChatHistoryService(
+    {
+      listTabs: () =>
+        tabs.listTabs().map((t) => ({
+          id: t.id,
+          title: t.title,
+          createdAt: t.createdAt,
+          pinned: t.pinned,
+          pinnedAt: t.pinnedAt,
+          running: t.composer.isRunning,
+        })),
+      activeTabId: () => tabs.activeTab.id,
+      openTab: async (id) => {
+        tabs.switchTab(id);
+        await focusChatSurface(tabs);
+      },
+      setPinned: (id, pinned) =>
+        pinned ? tabs.pinChat(id) : tabs.unpinChat(id),
+      findWithAgent: async (query) => {
+        const created = tabs.createAndActivate();
+        created.composer.modes.setMode("agent");
+        await focusChatSurface(tabs);
+        created.composer.submit(query);
+      },
+      icon: (name) => new vscode.ThemeIcon(name),
+    },
+    () =>
+      vscode.window.createQuickPick() as unknown as ChatHistoryQuickPick,
+  );
+  const branchMenuSubscription = branchMenu.onDidRequestOpenBranchMenu(
+    ({ composerId }) => {
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!folder) {
+        return;
+      }
+      void branchMenu
+        .handleOpenRequest({
+          composerId,
+          selectedComposerId: tabs.activeTab.id,
+          cwd: folder.uri.fsPath,
+          pick: async (items, snapshot) => {
+            const picked = await vscode.window.showQuickPick(
+              items.map((item) => ({
+                label: item.branch,
+                description: [
+                  item.isCurrent ? "current" : undefined,
+                  item.isDefault ? "default" : undefined,
+                  item.description,
+                ]
+                  .filter((s): s is string => typeof s === "string")
+                  .join(" · "),
+                branch: item.branch,
+              })),
+              {
+                title: snapshot.label,
+                placeHolder: snapshot.label,
+                canPickMany: false,
+              },
+            );
+            return picked
+              ? items.find((i) => i.branch === picked.branch)
+              : undefined;
+          },
+        })
+        .catch(() => undefined);
+    },
+  );
+  context.subscriptions.push({
+    dispose: () => branchMenuSubscription.dispose(),
+  });
+  // ---- CONTINUE-INTERRUPTED-AGENTS (Cursor "Continue Interrupted Agents"
+  // parity, `ide.agent.continueInterruptedAgents`, default ON) ---------------
+  // Any turn that was in flight when the last process died left a survivor
+  // record (see markTurnInFlight/clearTurnInFlight in ComposerDataService).
+  // When the setting is on, re-submit each survivor's prompt into the
+  // active composer so agents resume working after a reload/restart.
+  // Records are cleared before resuming so a crash mid-sweep cannot
+  // double-resume. Runs synchronously at activation: submit() is pure data
+  // service work (no webview needed) and later prompts queue behind the
+  // first turn per the normal queue rules. Never throws.
+  try {
+    runInterruptedAgentsResume({
+      isEnabled: () =>
+        vscode.workspace
+          .getConfiguration(CONTINUE_INTERRUPTED_SECTION)
+          .get<boolean>(CONTINUE_INTERRUPTED_KEY, true),
+      readRecords: () =>
+        parseInterruptedTurnRecords(
+          context.workspaceState.get<unknown>(INTERRUPTED_TURNS_STORAGE_KEY),
+        ),
+      writeRecords: (records) => {
+        void context.workspaceState.update(INTERRUPTED_TURNS_STORAGE_KEY, records);
+      },
+      resume: (record) => {
+        tabs.activeComposer.submit(record.prompt);
+      },
+      log: (line) => ideOutput.appendLine(line),
+    });
+  } catch (err) {
+    ideOutput.appendLine(
+      `[ide-agent] Continue Interrupted Agents sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  // ---- DEV-GAPS-41: periodic worktree cleanup (Cursor parity) --------------
+  // Every `ide.worktreeCleanupIntervalHours` (default 6) hours, enforce
+  // `ide.worktreeMaxCount` + `ide.worktreesGlobalMaxSizeGb` machine-wide:
+  // the oldest worktrees are removed first (locked/dirty worktrees are
+  // deferred, never force-removed).
+  const worktreeCleanup = new WorktreeCleanupScheduler();
+  context.subscriptions.push(worktreeCleanup);
+  // WORKER-GAPS-42D (bugbot-auto-review): verbatim port of Cursor's
+  // `cursor-commits` extension trigger (Cursor 3.25.9
+  // `extensions/cursor-commits/dist/main.js`): every git repository's
+  // `state.onDidChange` is debounced 5s, then `shouldRunBugbot` decides
+  // (HEAD changed on the same branch, not a merge, authored by me within
+  // 30s, not pushed, not just rebased) and dispatches
+  // `cursor.runEditorBugbot` via `commands.executeCommand`. The command
+  // handler itself re-checks the binary-verbatim gate (storage flag
+  // `autoRunBugbotOnCommit` + `bugbot_autorun_killswitch`).
+  // Shared in-memory store of bugbot review runs — `cursor.runEditorBugbot`,
+  // `cursor.reviewBugbotFromAd` and the commit auto-review all record here;
+  // `cursor.openBugbotPane` lists it. No fabricated findings: only real
+  // submitted runs are stored.
+  const bugbotReviewHistory = new BugbotReviewHistory();
+  const bugbotLog = (line: string) => ideOutput.appendLine(line);
+  context.subscriptions.push(
+    watchBugbotCommits({
+      getGitApi: () => {
+        try {
+          const gitExt = vscode.extensions.getExtension("vscode.git");
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const api = gitExt?.exports as any;
+          return typeof api?.getAPI === "function" ? api.getAPI(1) : undefined;
+        } catch {
+          return undefined;
+        }
+      },
+      git: createBugbotGitRunner(),
+      executeCommand: (command, ...args) =>
+        vscode.commands.executeCommand(command, ...args),
+      notifyGitCommitWasRun: (rootFsPath) => {
+        // Cursor-internal API (`t.scm.gitCommitWasRun`); best-effort only.
+        try {
+          (
+            vscode.scm as unknown as {
+              gitCommitWasRun?: (p: string) => void;
+            }
+          ).gitCommitWasRun?.(rootFsPath);
+        } catch (err) {
+          bugbotLog(`[bugbot] Failed to notify git commit: ${String(err)}`);
+        }
+      },
+      now: () => Date.now(),
+      log: {
+        debug: (m) => bugbotLog(`[bugbot] ${m}`),
+        trace: (m) => bugbotLog(`[bugbot] ${m}`),
+        info: (m) => bugbotLog(`[bugbot] ${m}`),
+        error: (m, err) =>
+          bugbotLog(`[bugbot] ${m}${err ? `: ${String(err)}` : ""}`),
+      },
+    }),
+  );
+  // The `ide.bugbot.autoReviewOnCommit` configuration is this fork's
+  // Settings-UI surface for the binary-verbatim `autoRunBugbotOnCommit`
+  // storage flag (Cursor's own toggle lives in its React Settings UI under
+  // the label "Start Agent Review on Commit"). The gate only ever reads the
+  // storage flag; the setting is synced into it here.
+  // One-time migration: an explicitly-set config wins on first activation
+  // (a bare default must NOT clobber a flag enabled via
+  // `cursor.enableAutoReviewOnCommit` in an earlier session).
+  try {
+    const inspected = vscode.workspace
+      .getConfiguration(BUGBOT_AUTO_REVIEW_CONFIG_SECTION)
+      .inspect<boolean>(BUGBOT_AUTO_REVIEW_CONFIG_KEY);
+    const explicit =
+      inspected?.globalValue ??
+      inspected?.workspaceValue ??
+      inspected?.workspaceFolderValue;
+    if (explicit !== undefined) {
+      void setBugbotAutoRunOnCommit(context.globalState, explicit);
+    }
+  } catch {
+    /* ignore */
+  }
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      try {
+        if (
+          e.affectsConfiguration(
+            `${BUGBOT_AUTO_REVIEW_CONFIG_SECTION}.${BUGBOT_AUTO_REVIEW_CONFIG_KEY}`,
+          )
+        ) {
+          const v = vscode.workspace
+            .getConfiguration(BUGBOT_AUTO_REVIEW_CONFIG_SECTION)
+            .get<boolean>(BUGBOT_AUTO_REVIEW_CONFIG_KEY, false);
+          void setBugbotAutoRunOnCommit(context.globalState, v === true);
+        }
+      } catch {
+        /* ignore */
+      }
+    }),
+  );
+  // rex-004: `.cursor/permissions.json` — read at startup, re-read on change,
+  // applied to every tab's approval choke point (HumanReviewService). Invalid
+  // JSON/schema → warning, current policy kept (never crashes).
+  const permissionsService = new CursorPermissionsFileService({
+    workspaceFolders: () => vscode.workspace.workspaceFolders,
+    applyPolicy: (policy) => tabs.setFilePermissions(policy),
+    logWarning: (m) => {
+      void vscode.window.showWarningMessage(m);
+    },
+    logInfo: (m) => ideOutput.appendLine(m),
+  });
+  context.subscriptions.push(permissionsService.start());
+  // GAPS-11B (agent-git-branch-reminder): the branch-change reminder is now
+  // a pre-turn check inside each ComposerDataService (TrackedGitRepoState),
+  // matching Cursor's verified mechanism (turn-build injection into user
+  // content). The old mid-turn HEAD-watcher + visible-transcript message
+  // did not match the binary evidence and was removed.
   // P1 (QA-MODELPICKER-01): keep the model selection honest when
   // ide.agent.enabledModels changes outside the Manage Models quickpick
   // (hand-edited settings.json), and re-validate once at startup in case the
@@ -241,10 +1477,282 @@ export function activate(context: vscode.ExtensionContext): void {
   const terminal = new TerminalService(() => tabs.activeComposer);
   terminal.activate(context);
 
+  // ---- cursor.browserView.* workbench commands (P0 browser-tab-workbench-commands)
+  // 30 verified command IDs (REA dissect-browser-tab.md §5); each wires to the
+  // native WebContentsView tab via the proposed `browser` API + CDP.
+  // Registers even without the native API and fails fast on invoke.
+  activateBrowserViewCommands(context);
+
+  // ---- DEV-GAPS-63: local scheduled tasks runner -------------------------
+  // Cursor parity (`local-scheduled-tasks-runner`, GlassLocalScheduledTasksService;
+  // evidence: docs/rea/dig-root-team/redig-processes.md D-06d,
+  // docs/rea/harvest-workbench-glass-main.js-2026-10-18.md §5).
+  // Feature-gated via `ide.agent.scheduledTasksEnabled` (mirrors Cursor's
+  // experiment-service gate). When enabled, tasks from
+  // `ide.agent.scheduledTasks` are claimed by cron schedule; each due task
+  // opens a NEW agent chat and submits its prompt there (the fork's local
+  // equivalent of Cursor's run execution — how Cursor's runner dispatches a
+  // run beyond "prompt + model config" is UNKNOWN).
+  const scheduledTasksService = new LocalScheduledTasksService({
+    runTask: (task) => {
+      // HONEST-DIVERGENCE: the run dispatches the prompt into a fresh agent
+      // tab via submit(); tracking the engine turn to completion (as Cursor's
+      // main-process runner records run outcomes) is not possible from the
+      // extension API — the RunRecord outcome is recorded at dispatch time.
+      const tab = tabs.createAndActivate({
+        title: `Scheduled: ${task.id}`,
+        mode: "agent",
+      });
+      tab.composer.submit(task.prompt);
+    },
+    onMissedSummary: (summary) => {
+      const lines = summary.missed
+        .map((m) => `  • ${m.taskId} due ${new Date(m.dueAt).toISOString()} (${m.reason})`)
+        .join("\n");
+      ideOutput.appendLine(
+        `[scheduled-tasks] ${summary.missed.length} run(s) missed:\n${lines}`,
+      );
+      void vscode.window.showInformationMessage(
+        `IDE Agent: ${summary.missed.length} scheduled task run(s) were missed — see the "IDE Agent" output channel.`,
+      );
+    },
+    featureGate: () =>
+      vscode.workspace
+        .getConfiguration("ide.agent")
+        .get<boolean>("scheduledTasksEnabled", false),
+  });
+  const loadScheduledTasksConfig = () => {
+    const raw = vscode.workspace
+      .getConfiguration("ide.agent")
+      .get<unknown[]>("scheduledTasks", []);
+    const tasks: ScheduledTask[] = [];
+    for (const entry of raw) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        continue;
+      }
+      const rec = entry as Record<string, unknown>;
+      if (
+        typeof rec.id !== "string" ||
+        rec.id.length === 0 ||
+        typeof rec.cron !== "string" ||
+        rec.cron.length === 0 ||
+        typeof rec.prompt !== "string" ||
+        rec.prompt.length === 0
+      ) {
+        ideOutput.appendLine(
+          "[scheduled-tasks] Ignoring invalid task entry (needs id/cron/prompt strings).",
+        );
+        continue;
+      }
+      tasks.push({
+        id: rec.id,
+        cron: rec.cron,
+        prompt: rec.prompt,
+        enabled: rec.enabled !== false,
+        modelConfig: normalizeScheduledTaskModelConfig(
+          rec.modelConfig as Partial<ScheduledTaskModelConfig> | undefined,
+        ),
+      });
+    }
+    scheduledTasksService.setTasks(tasks);
+  };
+  loadScheduledTasksConfig();
+  if (scheduledTasksService.initialize()) {
+    scheduledTasksService.start();
+    ideOutput.appendLine("[scheduled-tasks] Local scheduled-tasks runner started.");
+  }
+  context.subscriptions.push({ dispose: () => scheduledTasksService.dispose() });
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (
+        e.affectsConfiguration("ide.agent.scheduledTasks") ||
+        e.affectsConfiguration("ide.agent.scheduledTasksEnabled")
+      ) {
+        loadScheduledTasksConfig();
+      }
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ide.scheduledTasks.tickNow", async () => {
+      const result = await scheduledTasksService.tick();
+      if (result.skipped === "not-initialized") {
+        void vscode.window.showWarningMessage(
+          'IDE Agent: scheduled tasks are disabled (enable "ide.agent.scheduledTasksEnabled").',
+        );
+        return;
+      }
+      void vscode.window.showInformationMessage(
+        `IDE Agent: scheduled-tasks tick — ${result.ran.length} ran, ${result.failed.length} failed, ${result.missed.length} missed.`,
+      );
+    }),
+  );
+
+  // ---- Cursor Blame git backend (DEV-GAPS-76 / W76B) -----------------------
+  // Provider seam for the workbench `cursorBlame` contribution, mirroring
+  // Cursor 3.25.9's layering: workbench gitContextService facade → extHost
+  // proxy → cursor-retrieval GitProvider running git. Here the workbench
+  // calls these commands and this extension runs git through the sanitized
+  // gitExecFile (see services/gitBlameService.ts for the binary evidence).
+  // All three resolve `undefined` when the file is not in a git repository,
+  // which the workbench maps to Cursor's own failure branches (NLS k(5320)
+  // "No git repository found" / k(5321) "This line has not been committed
+  // yet").
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "ide.cursorBlame.getGitRoot",
+      (dir: unknown) =>
+        typeof dir === "string" ? gitBlameService.getGitRoot(dir) : undefined,
+    ),
+    vscode.commands.registerCommand(
+      "ide.cursorBlame.getFileBlame",
+      (fsPath: unknown, revision?: unknown) =>
+        typeof fsPath === "string"
+          ? gitBlameService.getFileBlame(
+              fsPath,
+              typeof revision === "string" && revision ? revision : undefined,
+            )
+          : undefined,
+    ),
+    vscode.commands.registerCommand(
+      "ide.cursorBlame.getLineBlame",
+      (fsPath: unknown, line: unknown) =>
+        typeof fsPath === "string" && typeof line === "number"
+          ? gitBlameService.getLineBlame(fsPath, line, 1)
+          : undefined,
+    ),
+    vscode.commands.registerCommand(
+      "ide.cursorBlame.getCommitMetadata",
+      (commitId: unknown, cwd?: unknown) => {
+        if (typeof commitId !== "string" || !commitId) {
+          return undefined;
+        }
+        const dir =
+          typeof cwd === "string" && cwd
+            ? cwd
+            : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        return dir ? gitBlameService.getCommitMetadata(dir, commitId) : undefined;
+      },
+    ),
+    vscode.commands.registerCommand(
+      "ide.cursorBlame.getFileLineBlame",
+      (fsPath: unknown, revision?: unknown) =>
+        typeof fsPath === "string"
+          ? gitBlameService.getFileLineBlame(
+              fsPath,
+              typeof revision === "string" && revision ? revision : undefined,
+              {
+                ignoreWhitespace:
+                  vscode.workspace
+                    .getConfiguration("git")
+                    .get<boolean>("blame.ignoreWhitespace") ?? false,
+              },
+            )
+          : undefined,
+    ),
+    // DEV-GAPS-178 (R1.1): the commit pane's data source — Cursor's
+    // provider `getFullCommit` (metadata + parsed diff). `cwd` defaults
+    // to the first workspace folder, exactly like the provider's facade
+    // (`workspaceFolders[0]`), with the pane's repoRoot winning when set.
+    vscode.commands.registerCommand(
+      "ide.cursorBlame.getFullCommit",
+      (commitId: unknown, cwd?: unknown) => {
+        if (typeof commitId !== "string" || !commitId) {
+          return undefined;
+        }
+        const dir =
+          typeof cwd === "string" && cwd
+            ? cwd
+            : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        return dir ? gitBlameService.getFullCommit(dir, commitId) : undefined;
+      },
+    ),
+    // DEV-GAPS-178 (R1.2): file content at a revision for the file pane's
+    // revision model (`git show <rev>:<path>`, Cursor's facade call).
+    vscode.commands.registerCommand(
+      "ide.cursorBlame.getFileContentAtRevision",
+      (fsPath: unknown, revision?: unknown) =>
+        typeof fsPath === "string" && typeof revision === "string" && revision
+          ? gitBlameService.getFileContentAtRevision(fsPath, revision)
+          : undefined,
+    ),
+  );
+
   // ---- MCP (Cursor parity, docs/rea/parity-rules-mcp.md §B) ----------------
   // Extension-host MCP client: .cursor/mcp.json discovery, stdio lifecycle,
   // mcp__<server>__<tool> namespacing, allowlist + HumanReview approval gate.
-  activateMcp(context, () => tabs.activeComposer);
+  // W50D (mcp-symbolic-file-args): thread the hook-interplay signal — Cursor
+  // refuses `$file:` symbolic arguments when hooks that inspect MCP calls are
+  // configured (binary string: "hooks that inspect MCP calls are configured
+  // here, and they would not see the file's contents").
+  // ---- DEV-GAPS-80 (W80B): Integrations surface — direct wiring --------
+  // IntegrationService.registerCommands() (src/integrations/service.ts)
+  // registers ide.integrations.connect / .disconnect / .openSettings.
+  // BEFORE: the only call path was hidden inside activateMcp()
+  // (src/mcp/index.ts -> activateIntegrations), so a grep of activate()
+  // showed no wiring and an McpService.start() failure would have taken
+  // the integrations commands down with it. NOW: activated directly
+  // here, following the activateMcp/activateBrowserViewCommands pattern
+  // (activateIntegrations pushes the service into context.subscriptions
+  // and calls registerCommands() + initialize()). activateMcp() no
+  // longer calls it — exactly ONE registration path, no duplicate
+  // command-id registration.
+  activateIntegrations(context);
+
+  const mcpService = activateMcp(context, () => tabs.activeComposer, {
+    hooksInspectMcpCalls: () =>
+      hookService.hasHooks("beforeMCPExecution") || hookService.hasHooks("afterMCPExecution"),
+  });
+
+  // ---- cursor.* extension API (Cursor parity: cursor.registerMcpProvider) --
+  // In Cursor's app the `cursor` namespace is attached to the `vscode` module
+  // by workbench-core's extension host (proposed API). Stock VS Code hands
+  // each extension its own `vscode` API object, so an extension cannot
+  // publish there for others — the identical contract is published on this
+  // extension's exports instead:
+  //   const { cursor } = vscode.extensions.getExtension("ide-code.ide-agent")!.exports;
+  //   const d = cursor.registerMcpProvider(provider); // → vscode.Disposable
+  // Returned from activate() (VS Code exposes it as `exports`); the Desktop
+  // bridge / other in-host consumers can also grab it from here.
+  const cursorApi: CursorApi = createCursorApi(mcpService);
+
+  // Context ring: feed the real connected-MCP tool catalog (namespaced names
+  // + descriptions + input schemas) into every composer so the MCP category
+  // measures live data. Extension.ts owns both services; the provider keeps
+  // composerDataService free of an mcp/ import cycle.
+  tabs.setMcpToolsProvider(() =>
+    mcpService.getTools().map((t) => ({
+      namespacedName: t.namespacedName,
+      description: t.description,
+      inputSchemaJson: JSON.stringify(t.inputSchema ?? { type: "object", properties: {} }),
+    })),
+  );
+
+  // ---- DEV-GAPS-74 (W74C): MCP provider turn-end fan-out ------------------
+  // McpService.notifyProvidersTurnEnded (mcp/service.ts) shipped unwired —
+  // its own header said so, with zero call sites. Turn-end signal:
+  // ComposerDataService.runTurn's finally fires {kind:"turnState",
+  // running:false} exactly once per settled turn (composerDataService.ts),
+  // relayed per tab by ChatTabService.onDidChange as
+  // {kind:"composerEvent", tabId, event} — the same relay the model status
+  // bar subscribes to in activate(). conversationId is the tab composer's
+  // stable composerId (the per-composer id already passed to providers'
+  // callTool context; a composer IS the conversation in this fork).
+  // Providers' onTurnEnded is optional and per-provider failures are
+  // isolated inside providerRegistry.notifyTurnEnded.
+  context.subscriptions.push(
+    tabs.onDidChange((tabEvent) => {
+      if (
+        tabEvent.kind === "composerEvent" &&
+        tabEvent.event.kind === "turnState" &&
+        !tabEvent.event.running
+      ) {
+        const tab = tabs.listTabs().find((t) => t.id === tabEvent.tabId);
+        void mcpService.notifyProvidersTurnEnded({
+          conversationId: tab?.composer.composerId ?? tabEvent.tabId,
+        });
+      }
+    }),
+  );
 
   // ---- Slash commands (Cursor / palette parity, parity-slash-commands.md) --
   const slash = new SlashCommandService(context, () => tabs.activeComposer);
@@ -252,6 +1760,422 @@ export function activate(context: vscode.ExtensionContext): void {
   void slash.reloadCustomCommands();
   void slash.reloadSkills();
   context.subscriptions.push(slash);
+
+  // ---- Agent Skills Store (Cursor skill-store parity, local-first) ---------
+  // Binary evidence: docs/rea/dig-ast-ext-findings.md §1 — cursor-agent-host
+  // registers 14 dynamic skill commands (installSkills.runSkillsCliAdd,
+  // publishSkill.packSkillPlugin / reloadConfirmAndDeleteLocalSkill,
+  // resyncSkill.packInstalledSkillPlugin / reloadAndConfirmResync,
+  // skillStore.confirmStoreSkillsSynced / copySkillsFromStore /
+  // copySkillsToStore / moveSkillOutOfStore / moveSkillToStore /
+  // trashMigratedHomeSkills / trashMigratedStoreSkills / confirmOverwrite /
+  // isMigrationCancelled / reportMigrationProgress,
+  // unpublishSkill.removePluginCache / restoreLocalSkill).
+  // NAMESPACE-DIVERGENCE (DEV-GAPS-17): Cursor's binary registers these under
+  // the `cursor.` namespace; this fork registers them as `ide.` to match the
+  // extension-wide command convention (every command in this host is `ide.*`,
+  // and menus/keybindings/internal dispatch all reference `ide.*`). The
+  // suffix after the namespace is verbatim-identical to the binary.
+  // DIVERGENCE: Cursor's store is cloud/account-backed; ours is a LOCAL
+  // store at ~/.ide-code/skills/ (no cloud sync, no account). Publish packs
+  // a local .tar.gz instead of uploading; installSkills opens a folder
+  // picker instead of running Cursor's `skills` CLI.
+  const skillStoreDir = defaultSkillStoreDir();
+  const skillMigration = new SkillMigrationController();
+  const pickInstalledSkill = async (placeHolder: string): Promise<string | undefined> => {
+    const skills = listInstalledSkills(skillStoreDir);
+    if (skills.length === 0) {
+      void vscode.window.showInformationMessage("IDE Agent: no skills installed in the store yet.");
+      return undefined;
+    }
+    const picked = await vscode.window.showQuickPick(
+      skills.map((s) => ({
+        label: s.name,
+        description: s.published ? `v${s.version} · published` : `v${s.version}`,
+        detail: s.description,
+      })),
+      { placeHolder },
+    );
+    return picked?.label;
+  };
+  const pickFolder = async (openLabel: string): Promise<string | undefined> => {
+    const folders = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel,
+    });
+    return folders?.[0]?.fsPath;
+  };
+  const skillErr = (action: string, err: unknown): void => {
+    void vscode.window.showErrorMessage(
+      `IDE Agent: could not ${action} — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  };
+  // Full ~/.cursor/skills → store migration with vscode-driven confirm +
+  // progress (backs the Customize view's "Migrate" button).
+  const runSkillMigration = async (): Promise<void> => {
+    skillMigration.reset();
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "Migrating skills to the store", cancellable: true },
+        async (progress, token) => {
+          token.onCancellationRequested(() => skillMigration.cancel());
+          const result = await migrateSkills({
+            storeDir: skillStoreDir,
+            controller: skillMigration,
+            onProgress: (p) => {
+              progress.report({
+                message: p.current ?? p.phase,
+                increment: p.total > 0 ? 100 / p.total : undefined,
+              });
+            },
+            confirmOverwrite: async (name) => {
+              const choice = await vscode.window.showWarningMessage(
+                `Skill "${name}" already exists in the store. Overwrite it with the migrated copy?`,
+                { modal: true },
+                "Overwrite",
+                "Skip",
+              );
+              return choice === "Overwrite";
+            },
+          });
+          if (result.cancelled) {
+            void vscode.window.showWarningMessage("IDE Agent: skill migration cancelled.");
+          } else {
+            void vscode.window.showInformationMessage(
+              `IDE Agent: migrated ${result.migrated.length} skill(s)` +
+                (result.skipped.length > 0 ? `, skipped ${result.skipped.length}` : "") +
+                (result.overwritten.length > 0 ? `, overwrote ${result.overwritten.length}` : "") +
+                ".",
+            );
+          }
+        },
+      );
+    } catch (err) {
+      skillErr("migrate skills", err);
+    }
+  };
+  context.subscriptions.push(
+    // Cursor: installSkills.runSkillsCliAdd runs the `skills` CLI to add a
+    // skill. DIVERGENCE: no CLI here — pick a skill folder to install.
+    vscode.commands.registerCommand("ide.installSkills.runSkillsCliAdd", async () => {
+      const dir = await pickFolder("Install Skill");
+      if (!dir) {
+        return;
+      }
+      try {
+        const installed = installSkill(skillStoreDir, dir);
+        void vscode.window.showInformationMessage(
+          `IDE Agent: installed skill "${installed.name}" into the store.`,
+        );
+      } catch (err) {
+        skillErr("install skill", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.publishSkill.packSkillPlugin", async () => {
+      const id = await pickInstalledSkill("Publish a skill (pack into the local store)");
+      if (!id) {
+        return;
+      }
+      try {
+        const archive = packSkillPlugin(skillStoreDir, id);
+        void vscode.window.showInformationMessage(
+          `IDE Agent: published "${id}" → ${archive}.`,
+        );
+      } catch (err) {
+        skillErr("publish skill", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.publishSkill.reloadConfirmAndDeleteLocalSkill", async () => {
+      const id = await pickInstalledSkill("Delete the local copy of a published skill");
+      if (!id) {
+        return;
+      }
+      const localDir =
+        (await vscode.window.showInputBox({
+          prompt: `Local directory of "${id}" to delete after confirming it is published`,
+          value: installedFromDir(skillStoreDir, id) ?? "",
+        }))?.trim() || undefined;
+      if (!localDir) {
+        return;
+      }
+      try {
+        const deleted = await reloadConfirmAndDeleteLocalSkill(
+          skillStoreDir,
+          id,
+          localDir,
+          async (skillId, dir) =>
+            (await vscode.window.showWarningMessage(
+              `Delete the local skill directory?\n${dir}\n"${skillId}" is published in the store, so this cannot be undone from here.`,
+              { modal: true },
+              "Delete",
+            )) === "Delete",
+        );
+        if (deleted) {
+          void vscode.window.showInformationMessage(`IDE Agent: deleted local skill "${id}".`);
+        } else {
+          void vscode.window.showInformationMessage("IDE Agent: local skill kept (not published or declined).");
+        }
+      } catch (err) {
+        skillErr("delete local skill", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.resyncSkill.packInstalledSkillPlugin", async () => {
+      const id = await pickInstalledSkill("Re-pack an installed skill");
+      if (!id) {
+        return;
+      }
+      try {
+        const archive = packSkillPlugin(skillStoreDir, id);
+        void vscode.window.showInformationMessage(`IDE Agent: re-packed "${id}" → ${archive}.`);
+      } catch (err) {
+        skillErr("re-pack skill", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.resyncSkill.reloadAndConfirmResync", async () => {
+      const id = await pickInstalledSkill("Resync a skill from the store to a working directory");
+      if (!id) {
+        return;
+      }
+      const target =
+        (await vscode.window.showInputBox({
+          prompt: `Working directory to overwrite with the store copy of "${id}"`,
+          value: installedFromDir(skillStoreDir, id) ?? "",
+        }))?.trim() || undefined;
+      if (!target) {
+        return;
+      }
+      try {
+        const done = await reloadAndConfirmResync(
+          skillStoreDir,
+          id,
+          target,
+          async (skillId, dir) =>
+            (await vscode.window.showWarningMessage(
+              `Overwrite "${dir}" with the store copy of "${skillId}"?`,
+              { modal: true },
+              "Overwrite",
+            )) === "Overwrite",
+        );
+        void vscode.window.showInformationMessage(
+          done ? `IDE Agent: resynced "${id}".` : "IDE Agent: resync declined — target untouched.",
+        );
+      } catch (err) {
+        skillErr("resync skill", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.skillStore.confirmStoreSkillsSynced", async () => {
+      const gate = confirmStoreSkillsSynced(skillStoreDir);
+      if (gate.synced) {
+        void vscode.window.showInformationMessage("IDE Agent: all store skills are in sync.");
+      } else {
+        void vscode.window.showWarningMessage(
+          `IDE Agent: store out of sync — ${gate.problems.join("; ")}`,
+        );
+      }
+    }),
+    vscode.commands.registerCommand("ide.skillStore.copySkillsFromStore", async () => {
+      const skills = listInstalledSkills(skillStoreDir);
+      if (skills.length === 0) {
+        void vscode.window.showInformationMessage("IDE Agent: no skills installed in the store yet.");
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(
+        skills.map((s) => ({ label: s.name, detail: s.description })),
+        { placeHolder: "Copy skills out of the store", canPickMany: true },
+      );
+      if (!picked || picked.length === 0) {
+        return;
+      }
+      const target = await pickFolder("Copy Skills To");
+      if (!target) {
+        return;
+      }
+      try {
+        const copied = copySkillsFromStore(skillStoreDir, target, picked.map((p) => p.label));
+        void vscode.window.showInformationMessage(`IDE Agent: copied ${copied.length} skill(s) out of the store.`);
+      } catch (err) {
+        skillErr("copy skills from store", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.skillStore.copySkillsToStore", async () => {
+      const folders = await vscode.window.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: true,
+        openLabel: "Copy Skill(s) To Store",
+      });
+      if (!folders || folders.length === 0) {
+        return;
+      }
+      try {
+        const ids = copySkillsToStore(skillStoreDir, folders.map((f) => f.fsPath));
+        void vscode.window.showInformationMessage(`IDE Agent: copied ${ids.length} skill(s) into the store.`);
+      } catch (err) {
+        skillErr("copy skills to store", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.skillStore.moveSkillOutOfStore", async () => {
+      const id = await pickInstalledSkill("Move a skill out of the store (removes the store copy)");
+      if (!id) {
+        return;
+      }
+      const target = await pickFolder("Move Skill To");
+      if (!target) {
+        return;
+      }
+      const go =
+        (await vscode.window.showWarningMessage(
+          `Move "${id}" out of the skill store into "${target}"? The store copy will be removed.`,
+          { modal: true },
+          "Move",
+        )) === "Move";
+      if (!go) {
+        return;
+      }
+      try {
+        moveSkillOutOfStore(skillStoreDir, id, target);
+        void vscode.window.showInformationMessage(`IDE Agent: moved "${id}" out of the store.`);
+      } catch (err) {
+        skillErr("move skill out of store", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.skillStore.moveSkillToStore", async () => {
+      const dir = await pickFolder("Move Skill Into Store (source is deleted)");
+      if (!dir) {
+        return;
+      }
+      const go =
+        (await vscode.window.showWarningMessage(
+          `Move "${dir}" into the skill store? The source directory will be deleted.`,
+          { modal: true },
+          "Move",
+        )) === "Move";
+      if (!go) {
+        return;
+      }
+      try {
+        const id = moveSkillToStore(skillStoreDir, dir);
+        void vscode.window.showInformationMessage(`IDE Agent: moved "${id}" into the store.`);
+      } catch (err) {
+        skillErr("move skill to store", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.skillStore.trashMigratedHomeSkills", async () => {
+      const go =
+        (await vscode.window.showWarningMessage(
+          `Move ~/.cursor/skills to the recoverable trash (~/.ide-code/trash)?`,
+          { modal: true },
+          "Move to Trash",
+        )) === "Move to Trash";
+      if (!go) {
+        return;
+      }
+      try {
+        const trashed = trashMigratedHomeSkills();
+        void vscode.window.showInformationMessage(
+          trashed ? `IDE Agent: moved ~/.cursor/skills to trash.` : "IDE Agent: nothing to trash.",
+        );
+      } catch (err) {
+        skillErr("trash migrated home skills", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.skillStore.trashMigratedStoreSkills", async () => {
+      const go =
+        (await vscode.window.showWarningMessage(
+          "Move migrated legacy store sources (from the last migration) to the recoverable trash?",
+          { modal: true },
+          "Move to Trash",
+        )) === "Move to Trash";
+      if (!go) {
+        return;
+      }
+      try {
+        const trashed = trashMigratedStoreSkills(skillStoreDir);
+        void vscode.window.showInformationMessage(
+          trashed.length > 0
+            ? `IDE Agent: moved ${trashed.length} legacy source(s) to trash.`
+            : "IDE Agent: nothing to trash (no legacy sources recorded).",
+        );
+      } catch (err) {
+        skillErr("trash migrated store skills", err);
+      }
+    }),
+    // --- Dynamic helper commands (Cursor registers these dynamically; we also
+    // declare the 16 task-listed ones in package.json so they are
+    // discoverable/triggerable by id) ----------------------------------------
+    vscode.commands.registerCommand("ide.skillStore.confirmOverwrite", async (name?: unknown) => {
+      const choice = await vscode.window.showWarningMessage(
+        typeof name === "string" && name
+          ? `Overwrite the existing skill "${name}" in the store?`
+          : "Overwrite the existing skill in the store?",
+        { modal: true },
+        "Overwrite",
+        "Skip",
+      );
+      return choice === "Overwrite";
+    }),
+    vscode.commands.registerCommand("ide.skillStore.isMigrationCancelled", () => skillMigration.isCancelled()),
+    vscode.commands.registerCommand("ide.skillStore.reportMigrationProgress", () => {
+      const last = skillMigration.getLastProgress();
+      if (last) {
+        void vscode.window.showInformationMessage(
+          `IDE Agent: migration ${last.phase} — ${last.done}/${last.total}${last.current ? ` (${last.current})` : ""}.`,
+        );
+      } else {
+        void vscode.window.showInformationMessage("IDE Agent: no skill migration has run yet.");
+      }
+    }),
+    vscode.commands.registerCommand("ide.unpublishSkill.removePluginCache", async () => {
+      const id = await pickInstalledSkill("Unpublish a skill (remove its pack cache)");
+      if (!id) {
+        return;
+      }
+      try {
+        const removed = removePluginCache(skillStoreDir, id);
+        void vscode.window.showInformationMessage(
+          removed > 0 ? `IDE Agent: unpublished "${id}".` : `IDE Agent: "${id}" was not published.`,
+        );
+      } catch (err) {
+        skillErr("unpublish skill", err);
+      }
+    }),
+    vscode.commands.registerCommand("ide.unpublishSkill.restoreLocalSkill", async () => {
+      const id = await pickInstalledSkill("Restore a local working copy from the store");
+      if (!id) {
+        return;
+      }
+      const target =
+        (await vscode.window.showInputBox({
+          prompt: `Directory to restore the store copy of "${id}" into`,
+          value: installedFromDir(skillStoreDir, id) ?? "",
+        }))?.trim() || undefined;
+      if (!target) {
+        return;
+      }
+      const go =
+        (await vscode.window.showWarningMessage(
+          `Restore the store copy of "${id}" into "${target}"? The directory's current contents will be overwritten.`,
+          { modal: true },
+          "Restore",
+        )) === "Restore";
+      if (!go) {
+        return;
+      }
+      try {
+        restoreLocalSkill(skillStoreDir, id, target);
+        void vscode.window.showInformationMessage(`IDE Agent: restored "${id}" to ${target}.`);
+      } catch (err) {
+        skillErr("restore local skill", err);
+      }
+    }),
+  );
+
+  /** Label for the trash root used in the trash confirmations. */
+  function skillTrashRootLabel(): string {
+    return "~/.ide-code/trash";
+  }
 
   // ---- Chat editor tabs (Cursor "Chat Editors" parity) ---------------------
   // Register the custom editor provider so chat tabs open as REAL editor
@@ -268,6 +2192,70 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerCustomEditorProvider(
       CHAT_EDITOR_VIEW_TYPE,
       (chatEditorProviderRef = new ChatEditorProvider(context, tabs, chatEditorDeps)),
+      { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
+    ),
+  );
+
+  // ---- Native editor tab orange dot (Cursor parity: cursor.com/changelog/0-48-x —
+  // "When a tab is awaiting your input, you'll see an orange dot on that tab") --
+  // VS Code's extension API exposes no per-tab badge, so the awaiting-input
+  // state (approval / clarifying question) is pushed to a workbench-core
+  // bridge command (`ide.chat.setEditorTabBadge`, registered by
+  // src/vs/workbench/browser/parts/editor/editorTabBadges.ts) which draws
+  // the dot on the NATIVE tab DOM. The webview tab bar's own dot
+  // (composer.ts `.qdot`) is unchanged.
+  const chatTabBadgeSync = new ChatTabBadgeSync(tabs);
+  context.subscriptions.push(chatTabBadgeSync);
+  // Re-push badge state when a chat editor (re)opens: core drops badge state
+  // for editors that were never open, so the diff-based sync alone would
+  // leave a reopened awaiting tab without its dot.
+  if (chatEditorProviderRef) {
+    chatEditorProviderRef.badgeSync = chatTabBadgeSync;
+  }
+
+  // ---- Customize editor tab (Cursor "Customize" parity) --------------------
+  // Cursor's Customize is a REAL editor tab (ui-customize-view), not a
+  // settings section: 7 pill tabs (Plugins/MCPs/Skills/Subagents/Rules/
+  // Commands/Hooks). Same custom-editor pattern as the chat editor tabs.
+  // Data wiring: MCPs (mcp.json), hooks (hooks.json execution log), rules
+  // (.mdc), skills (.cursor/skills), commands (.cursor/commands), plugins
+  // (installed extensions), subagents (engine agent markdown dirs) are REAL;
+  // only GitHub-URL plugin install stays a labeled placeholder.
+  const customizeDeps: CustomizeHostDeps = buildCustomizeHostDeps(
+    context,
+    tabs,
+    slash,
+    hookService,
+    mcpService,
+  );
+  // DEV-GAPS-5-SKILLS: wire the Customize view's Skills-section store buttons
+  // (Install/Publish/Resync/Unpublish/Migrate) to the ide.* skill command
+  // surface registered in the "Agent Skills Store" section above. The
+  // "migrate" action runs the ~/.cursor/skills → store migration flow
+  // (Cursor skillStore migration), which has no standalone dynamic command.
+  customizeDeps.skillStoreAction = (
+    action: "install" | "publish" | "resync" | "unpublish" | "migrate",
+  ): void => {
+    const command =
+      action === "install"
+        ? "ide.installSkills.runSkillsCliAdd"
+        : action === "publish"
+          ? "ide.publishSkill.packSkillPlugin"
+          : action === "resync"
+            ? "ide.resyncSkill.reloadAndConfirmResync"
+            : action === "unpublish"
+              ? "ide.unpublishSkill.removePluginCache"
+              : undefined;
+    if (command) {
+      void vscode.commands.executeCommand(command);
+    } else {
+      void runSkillMigration();
+    }
+  };
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(
+      CUSTOMIZE_EDITOR_VIEW_TYPE,
+      (customizeEditorProviderRef = new CustomizeEditorProvider(customizeDeps)),
       { webviewOptions: { retainContextWhenHidden: true }, supportsMultipleEditorsPerDocument: false },
     ),
   );
@@ -311,6 +2299,23 @@ export function activate(context: vscode.ExtensionContext): void {
   browserTabsRef = browserTabs;
   context.subscriptions.push({ dispose: () => void browserTabs.dispose() });
 
+  // ---- Built-in MCP provider: cursor-ide-browser (DEV-GAPS-88) -----------
+  // Cursor 3.25.9's cursor-browser-automation extension registers its
+  // browser provider at activation (binary offset 221465):
+  //   await provider.initialize(context.globalStorageUri.fsPath);
+  //   const d = cursor.registerMcpProvider(provider);
+  //   context.subscriptions.push(d);
+  // Same order here, through the fork's McpService (its
+  // cursor.registerMcpProvider contract — see mcp/providerRegistry.ts).
+  // The provider's 16 tools surface as mcp__cursor-ide-browser__<tool> and
+  // execute on the browser tab's shared BrowserService, resolved lazily
+  // per call so registration/listing never starts a browser.
+  const cursorIdeBrowserProvider = createCursorIdeBrowserProvider({
+    getBrowserService: () => browserTabs.browserServiceForAgentTools(),
+  });
+  cursorIdeBrowserProvider.initialize?.(context.globalStorageUri.fsPath);
+  context.subscriptions.push(mcpService.registerMcpProvider(cursorIdeBrowserProvider));
+
   // ---- Native browser → IDE Agent chat bridge (Cursor parity) -------------
   // The fork's native Integrated Browser (WebContentsView tab) routes its
   // chat attachments here when `ide.browser.chatTarget` is `ideAgent`
@@ -318,14 +2323,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // plain JSON; images arrive base64-encoded and are written to the captures
   // dir so they resolve as real file attachments on submit, like the
   // webview-tab screenshot flow.
-  interface NativeBrowserChatAttachment {
-    kind: "element" | "screenshot" | "areaScreenshot" | "fullPageScreenshot" | "consoleLogs";
-    name: string;
-    text: string;
-    imageBase64?: string;
-    imageMimeType?: string;
-    url?: string;
-  }
+  // DEV-GAPS-55: dispatch lives in services/nativeBrowserChatReceiver.ts
+  // (vscode-free, unit-tested) — including the two new kinds from GAPS-46:
+  // `voiceInput` (Design Mode mic transcript → submit on the active composer,
+  // queued while a turn runs per the "queue changes by voice" REA spec) and
+  // `designAnnotation` (annotated PNG → image chip; its region list arrives
+  // as a companion 'element' payload → text context).
   function attachNativeBrowserImage(imageBase64: string, label: string): void {
     try {
       const dir = browserCaptureDir();
@@ -347,38 +2350,29 @@ export function activate(context: vscode.ExtensionContext): void {
       // REVERIFY-P2-3 (H2): route all attachments through the editor-tab-aware host.
       const host = makeChatAttachHost(tabs);
       for (const p of payloads) {
-        if (!p || typeof p.kind !== "string") {
-          continue;
-        }
-        const label = p.name || "Browser attachment";
-        switch (p.kind) {
-          case "element":
-            host.postToWebview({
-              type: "addSelectionContext",
-              label: `Element: ${label}`,
-              content: p.text || "",
-            });
-            if (p.imageBase64) {
-              attachNativeBrowserImage(p.imageBase64, `Element screenshot: ${label}`);
-            }
-            break;
-          case "screenshot":
-          case "areaScreenshot":
-          case "fullPageScreenshot":
-            if (p.imageBase64) {
-              attachNativeBrowserImage(p.imageBase64, label);
-            }
-            break;
-          case "consoleLogs":
-            host.postToWebview({
-              type: "addSelectionContext",
-              label: "Console Logs",
-              content: p.text || "",
-            });
-            break;
-        }
+        dispatchNativeBrowserChatAttachment(
+          {
+            postSelectionContext: (label, content) =>
+              host.postToWebview({ type: "addSelectionContext", label, content }),
+            saveBrowserImage: (imageBase64, label) => attachNativeBrowserImage(imageBase64, label),
+            isAgentTurnActive: () => {
+              const composer = tabs.activeComposer;
+              return composer.isRunning || composer.isDraining;
+            },
+            submitPrompt: (text, { queue }) =>
+              tabs.activeComposer.submit(text, { sendMode: queue ? "queue" : "default" }),
+          },
+          p,
+        );
       }
-      void host.focusChatView();
+      // DEV-GAPS-55: voiceInput carries `preserveFocus` semantics (the user is
+      // mid-dictation in the browser — the mic must stay usable while the
+      // agent runs). Focusing the chat surface here would yank focus out of
+      // the browser; skip it for voice batches.
+      const hasVoiceInput = payloads.some((p) => p != null && p.kind === "voiceInput");
+      if (!hasVoiceInput) {
+        void host.focusChatView();
+      }
     }),
   );
 
@@ -397,6 +2391,57 @@ export function activate(context: vscode.ExtensionContext): void {
           }),
         );
         break;
+      case "ide.runNetworkDiagnostics":
+        // DEV-GAPS-93E (settings-network-diagnostics): Cursor Settings ›
+        // Browser & Network "Network Diagnostics" entry — description
+        // "Check network connectivity to all Cursor services", button
+        // "Run Diagnostic" (binary @37493361). Runs the checks in the
+        // extension host (the layer with Node dns/http2/tls/fetch) and
+        // opens the results in the binary's verbatim copy format (DOk).
+        // The four aiserver HealthService checks have no local backend
+        // (cloud) — they are named as skipped in the report, never faked.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, async () => {
+            try {
+              const disableHttp2 = vscode.workspace
+                .getConfiguration()
+                .get<boolean>("ide.general.disableHttp2", false);
+              const outcome = await runNetworkDiagnostics(createNodeProbes(), {
+                disableHttp2,
+              });
+              let text = formatDiagnosticResults(outcome.results, outcome.logs);
+              if (outcome.skippedCloudChecks.length > 0) {
+                text +=
+                  "\n\nSkipped (Cursor cloud aiserver HealthService — no local backend in this build): " +
+                  outcome.skippedCloudChecks.join(", ");
+              }
+              const doc = await vscode.workspace.openTextDocument({
+                language: "markdown",
+                content: text,
+              });
+              await vscode.window.showTextDocument(doc, { preview: false });
+            } catch (e) {
+              // Binary: QOk logs console.error("NetworkDiagnostics: run failed", e).
+              console.error("NetworkDiagnostics: run failed", e);
+              void vscode.window.showErrorMessage(
+                `Network Diagnostics failed: ${e instanceof Error ? e.message : String(e)}`,
+              );
+            }
+          }),
+        );
+        break;
+      case "ide.copyNetworkRequiredDomains":
+        // Cursor Settings › Browser & Network "Required Domains" →
+        // Copy Domains: `v6m.map(JOk).join("\n")`, JOk(e) = e.domain.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, async () => {
+            await vscode.env.clipboard.writeText(requiredDomainsCopyText());
+            void vscode.window.showInformationMessage(
+              "Required domains copied to clipboard.",
+            );
+          }),
+        );
+        break;
       case "ide.openDocs":
         // IDE-CODE: Settings IA parity (Cursor "Docs" nav item opens
         // cursor.com/docs externally — it is a nav link, not a section).
@@ -405,6 +2450,72 @@ export function activate(context: vscode.ExtensionContext): void {
             void vscode.env.openExternal(
               vscode.Uri.parse("https://github.com/chang2tech/c2t-ide"),
             );
+          }),
+        );
+        break;
+      // DEV-KEYBOARD-FIX (Cursor 3.25.9 parity):
+      // - ide.focusChatInput: "Focus Chat Input" = Ctrl+I (binary C2_ weight 650 @45366917).
+      //   Reveals the chat surface (sidebar view or editor tab), then moves DOM
+      //   focus into the composer input via the focusInput webview message.
+      case "ide.focusChatInput":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void focusChatSurface(tabs).then(() => {
+              makeChatAttachHost(tabs).postToWebview({ type: "focusInput" });
+            });
+          }),
+        );
+        break;
+      // DEV-GAPS-3-HOTKEYS: "Focus Agent" (Cursor 3.25.9
+      // composer.focusComposer parity): handleOpenComposer with
+      // focusMainInputBox — reveal the chat surface, then move DOM focus into
+      // the main composer input. No default keybinding, per the binary.
+      case "ide.focusAgent":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void focusChatSurface(tabs).then(() => {
+              makeChatAttachHost(tabs).postToWebview({ type: "focusInput" });
+            });
+          }),
+        );
+        break;
+      // - ide.investigateError: "Investigate Error in Chat" = Ctrl+Shift+D
+      //   (binary c8a kbOpts.primary EQp @39845595). Reuses the fixWithAI flow:
+      //   current file/selection + diagnostics -> agent as a fix request.
+      case "ide.investigateError":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void fixWithAI(tabs, tabs.activeComposer)),
+        );
+        break;
+      // DEV-GAPS-83 (agent-fix-with-agent-error): core
+      // `editor.action.fixInAgent` (registered by the workbench
+      // contribution `workbench.contrib.aiFixCodeActions`) forwards
+      // (uriString, errorMessage, range, addToCurrent) here; the service
+      // performs Cursor's fixLinterErrorWithAI flow against the live
+      // composer (verbatim prompt, ±1/+2-line context chip, generating
+      // dedupe). See services/fixWithAgentService.ts for the evidence.
+      case "ide.fixWithAgent":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(
+            cmd.id,
+            (uriString?: unknown, errorMessage?: unknown, range?: unknown, addToCurrent?: unknown) =>
+              fixWithAgentFromCore(tabs, uriString, errorMessage, range, addToCurrent),
+          ),
+        );
+        break;
+      // - ide.reopenChatTab: "Reopen Last Closed Chat Tab" = Ctrl+Shift+T
+      //   (binary @45480214). Restores the closed tab's mode + title as a new
+      //   tab; the transcript is NOT restored (closeTab disposes the composer).
+      case "ide.reopenChatTab":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            const closed = tabs.popClosedTab();
+            if (!closed) {
+              void vscode.window.showInformationMessage("IDE Agent: no recently closed chat tab to reopen.");
+              return;
+            }
+            tabs.createAndActivate({ title: closed.title, mode: closed.mode });
+            void focusChatSurface(tabs);
           }),
         );
         break;
@@ -428,6 +2539,63 @@ export function activate(context: vscode.ExtensionContext): void {
           }),
         );
         break;
+      // DEV-GAPS-73 (chat-focus-followup, Cursor binary parity): handler
+      // for the core `composer.newFollowup` ("Focus Chat Followup",
+      // workbench.glass.main.js `aichat.newfollowupaction` @39814626,
+      // f1:true, keybinding primary CtrlCmd+KeyY (mac: CtrlCmd+Shift+
+      // KeyY) weight 410, no when-clause — i.e. focus the follow-up
+      // input of the active chat). DEV-GAPS-81: the core binding now
+      // matches the binary verbatim (weight 410, no when, mac chord —
+      // see `newFollowupKeybindingWeight` in composerActions.ts; at 410
+      // with no when it outranks editor Redo's CtrlCmd+KeyY at
+      // EditorCore weight, exactly Cursor's resolution).
+      // This command previously fell into the
+      // default branch and only showed the dead `notifyScaffold` popup
+      // (remeasure: "handler-less trap"). The fork's composer has ONE
+      // input — the same element Cursor's follow-up input designates —
+      // and the webview's `focusInput` message is exactly the mechanism
+      // `ide.focusChatInput` / `ide.focusAgent` already use to move DOM
+      // focus into it, after revealing the configured chat surface.
+      //
+      // Binary run (@39814626, DEV-GAPS-81 re-verified by direct binary
+      // read): resolve selected composer (skip worktree) →
+      // updateComposerData {editingBubbleId: undefined,
+      // selectedBubbleId: undefined} → handleOpenComposer
+      // ({insertSelection: true, focusMainInputBox: true}).
+      // Fork mapping of the two extra behaviors:
+      //  - clear editing/selected bubble: NO fork counterpart — the fork
+      //    composer has no bubble-editing state (no editingBubbleId /
+      //    selectedBubbleId anywhere in ComposerDataService or the
+      //    webview), so there is nothing to clear; not invented.
+      //  - insertSelection: the fork's selection-context chip
+      //    (`addSelectionContext`, the K-07 mechanism) — a non-empty
+      //    active-editor selection is attached before focusing, quietly
+      //    (no "select code first" nag: the binary inserts only when a
+      //    selection exists). The binary checks terminal focus first
+      //    and inserts the terminal selection in that case; the fork
+      //    has no reliable terminal-focus API (see addToChat.ts P1-2),
+      //    so the terminal origin is a documented gap, not guessed.
+      //  - worktree skip: the fork has no worktree chat tabs; the active
+      //    tab is the selected composer.
+      case "ide.newFollowup":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void focusChatSurface(tabs).then(() => {
+              const host = makeChatAttachHost(tabs);
+              const editor = vscode.window.activeTextEditor;
+              if (editor && !editor.selection.isEmpty) {
+                const { label, content } = buildEditorSelectionLabel(
+                  realVscodeSeam,
+                  editor.document,
+                  editor.selection,
+                );
+                host.postToWebview({ type: "addSelectionContext", label, content });
+              }
+              host.postToWebview({ type: "focusInput" });
+            });
+          }),
+        );
+        break;
       // Doc-gap B8: chat tabs are real now (ChatTabService) — new/next/
       // previous/select/close are wired, not scaffolds.
       case "ide.newAgentChat":
@@ -440,6 +2608,34 @@ export function activate(context: vscode.ExtensionContext): void {
             // so its editor-tabs branch reveals it (identical to the old
             // inline if/else).
             void focusChatSurface(tabs);
+          }),
+        );
+        break;
+      // WORKER-GAPS-22A (agent-new-agent-command-family): runtime of the
+      // workbench-core `glass.newAgent*` family (Cursor 3.25.9 parity).
+      case "ide.newAgent":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (rawArgs?: unknown) => {
+            void newAgent(tabs, sanitizeNewAgentArgs(rawArgs));
+          }),
+        );
+        break;
+      case "ide.newAgentWithModel":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (modelId?: unknown) => {
+            // Binary-verbatim guard (glass.newAgentWithModel run):
+            // non-string or blank modelId is a no-op.
+            if (typeof modelId !== "string" || modelId.trim().length === 0) {
+              return;
+            }
+            void newAgentWithModel(tabs, modelId);
+          }),
+        );
+        break;
+      case "ide.newProjectSubagent":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (rawArgs?: unknown) => {
+            void newProjectSubagent(tabs, sanitizeNewAgentArgs(rawArgs));
           }),
         );
         break;
@@ -463,6 +2659,19 @@ export function activate(context: vscode.ExtensionContext): void {
           }),
         );
         break;
+      // DEV-FULLSCREEN-COMPOSER (Cursor 3.25.9 parity): binary-verified
+      // glass.enterEditorPanelFullscreen / glass.exitEditorPanelFullscreen
+      // (both Ctrl/Cmd+Shift+M; Ctrl/Cmd+Shift+I is DevTools in Cursor).
+      case "ide.openFullscreenComposer":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void enterFullscreenComposer(tabs)),
+        );
+        break;
+      case "ide.exitFullscreenComposer":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void exitFullscreenComposer(tabs)),
+        );
+        break;
       case "ide.nextChatTab":
       case "ide.selectNextChat":
         context.subscriptions.push(
@@ -483,11 +2692,304 @@ export function activate(context: vscode.ExtensionContext): void {
           }),
         );
         break;
+      // DEV-GAPS-80 (W80C-R3): real handlers for the SubComposer-tab
+      // switch (binary evidence + divergence: see the catalog entries
+      // above and ChatTabService.selectNextSubComposerTab). Previously
+      // ide.selectNext/PreviousSubagentTab existed ONLY as catalog
+      // entries and fell into the dispatch default (trap). Each id is
+      // registered exactly once here (the switch iterates the catalog).
+      case "ide.selectNextSubagentTab":
+      case "ide.selectNextSubComposerTab":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            tabs.selectNextSubComposerTab();
+            // Same reveal contract as ide.nextChatTab (QA-REVERIFY-2-02).
+            void focusChatSurface(tabs);
+          }),
+        );
+        break;
+      case "ide.selectPreviousSubagentTab":
+      case "ide.selectPreviousSubComposerTab":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            tabs.selectPreviousSubComposerTab();
+            void focusChatSurface(tabs);
+          }),
+        );
+        break;
       case "ide.closeChatTab":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
             const active = tabs.activeTab;
             void tabs.closeTab(active.id);
+          }),
+        );
+        break;
+      case "ide.cancelAgentStep":
+        // W65D (chat-cancel-generation-shortcut): runtime of the
+        // binary-verbatim `composer.cancelComposerStep` /
+        // `composer.cancelComposerStepInputFocused` ("Cancel Chat",
+        // Ctrl/Cmd+Shift+Backspace, workbench.glass.main.js 3.25.9
+        // @39862622/@39865699). Binary run: resolve the selected
+        // composer; if the tab service would show the cancel affordance
+        // (shouldShowCancel) -> trackEvent("composer.cancel_chat",
+        // {composerId, source:"cmd_backspace"}) + cancelCurrentStep; else
+        // if the view would show accept/reject-all -> rejectAll. Fork
+        // port: a running turn -> abort the step (the fork's
+        // cancelCurrentStep; no prompt restore — the binary does not
+        // restore the query, unlike the Stop button's
+        // abort({restoreQuery:true})). The fork's engine applies file
+        // edits directly (no pending accept/reject-all suggestion
+        // state), so that branch is a documented silent no-op — never
+        // invented.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (arg?: unknown) => {
+            const composer = tabs.activeComposer;
+            if (!composer.isRunning) {
+              return;
+            }
+            // The binary's trackEvent payload, logged inspectably (no
+            // fake analytics service in the fork). DEV-GAPS-64/W64E: the
+            // core actions forward their binary source ("cmd_backspace"
+            // for composer.cancelComposerStep, "winctrl_c" for
+            // composer.cancelComposerStepInputFocused); composer.cancelChat
+            // forwards no source and the binary logs nothing for it.
+            const telemetrySource =
+              typeof arg === "object" && arg !== null
+                ? (arg as { telemetrySource?: unknown }).telemetrySource
+                : undefined;
+            if (telemetrySource === "cmd_backspace" || telemetrySource === "winctrl_c") {
+              if (!cancelChatTelemetryChannel) {
+                cancelChatTelemetryChannel = vscode.window.createOutputChannel("IDE Agent");
+              }
+              cancelChatTelemetryChannel.appendLine(
+                `[telemetry] composer.cancel_chat composerId=${tabs.activeTab.id} source=${telemetrySource}`,
+              );
+            }
+            composer.abort();
+          }),
+        );
+        break;
+      // DEV-GAPS-66/W66A (agent-accept-pending-decisions): runtime of the
+      // binary-verbatim `composer.acceptComposerStep` ("Accept pending
+      // agent pane action", workbench.glass.main.js 3.25.9 class LAb
+      // @39863346):
+      //   const s = r ? n.getPendingUserDecisionGroup(r) : [];
+      //   if (s.length > 0) { for (const o of s) o.accept(); return }
+      //   e.acceptNotification()
+      // — the binary uses the RAW selectedComposerId (no resolve), and the
+      // active chat tab is the fork's "selected composer". The group is
+      // accepted UNCONDITIONALLY (no per-item filtering) — exactly like the
+      // binary; the empty-group fallback is acceptNotification()
+      // (documented no-op in the fork: no host-owned composer notification
+      // service). No warnings on empty selection / no handle — the binary
+      // silently falls through to the notification path.
+      case "ide.acceptComposerStep":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            const composer = tabs.activeComposer;
+            const group = composer.getPendingUserDecisionGroup();
+            if (group.length > 0) {
+              for (const decision of group) {
+                decision.accept();
+              }
+              return;
+            }
+            composer.acceptNotification();
+          }),
+        );
+        break;
+      // GAPS-152 (agent-notification-actions): runtime of the binary
+      // CommandsRegistry handlers @29946768 — the argument is the
+      // notification payload's args (string | {composerId, source?}),
+      // forwarded untouched; all logic lives in AgentNotificationService.
+      case "ide.openComposerFromNotification":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (arg?: unknown) =>
+            agentNotifications.openComposerFromNotification(arg),
+          ),
+        );
+        break;
+      case "ide.acceptPendingFromNotification":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (arg?: unknown) =>
+            agentNotifications.acceptPendingFromNotification(arg),
+          ),
+        );
+        break;
+      case "ide.rejectPendingFromNotification":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (arg?: unknown) =>
+            agentNotifications.rejectPendingFromNotification(arg),
+          ),
+        );
+        break;
+      // DEV-GAPS-56 (agent-resume-chat): runtime of the binary-verbatim
+      // `composer.resumeCurrentChat` ("Resume Current Chat",
+      // workbench.glass.main.js 3.25.9, class CAb — palette-HIDDEN, NO
+      // keybinding; the run-34 audit's f1:!0 is BÁC BỎ):
+      //   async run(t,e){const n=t.get(L0),i=t.get(no),r=t.get($r),
+      //     s=i.selectedComposerId;
+      //     if(s){const o=i.getHandleIfLoaded(s);
+      //       if(!o){r.warn("Cannot resume: composer not loaded");return}
+      //       try{n.resumeChat(o,{isAutoResume:e?.isAutoResume===!0})}
+      //       catch(a){r.warn(a instanceof Error?a.message:"Cannot resume")}}}
+      // The fork's active chat tab is the "selected composer".
+      // CORRECTION (2026-10-20, REA spec rea-spec-accept-resume-2026-10-20):
+      // the binary warns through $r=Qn("notificationService").warn() — the
+      // core `composer.resumeCurrentChat` Action2 owns that warn, so this
+      // runtime lets errors PROPAGATE (it no longer logs them itself) and the
+      // core maps them to notification warnings exactly like the binary's
+      // catch.
+      //
+      // Fork port of the binary's ComposerChatService.resumeChat (glass
+      // @20423725). Binary-verified guard: throw verbatim "Cannot resume:
+      // chat not found" when the composer holds no conversation data (the
+      // fork's bubble transcript is the conversation data). The post-guard
+      // body is NOT statically recoverable (truncated @20423725); the
+      // internal auto-resume call site @20410301 shows it continues an
+      // interrupted turn. The fork resumes by re-submitting the last human
+      // message so the engine continues the conversation; a turn already in
+      // flight (or draining its follow-ups) is a silent no-op. isAutoResume
+      // is accepted and passed through without downstream inference (spec:
+      // "chỉ pass-through, không suy diễn downstream").
+      case "ide.resumeCurrentChat":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (arg?: { isAutoResume?: unknown }) => {
+            const composer = tabs.activeComposer;
+            if (!composer) {
+              throw new Error("Cannot resume: composer not loaded");
+            }
+            const bubbles = composer.bubbles.getAllInOrder();
+            if (bubbles.length === 0) {
+              throw new Error("Cannot resume: chat not found");
+            }
+            if (composer.isRunning || composer.isDraining) {
+              return;
+            }
+            const lastHuman = [...bubbles].reverse().find((b) => b.role === "human");
+            if (lastHuman) {
+              composer.submit(lastHuman.text);
+            }
+          }),
+        );
+        break;
+      // W69C (changes-tab-base-branch-menu): runtime of the
+      // binary-verbatim `cursor.openBranchMenu` ("Open Branch Menu",
+      // workbench.glass.main.js 3.25.9, class JXl @27418510):
+      //   const s = n.selectedComposerId;
+      //   !s || !n.getComposerDataIfLoaded(s) ||
+      //     !i.isComposerConversationEmpty(s) ||
+      //     r.fireDidRequestOpenBranchMenu({composerId:s})
+      // The core Action2 already resolved the selection + loaded guards
+      // (active/open chat editor); the fork's selected composer is the
+      // active chat tab, which always holds loaded data, so the remaining
+      // binary guard here is the conversation-empty check. Every failure
+      // is a SILENT no-op — this command never warns (binary-verbatim).
+      // The fired event is consumed by the branch-selector handler
+      // registered at activation (BranchMenuService).
+      case "ide.openBranchMenu":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            const composer = tabs.activeComposer;
+            if (!composer) {
+              return;
+            }
+            if (!composer.isComposerConversationEmpty()) {
+              return;
+            }
+            branchMenu.fireDidRequestOpenBranchMenu({
+              composerId: tabs.activeTab.id,
+            });
+          }),
+        );
+        break;
+      // DEV-GAPS-106B (chat-history-command-palette): runtime of the
+      // binary-verbatim `composer.showComposerHistory` ("Show Chat
+      // History", workbench.desktop.main.js class Rgm @29919589). The
+      // core Action2 resolves the composer id the way the binary does
+      // (string arg -> view context -> selected/active chat editor) and
+      // passes { composerId }; the service falls back to the active tab
+      // (the fork's selectedComposerId analog — ChatTabService always has
+      // one). The boolean result mirrors the binary's found/none branch:
+      // false means no composer at all, and the core then shows the
+      // verbatim info "No active composer found. Start a new chat to
+      // view history." (the binary's notificationService.info call).
+      case "ide.showComposerHistory":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(
+            cmd.id,
+            (arg?: { composerId?: unknown }) =>
+              chatHistory.showComposerHistory(
+                typeof arg?.composerId === "string" ? arg.composerId : undefined,
+              ),
+          ),
+        );
+        break;
+      // DEV-GAPS-106B: runtime of the binary-verbatim
+      // `composer.showComposerHistoryEditor` ("Show Chat History
+      // (Editor)", class Mgm @29920334). Resolution lives in the core
+      // Action2 (arg / {path} arg / active composer editor / selected
+      // fallback); the binary has NO info fallback for this variant, so
+      // the result is returned for symmetry but never surfaced.
+      case "ide.showComposerHistoryEditor":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(
+            cmd.id,
+            (arg?: { composerId?: unknown }) =>
+              chatHistory.showComposerHistoryEditor(
+                typeof arg?.composerId === "string" ? arg.composerId : undefined,
+              ),
+          ),
+        );
+        break;
+      // DEV-GAPS-73 (chat-tab-close-actions): runtime of the core
+      // `composer.clearComposerTabs` ("Close All Tabs", ViewTitle
+      // '0_chatManage' order 3) and `composer.closeOtherComposerTabs`
+      // ("Close Other Tabs", f1:true, ViewTitle menu order 2) —
+      // binary-verbatim ids/titles (Cursor 3.25.9 glass @39825552 /
+      // @39862165; `f1:!0` = true). The service reuses
+      // per-tab closeTab semantics; the running-tab confirm dialog
+      // (DEV-GAPS-81) fires from closeTab itself, so nothing extra is
+      // shown here.
+      case "ide.closeAllChatTabs":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void tabs.closeAllChatTabs();
+          }),
+        );
+        break;
+      // DEV-GAPS-56 (deeplink-prompt-prefill, Cursor 3.25.9 parity):
+      // runtime of the binary-verbatim `deeplink.prompt.prefill`
+      // (extensions/cursor-deeplink/dist/main.js, 3.25.9, route `Xs`).
+      // The ide-deeplink extension executes this after its text validation
+      // (Vs) and workspace routing; the payload is { text, mode? } with
+      // mode from the 3.25.9 `mode` query param. Prefill-only: the text
+      // lands in the chat input (webview `prefill` message, user reviews
+      // and sends) — never auto-submits. The mode is applied to the
+      // active composer before prefill (ModeService.setMode never throws;
+      // unknown ids default to "agent").
+      case "deeplink.prompt.prefill":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (arg?: { text?: unknown; mode?: unknown }) => {
+            const text = typeof arg?.text === "string" ? arg.text : "";
+            if (!text) {
+              return;
+            }
+            if (typeof arg?.mode === "string" && arg.mode) {
+              tabs.activeComposer.modes.setMode(arg.mode);
+            }
+            void (async () => {
+              await focusChatSurface(tabs);
+              makeChatAttachHost(tabs).postToWebview({ type: "prefill", text });
+            })();
+          }),
+        );
+        break;
+      case "ide.closeOtherChatTabs":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void tabs.closeOtherTabs(tabs.activeTab.id);
           }),
         );
         break;
@@ -504,6 +3006,52 @@ export function activate(context: vscode.ExtensionContext): void {
       case "ide.rejectInlineEdit":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void inlineEdit.reject()),
+        );
+        break;
+      case "ide.cancelInlineEditGeneration":
+        // WORKER-GAPS-34C (inline-edit-command-ids): web/aux fallback for the
+        // core `editor.action.inlineDiffs.cancelEdits` (weight 600). Palette-
+        // hidden (package.json `menus.commandPalette`) — the canonical
+        // user-facing command is the core `editor.action.inlineDiffs.*` one.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => inlineEdit.cancelGeneration()),
+        );
+        break;
+      case "ide.acceptPartialInlineEdit":
+        // PARTIAL-DIFF (Cursor parity): accept only the current hunk.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void inlineEdit.acceptPartial()),
+        );
+        break;
+      case "ide.rejectPartialInlineEdit":
+        // PARTIAL-DIFF (Cursor parity): reject only the current hunk.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void inlineEdit.rejectPartial()),
+        );
+        break;
+      case "ide.nextInlineChange":
+        // PARTIAL-DIFF (Cursor parity): Alt+J — next pending change.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => inlineEdit.nextChange()),
+        );
+        break;
+      case "ide.previousInlineChange":
+        // PARTIAL-DIFF (Cursor parity): Alt+K — previous pending change.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => inlineEdit.previousChange()),
+        );
+        break;
+      case "ide.nextInlineDiffFile":
+        // PARTIAL-DIFF (Cursor parity): Alt+L — next diff file (single-session
+        // model: graceful no-op with an info message for now).
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => inlineEdit.nextDiffFile()),
+        );
+        break;
+      case "ide.previousInlineDiffFile":
+        // PARTIAL-DIFF (Cursor parity): Alt+H — previous diff file.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => inlineEdit.previousDiffFile()),
         );
         break;
       case "ide.focusEditorFromDiff":
@@ -524,7 +3072,8 @@ export function activate(context: vscode.ExtensionContext): void {
         break;
       case "ide.addSelectionToInlinePrompt":
         // K-08 (Cursor parity): attach the current editor selection to the
-        // next inline edit prompt (Ctrl/Cmd+Shift+K), then open the prompt.
+        // next inline edit prompt, then open the prompt. (No chord: its former
+        // Ctrl/Cmd+Shift+K was reassigned to `aipopup.action.modal.generate`.)
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
             if (attachPendingSelection()) {
@@ -539,9 +3088,52 @@ export function activate(context: vscode.ExtensionContext): void {
           vscode.commands.registerCommand(cmd.id, () => void inlineEdit.escalateToAgent()),
         );
         break;
+      case "ide.submitInlinePromptToChat":
+        // F2-A (2026-10-20): core inline-edit bridge — the workbench-core
+        // IInlineEditService escalates an inline prompt ("Send to Chat" mode
+        // / composer.sendToAgent) through this command. Same behavior as the
+        // extension's own prefillChat: submit to the ACTIVE composer, then
+        // focus the chat surface.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (text?: unknown) => {
+            if (typeof text === "string" && text.length > 0) {
+              tabs.activeComposer.submit(text);
+              return focusChatSurface(tabs);
+            }
+            return undefined;
+          }),
+        );
+        break;
       case "ide.openModeMenu":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void pickMode(tabs.activeComposer)),
+        );
+        break;
+      // DEV-GAPS-76 / W76D-R (handler-trap sweep #2): runtime of the
+      // binary-verbatim `composer.openAddContextMenu` (Cursor 3.25.9
+      // workbench.glass.main.js, const Qki; class run:
+      // `selectedComposerId ? triggerAddContextMenu(selectedComposerId)
+      // : notificationService.warn("Action composer.openAddContextMenu:
+      // No selected composer found.")`, title "Open add context menu",
+      // f1:!1, keybinding CtrlCmd+Alt+KeyP weight 200 when
+      // composerFocused && !editorTextFocus — the core Action2
+      // ComposerOpenAddContextMenuAction owns that registration and
+      // delegates here). This command previously had NO case and fell
+      // into the default `notifyScaffold` trap. Fork mapping: the
+      // active chat tab is the selected composer (ChatTabService always
+      // keeps one tab, so the binary's no-composer warn branch is
+      // unreachable here); reveal the chat surface, then post
+      // `openAddContextMenu` to its webview, whose add-context ("+")
+      // menu (components/composer.ts) opens — the same menu the "+"
+      // button toggles, except a host trigger always opens, never
+      // toggles shut (triggerAddContextMenu semantics).
+      case "ide.openAddContextMenu":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void focusChatSurface(tabs).then(() => {
+              makeChatAttachHost(tabs).postToWebview({ type: "openAddContextMenu" });
+            });
+          }),
         );
         break;
       case "ide.cycleMode": {
@@ -585,9 +3177,73 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         break;
       }
+      case "ide.startMultitasking":
+        // DEV-MULTITASK: Cursor's queue-tray "Start Multitasking" button
+        // (spec §4.1: startMultitasking({entrypoint:"queue_tray"}) then
+        // submits the first queue item; failure string verbatim below).
+        // The multitask flow itself starts when the user submits in
+        // multitask mode, so this switches the mode and reveals the chat
+        // surface for the request.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            try {
+              // entrypoint: "queue_tray" (Cursor tracks
+              // composer.multitask_mode.entry_point — §4.1).
+              tabs.activeComposer.modes.setMode("multitask");
+              // QA-REVERIFY-2-02: reveal the chat editor tab, not the sidebar.
+              void focusChatSurface(tabs);
+            } catch {
+              void vscode.window.showErrorMessage("Failed to start multitasking.");
+            }
+          }),
+        );
+        break;
       case "ide.acceptPlan":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void tabs.activeComposer.acceptPlan()),
+        );
+        break;
+      // GAPS-181 (CAT-B port, acceptPlan consumer C2): runtime handler for
+      // the core plan-accept consumer bridge — the core
+      // ComposerPlanAcceptConsumerContribution forwards every plan accepted
+      // through the core `composer.acceptPlan` command path here as
+      // (tabId, planText, planUriString, execution?) — the 4th arg is the
+      // GAPS-186 planName/planTitle/planTodos extraction. The build runs on the tab that
+      // owns the plan (NOT blindly the active tab); an unknown tab id (tab
+      // closed between accept and forward) drops the build silently — the
+      // core registry record is already consumed either way.
+      case "ide.acceptPlanFromCore":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(
+            cmd.id,
+            (tabId?: unknown, planText?: unknown, _planUri?: unknown, execution?: unknown) => {
+              if (typeof tabId !== "string" || typeof planText !== "string") {
+                return;
+              }
+              const tab = tabs.listTabs().find((t) => t.id === tabId);
+              if (tab) {
+                // GAPS-186: `execution` is the core plan service's
+                // planName/planTitle/planTodos extraction, forwarded
+                // through untouched — acceptPlanFromCore normalizes it
+                // defensively. Absent on older core builds.
+                void tab.composer.acceptPlanFromCore(planText, execution);
+              }
+            },
+          ),
+        );
+        break;
+      case "ide.toggleSandboxDebugLogging":
+        // W-DEV1 (2026-10-20): bridge for core `composer.toggleSandboxDebugLogging`.
+        // Core now replicates Cursor (storage key `sandboxDebugOutputDir`,
+        // workbench.desktop.main.js @29974171); the `composer.sandbox.debugLogging`
+        // config no longer exists. Core passes the new enabled state explicitly;
+        // with no arg we toggle the flag. Fork-only step: Cursor's sandbox is
+        // in-core, ours still lives here in the extension host.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (enabled?: boolean) => {
+            const next = typeof enabled === "boolean" ? enabled : !isSandboxDebugLogging();
+            setSandboxDebugLogging(next);
+          }),
         );
         break;
       case "ide.openModelPicker":
@@ -601,6 +3257,23 @@ export function activate(context: vscode.ExtensionContext): void {
         // and announce it in the status bar + composer header.
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void cycleModel(tabs.activeComposer)),
+        );
+        break;
+      // DEV-GAPS-29 (Cursor 3.25.9 binary: run `lhw() ||
+      // executeCommand(cycleModel)`): try cycling the focused model-parameter
+      // target in the window first (the binary's `isCycleableByHotkey &&
+      // count > 1` lookup over model.parameterDefinitions — see services/
+      // modelParameterService.ts); if nothing is cycleable, fall back to
+      // cycling the model.
+      case "ide.cycleModelParameter":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            void cycleFocusedModelParameter(tabs.activeComposer, context.globalState).then((cycled) => {
+              if (!cycled) {
+                void vscode.commands.executeCommand("ide.cycleModel");
+              }
+            });
+          }),
         );
         break;
       case "ide.manageModels":
@@ -628,23 +3301,115 @@ export function activate(context: vscode.ExtensionContext): void {
             : cmd.id === "ide.approveShellToolAllowlist"
               ? "approve-allowlist"
               : "skip";
+        // Cursor parity (rXs in the glass bundle): run/allowlist refocus the
+        // composer input after deciding; skip leaves focus where it is.
+        const refocusComposer = cmd.id !== "ide.skipShellTool";
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => {
-            const current = tabs.activeComposer.reviews.currentApproval;
+            const reviews = tabs.activeComposer.reviews;
+            const current = reviews.currentApproval;
             if (!current) {
               void vscode.window.showInformationMessage(
                 "IDE Agent: no pending tool approval to respond to.",
               );
               return;
             }
-            tabs.activeComposer.reviews.resolveApproval(current.approvalId, { optionId });
+            reviews.resolveApproval(current.approvalId, { optionId });
+            if (refocusComposer) {
+              void focusChatSurface(tabs).then(() => {
+                makeChatAttachHost(tabs).postToWebview({ type: "focusInput" });
+              });
+            }
           }),
         );
         break;
       }
+      // GAPS-14 (agent-shell-approval-keyboard-flow): `ide.cancelTerminalToolCall`
+      // is the runtime target of core `composer.cancelTerminalToolCall`
+      // (Shift+Backspace). Mirrors Cursor's run body: reject the pending
+      // RUN_TERMINAL_COMMAND_V2 decisions first (then return); otherwise
+      // cancel the running terminal tool call. No-ops with an info message
+      // when neither is present.
+      case "ide.cancelTerminalToolCall":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            const reviews = tabs.activeComposer.reviews;
+            const pendingShell = reviews.getPendingApprovals().filter(isShellToolApproval);
+            // GAPS-14: binary run-body order (glass bundle 3.25.6) — reject
+            // pending RUN_TERMINAL_COMMAND_V2 decisions first, else cancel
+            // the running terminal stream.
+            const target = decideCancelTerminalTarget({
+              hasPendingShellApproval: pendingShell.length > 0,
+              hasActiveRun: terminal.hasActiveRun(),
+            });
+            if (target === "reject-pending-approval") {
+              for (const req of pendingShell) {
+                reviews.resolveApproval(req.approvalId, { optionId: "skip" });
+              }
+            } else if (target === "cancel-running-call") {
+              terminal.cancelActiveRun();
+            } else {
+              void vscode.window.showInformationMessage(
+                "IDE Agent: no running terminal tool call to cancel.",
+              );
+            }
+          }),
+        );
+        break;
       case "ide.fixWithAI":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void fixWithAI(tabs, tabs.activeComposer)),
+        );
+        break;
+      // WORKER-GAPS-42D (bugbot-auto-review): binary-verbatim
+      // `cursor.runEditorBugbot` — the auto-run-on-commit entry dispatched by
+      // the commit trigger with (rootUri, headRef). Reviews the repo branch
+      // at headRef, gated on the `autoRunBugbotOnCommit` storage flag +
+      // `bugbot_autorun_killswitch` (Cursor 3.25.9, byte 41777801).
+      case BUGBOT_RUN_EDITOR_REVIEW_COMMAND_ID:
+        context.subscriptions.push(
+          registerBugbotReviewCommand(context, () => tabs.activeComposer, bugbotReviewHistory, (line) =>
+            ideOutput.appendLine(line),
+          ),
+        );
+        break;
+      // DEV-GAPS-15 (bugbot-remaining-commands): binary-verbatim
+      // `cursor.openBugbotPane` (Cursor 3.25.6) — opens the Bugbot pane
+      // listing the latest review runs (real history, no fabricated
+      // findings). HONEST-DIVERGENCE: the title is INFERRED.
+      case BUGBOT_OPEN_PANE_COMMAND_ID:
+        context.subscriptions.push(registerOpenBugbotPaneCommand(bugbotReviewHistory));
+        break;
+      // DEV-GAPS-15: binary-verbatim `cursor.reviewBugbotFromAd` (Cursor
+      // 3.25.6) — ad/CTA entry point; same real review flow as
+      // `cursor.runEditorBugbot` with its own telemetry route
+      // `bug_bot.ad_review_cta_route` (event name INFERRED from the
+      // DEV-GAPS-10 pattern — not binary-verified).
+      case BUGBOT_REVIEW_FROM_AD_COMMAND_ID:
+        context.subscriptions.push(
+          registerBugbotFromAdCommand(context, () => tabs.activeComposer, bugbotReviewHistory, (line) =>
+            ideOutput.appendLine(line),
+          ),
+        );
+        break;
+      // WORKER-GAPS-42D: binary-verbatim `cursor.enableAutoReviewOnCommit`
+      // (Cursor 3.25.9, byte 41781073) — unconditionally enables the
+      // `autoRunBugbotOnCommit` storage flag + telemetry
+      // `bug_bot.autorun_on_commit_toggled` {enabled, source:"in_app_ad"}.
+      // (The old quickpick toggle misread the binary and was removed.)
+      case BUGBOT_ENABLE_AUTO_REVIEW_COMMAND_ID:
+        context.subscriptions.push(
+          registerBugbotAutoReviewEnableCommand(context, (line) =>
+            ideOutput.appendLine(line),
+          ),
+        );
+        break;
+      // DEV-GAPS-65 (cursor-install-cli): `cursor.installCli` handler body
+      // @36708706 — guard on `cliDetectionStatus.agentStatus`, else Panel
+      // terminal + verbatim `curl https://cursor.com/install -fsS | bash`.
+      case INSTALL_CLI_COMMAND_ID:
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void runInstallCliCommand(context)),
         );
         break;
       case "ide.addToChat":
@@ -654,19 +3419,88 @@ export function activate(context: vscode.ExtensionContext): void {
           ),
         );
         break;
+      // DEV-GAPS-77 (W77D): Cursor `glass.copy-plan-markdown` parity (binary
+      // PlanTabContent `onCopyAsMarkdown`, 3.25.9 @32802481). Palette command
+      // form of the plan tray's "Copy as Markdown" button — copies the ACTIVE
+      // tab's pending plan markdown with the binary-verbatim toast/log flow.
+      case COPY_PLAN_MARKDOWN_COMMAND_ID:
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            const composer = tabs.activeComposer;
+            void copyPendingPlanMarkdownToClipboard(composer, makePlanCopySeam()).catch(
+              (err: unknown) => {
+                const m = err instanceof Error ? err.message : String(err);
+                void vscode.window.showErrorMessage(`IDE Agent: copy failed — ${m}`);
+              },
+            );
+          }),
+        );
+        break;
       // Cursor parity: chat title context menu (chat editor tabs).
-      case "ide.exportTranscript":
       case "ide.copyRequestId":
       case "ide.giveFeedback":
       case "ide.renameChat":
       case "ide.forkChat":
+      case "ide.pinChat":
+      case "ide.unpinChat":
       case "ide.openAgentSettings":
+      case "ide.shareChat":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, (uri?: vscode.Uri) =>
             runChatTitleCommand(cmd.id, tabs, uri),
           ),
         );
         break;
+      // Cursor parity: Customize editor tab (workbench.action.openCustomizeEditor).
+      case "ide.openCustomize":
+      case "workbench.action.openCustomizeEditor":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            if (customizeEditorProviderRef) {
+              void openCustomizeEditor(customizeEditorProviderRef);
+            } else {
+              void vscode.window.showWarningMessage("IDE Agent: Customize view is not ready yet.");
+            }
+          }),
+        );
+        break;
+      case "workbench.action.customize.openPlugins":
+      case "workbench.action.customize.openMCPs":
+      case "workbench.action.customize.openSkills":
+      case "workbench.action.customize.openSubagents":
+      case "workbench.action.customize.openRules":
+      case "workbench.action.customize.openCommands":
+      case "workbench.action.customize.openHooks":
+      // DEV-GAPS-74: extension-owned aliases the workbench-core
+      // `workbench.action.customize.open*` Action2 classes delegate to
+      // (their core registrations shadow the same-id extension ones).
+      // Same handler: open the real Customize editor on the section tab.
+      case "ide.customize.openPlugins":
+      case "ide.customize.openMCPs":
+      case "ide.customize.openSkills":
+      case "ide.customize.openSubagents":
+      case "ide.customize.openRules":
+      case "ide.customize.openCommands":
+      case "ide.customize.openHooks": {
+        const entry =
+          (Object.entries(CUSTOMIZE_OPEN_TAB_COMMANDS) as Array<[CustomizeSectionId, string]>).find(
+            ([, commandId]) => commandId === cmd.id,
+          ) ??
+          (Object.entries(CUSTOMIZE_IDE_OPEN_TAB_COMMANDS) as Array<[CustomizeSectionId, string]>).find(
+            ([, commandId]) => commandId === cmd.id,
+          );
+        const tab: CustomizeSectionId = entry ? entry[0] : "plugins";
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            if (customizeEditorProviderRef) {
+              void openCustomizeEditor(customizeEditorProviderRef, tab);
+            } else {
+              void vscode.window.showWarningMessage("IDE Agent: Customize view is not ready yet.");
+            }
+          }),
+        );
+        break;
+      }
       case "ide.terminalAiCommand":
         // K-14 (Cursor parity): Cmd/Ctrl+K in the terminal. Delegates to
         // TerminalService.openTerminalPrompt: Enter sends the request to the
@@ -679,6 +3513,15 @@ export function activate(context: vscode.ExtensionContext): void {
       case "ide.searchConversations":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void searchConversations(tabs.activeComposer, tabs)),
+        );
+        break;
+      case "aiCodeTracking.resetDailyStats":
+        // DD-SB-7: Cursor palette command (category "AI Code Tracking",
+        // title "Reset AI Code Tracking Stats") — resets all live counters.
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            tracking.resetDailyStats();
+          }),
         );
         break;
       case "ide.worktreeCommand":
@@ -699,6 +3542,190 @@ export function activate(context: vscode.ExtensionContext): void {
       case "ide.applyWorktree":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, () => void applyWorktreeFlow(new WorktreeService())),
+        );
+        break;
+      // FIND-IN-CHAT (QA "declared, no handler" fix): the chat surface is a
+      // webview — the VS Code native find widget cannot search inside it, so
+      // the find bar is owned by the webview (components/composer.ts). The
+      // host just tells the ACTIVE chat surface (sidebar or editor tab) to
+      // show/hide it. Keybindings (Ctrl/Cmd+F / Escape, when: chatSurface)
+      // live in workbench core composerActions.ts and delegate to these
+      // commands; the when-clause is disjoint from the editor's
+      // editorTextFocus, so there is no conflict with editor find.
+      case "ide.findInChat":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            // Mirror ide.focusChatInput: reveal the surface first (command-
+            // palette path), then ask the webview to show the bar.
+            void focusChatSurface(tabs).then(() => {
+              showFindInChat(makeChatAttachHost(tabs));
+            });
+          }),
+        );
+        break;
+      case "ide.hideFindInChat":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            // The webview hides the bar and returns DOM focus to the
+            // composer input. No reveal needed — hiding a hidden bar is a
+            // harmless no-op.
+            hideFindInChat(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      // DEV-GAPS-29: binary-verbatim `composer.find.next` /
+      // `composer.find.previous` ("Find Next/Previous in Chat", F3/Enter and
+      // Shift+F3/Shift+Enter, when composerFindWidgetFocused). The host
+      // forwards the intent to the active surface's webview, which owns the
+      // match highlights; a closed bar makes these harmless no-ops.
+      case "ide.findNextInChat":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            findNextInChat(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      case "ide.findPreviousInChat":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            findPreviousInChat(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      // GAPS-157 (plan-find-in-plan): runtime of the core pane-level
+      // showPlanFind / hidePlanFind / nextPlanFindMatch /
+      // previousPlanFindMatch Action2s (binary-verbatim, weight 256).
+      // The host forwards the intent to the ACTIVE chat surface's
+      // webview, whose plan find bar owns the highlights over the pending
+      // plan's bubble; a closed bar / no pending plan makes these
+      // harmless no-ops (mirrors the binary's ll-event consumers, which
+      // are enabled only while their surface is active).
+      case "ide.showPlanFind":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            // Mirror ide.findInChat: reveal the surface first (command-
+            // palette path), then ask the webview to show the bar.
+            void focusChatSurface(tabs).then(() => {
+              showFindInPlan(makeChatAttachHost(tabs));
+            });
+          }),
+        );
+        break;
+      case "ide.hidePlanFind":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            hideFindInPlan(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      case "ide.findNextInPlan":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            findNextInPlan(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      case "ide.findPreviousInPlan":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            findPreviousInPlan(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      // DEV-GAPS-119 (chat-jump-messages-kbd): runtime of the core
+      // jumpToNextUserMessage / jumpToPrevUserMessage /
+      // scrollAgentPanelToTop / scrollAgentPanelToBottom Action2s. The
+      // host just forwards the binary's *Requested event to the ACTIVE
+      // chat surface's webview (makeChatAttachHost resolves editor tab vs
+      // sidebar exactly like Add to Chat); the webview owns the rendered
+      // transcript and performs the scroll (components/composer.ts).
+      case "ide.jumpToNextUserMessage":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            jumpToNextUserMessage(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      case "ide.jumpToPrevUserMessage":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            jumpToPrevUserMessage(makeChatAttachHost(tabs));
+          }),
+        );
+        break;
+      case "ide.scrollAgentPanelToTop":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            scrollAgentPanelToEdge(makeChatAttachHost(tabs), -1);
+          }),
+        );
+        break;
+      case "ide.scrollAgentPanelToBottom":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => {
+            scrollAgentPanelToEdge(makeChatAttachHost(tabs), 1);
+          }),
+        );
+        break;
+      // GAPS-131 (mention-link-toolbar): runtime of the core
+      // cursor.mentionLinkToolbar Action2. Mirrors the binary: the
+      // handler returns the controller's promise, which resolves when
+      // the toolbar closes (backdrop click / Open / Unlink) — so the
+      // core command awaits exactly like
+      // uiOverlayService.showMentionLinkToolbar. Malformed payloads are
+      // dropped (the webview is untrusted).
+      case "ide.mentionLinkToolbar":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (payload?: unknown) => {
+            if (!isMentionLinkToolbarPayload(payload)) {
+              return undefined;
+            }
+            return mentionLinkToolbarController.showMentionLinkToolbar(
+              makeChatAttachHost(tabs),
+              payload,
+            );
+          }),
+        );
+        break;
+      // DEV-GAPS-10: Changes tab (Cursor `glass.openChangesTab` parity,
+      // audit-fix-queue run 24). The real UI lives in workbench core
+      // (`composer.openChangesTab`); the extension command normalizes the
+      // binary-verbatim args and delegates, mirroring the
+      // `ide.openBrowserTab` -> `workbench.action.browser.open` precedent.
+      case "ide.openChangesTab":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (args?: unknown) =>
+            void vscode.commands.executeCommand(
+              CHANGES_TAB_COMMAND_IDS.core,
+              normalizeOpenChangesTabArgs(args),
+            ),
+          ),
+        );
+        break;
+      // WORKER-GAPS-36D (rules-user): Cursor knowledge-base commands,
+      // binary-verified in 3.25.9 — editor.action.knowledgeBase.add
+      // ("Add User Rule") and editor.action.knowledgeBase.list
+      // ("View User Rules"), keybinding category "knowledge_base". Global
+      // User Rules applied to every Agent Chat turn.
+      // DEV-GAPS-74 (W74C): "Resolve All Conflicts in Chat" — delegates to
+      // ChatConflictService (services/chatConflictService.ts); args mirror
+      // the binary's {conflictedFiles, fileCount} and are sanitized in the
+      // flow helper.
+      case "ide.resolveConflictsInChat":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, (rawArgs?: unknown) =>
+            resolveConflictsInChatFlow(tabs, rawArgs),
+          ),
+        );
+        break;
+      case "editor.action.knowledgeBase.add":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void addUserRuleFlow(tabs)),
+        );
+        break;
+      case "editor.action.knowledgeBase.list":
+        context.subscriptions.push(
+          vscode.commands.registerCommand(cmd.id, () => void viewUserRulesFlow(tabs)),
         );
         break;
       default:
@@ -775,36 +3802,133 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  // WORKER-GAPS-38D (`agent-chat-export`): transcript provider for the
+  // workbench's binary-verbatim `composer.exportChatAsMd` command. The core
+  // action owns the command id, the Markdown algorithm, the save dialog and
+  // the notification; it asks here for the transcript because the extension
+  // owns the chat data (ChatTabService).
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      GET_CHAT_EXPORT_TRANSCRIPT_COMMAND,
+      (tabId?: unknown): ChatExportTranscript | undefined => {
+        const id = typeof tabId === "string" && tabId.length > 0 ? tabId : undefined;
+        const tab = id ? tabs.listTabs().find((t) => t.id === id) : undefined;
+        const resolved = tab ?? resolveChatEditorTab(tabs);
+        return resolved ? chatTabToExportTranscript(resolved) : undefined;
+      },
+    ),
+  );
+
+  // WORKER-GAPS-66A (`chat-tab-title-menu-inventory`): request-id provider
+  // for the workbench's binary-verbatim `composer.copyRequestId` command
+  // (workbench.desktop.main.js @29931829, class a2S: it reads the request id
+  // then `clipboard.writeText(id ?? "No request ID found")`). The core action
+  // owns the command id, the target resolution (`{kind:"composerId"|"editor"|"pane"}`)
+  // and the clipboard write; it asks here for the id because the extension
+  // owns the chat data (ChatTabService).
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "ide.getChatRequestId",
+      (tabId?: unknown): string | undefined => {
+        const id = typeof tabId === "string" && tabId.length > 0 ? tabId : undefined;
+        const tab = id ? tabs.listTabs().find((t) => t.id === id) : undefined;
+        const resolved = tab ?? resolveChatEditorTab(tabs);
+        return resolved ? lastChatRequestId(resolved) : undefined;
+      },
+    ),
+  );
+
+  // WORKER-GAPS-66A (`chat-tab-title-menu-inventory`): runtime target of the
+  // core action `composer.openPromptQuality` (binary-verbatim id, Cursor
+  // 3.25.9 @29785997; internal-gated in the title menu). Opens the fork's
+  // prompt-quality review panel (services/promptQualityService.ts) for the
+  // active chat tab's current human prompt.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ide.openPromptQualityPanel", async (): Promise<void> => {
+      const tab = resolveChatEditorTab(tabs);
+      const prompt = tab
+        ? (() => {
+          const human = tab.composer.bubbles.getAllInOrder().filter((b) => b.role === "human");
+          const lastBubble = human[human.length - 1];
+          return typeof lastBubble?.text === "string" ? lastBubble.text : "";
+        })()
+        : "";
+      if (!prompt.trim()) {
+        void vscode.window.showInformationMessage(
+          "IDE Agent: no prompt to review yet — ask the agent something first.",
+        );
+        return;
+      }
+      const panel = vscode.window.createWebviewPanel(
+        "ide.promptQuality",
+        "Prompt Quality",
+        vscode.ViewColumn.One,
+        { enableScripts: false },
+      );
+      panel.webview.html = buildPromptQualityPanelHtml(prompt, scorePrompt(prompt));
+    }),
+  );
+
   // ---- 2. Chat participant (@ide) ----------------------------------------
+  // Zero-placeholder (was a canned scaffold reply): @ide now runs a real
+  // turn against the ide-code sidecar engine, streaming the model's text
+  // into the VS Code chat response.
   const participant = vscode.chat.createChatParticipant(
     "ide.agent",
     async (
       request: vscode.ChatRequest,
       _chatContext: vscode.ChatContext,
       stream: vscode.ChatResponseStream,
-      _token: vscode.CancellationToken,
+      token: vscode.CancellationToken,
     ): Promise<void> => {
-      stream.progress("IDE Agent scaffold working…");
-      stream.markdown(
-        [
-          "**IDE Agent (scaffold)** — the agent engine is not wired up yet.",
-          "",
-          "You asked:",
-          "",
-          `> ${request.prompt}`,
-          "",
-          "When the engine lands, `@ide` will run the full agent loop — plan, tools,",
-          "edits, checkpoints — backed by the ide-code core. For now, try the IDE Agent",
-          "sidebar view for the chat UI skeleton.",
-        ].join("\n"),
-      );
+      const engineCfg = vscode.workspace.getConfiguration("ide.agent");
+      if (engineCfg.get<string>("engineMode", "sidecar") !== "sidecar") {
+        // Honest precondition (mirrors InlineEditService): the participant
+        // needs the real engine + a configured model to generate.
+        stream.markdown(
+          "**IDE Agent** — `@ide` needs the ide-code engine. Set `ide.agent.engineMode` to `\"sidecar\"` and configure a model, then try again.",
+        );
+        return;
+      }
+      const output = vscode.window.createOutputChannel("IDE Agent Chat Participant");
+      const adapter = new IdeCodeEngineAdapter({
+        enginePath: engineCfg.get<string>("enginePath", "") || defaultEnginePath(),
+        output,
+        // The chat-participant surface has no approval UI: tool calls that
+        // need approval are rejected ("skip"), reads still run. @ide answers
+        // and reads the workspace for real, but never mutates it — edits
+        // stay in the sidebar where the approval cards live.
+        requestApproval: () => Promise.resolve({ optionId: "skip" }),
+      });
+      token.onCancellationRequested(() => adapter.abortTurn());
+      try {
+        stream.progress("IDE Agent working…");
+        for await (const ev of adapter.runTurn({
+          prompt: request.prompt,
+          mode: "agent",
+          bubbleId: "ide-chat-participant",
+        })) {
+          if (ev.type === "textDelta") {
+            stream.markdown(ev.delta);
+          } else if (ev.type === "thinking") {
+            stream.progress(ev.text);
+          }
+          // toolCall / questionApproval / turnSettled: no card UI exists on
+          // this surface — the streamed text is what the user sees.
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        stream.markdown(`\n\n**IDE Agent error:** ${message}`);
+      } finally {
+        adapter.dispose();
+      }
     },
   );
   participant.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "icon.svg");
   context.subscriptions.push(participant);
 
   // ---- 3. Chat webview view ----------------------------------------------
-  const chatProvider = new ChatViewProvider(context, tabs, terminal, slash);
+  const chatProvider = new ChatViewProvider(context, tabs, terminal, slash, agentNotifications);
   activeChatView = chatProvider;
   context.subscriptions.push(vscode.window.registerWebviewViewProvider("ideAgent.chatView", chatProvider));
 
@@ -839,6 +3963,86 @@ export function activate(context: vscode.ExtensionContext): void {
   const sessionsProvider = new SessionsProvider();
   context.subscriptions.push(vscode.window.registerTreeDataProvider("ideAgent.sessionsView", sessionsProvider));
 
+  // ---- 4b. Chat Inbox tree view (Cursor Inbox CONCEPT parity: "what needs
+  // attention" — the STANDALONE tree-view SURFACE is TEAM DESIGN, see
+  // HONEST-DIVERGENCE in src/services/chatInboxService.ts) --------------------
+  // Aggregates REAL state only: pending tool-call approvals
+  // (HumanReviewService), unanswered clarifying questions
+  // (ComposerDataService.getPendingQuestions) and running agent turns
+  // (ComposerDataService.isRunning) across chat tabs. Evidence and
+  // HONEST-DIVERGENCE notes live in src/services/chatInboxService.ts —
+  // notably "PRs in review" is NOT included: the changelog mentions it but
+  // no wiring to the inbox was found in the Cursor 3.25.9 binary (UNKNOWN).
+  const inbox = new ChatInboxService(tabs);
+  context.subscriptions.push(inbox);
+  const inboxProvider = new ChatInboxTreeProvider(inbox);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("ideAgent.inboxView", inboxProvider),
+    inboxProvider,
+    vscode.commands.registerCommand("ideAgent.inbox.revealTab", (tabId: string) => {
+      // Switch to the tab that needs the user, then focus the chat view so
+      // the approval card / question widget / running turn is visible.
+      if (typeof tabId === "string" && tabs.switchTab(tabId)) {
+        void vscode.commands.executeCommand("ideAgent.chatView.focus");
+      }
+    }),
+  );
+
+  // ---- 4c. Onboarding checklist tree view (DEV-GAPS-5-ONBOARDING) ----------
+  // Cursor's aiserver.v1.OnboardingChecklistService (verified in shipped
+  // 3.25.9) is: listable, completable, dismissible items, separate from the
+  // first-run onboarding flow. The default items are OUR OWN (Cursor does
+  // not publish its list — see HONEST-DIVERGENCE in
+  // src/services/onboardingChecklistService.ts). `createTreeView` (not
+  // registerTreeDataProvider) is used so checkbox toggles flow through
+  // onDidChangeCheckboxState. The view contribution is gated on the
+  // `ide.onboarding.showChecklist` config (package.json) so the user can
+  // re-show the checklist after finishing it.
+  const onboarding = new OnboardingChecklistService(context);
+  context.subscriptions.push(onboarding);
+  const onboardingProvider = new OnboardingChecklistTreeProvider(onboarding);
+  const onboardingView = vscode.window.createTreeView("ideAgent.onboardingChecklist", {
+    treeDataProvider: onboardingProvider,
+    showCollapseAll: false,
+    canSelectMany: false,
+  });
+  onboardingView.onDidChangeCheckboxState((e) => {
+    // e.items: ReadonlyArray<[element, checkboxState]>.
+    for (const [element, checkboxState] of e.items) {
+      const node = element as OnboardingTreeNode;
+      const id = node.node === "item" && typeof node.item.id === "string" ? node.item.id : undefined;
+      if (!id) continue;
+      if (checkboxState === vscode.TreeItemCheckboxState.Checked) {
+        void onboarding.completeItem(id);
+      } else {
+        void onboarding.uncompleteItem(id);
+      }
+    }
+  });
+  context.subscriptions.push(
+    onboardingView,
+    onboardingProvider,
+    vscode.commands.registerCommand("ide.onboarding.showChecklist", () => {
+      void vscode.commands.executeCommand("ideAgent.onboardingChecklist.focus");
+    }),
+    vscode.commands.registerCommand("ide.onboarding.resetChecklist", () => {
+      void onboarding.resetChecklist();
+    }),
+    vscode.commands.registerCommand("ide.onboarding.completeItem", (itemId: string) => {
+      // Called from the tree item click / inline button with the item id as
+      // the argument. Guard the argument so a stray invocation never touches
+      // real state (service itself also ignores unknown ids).
+      if (typeof itemId === "string") {
+        void onboarding.completeItem(itemId);
+      }
+    }),
+    vscode.commands.registerCommand("ide.onboarding.dismissItem", (itemId: string) => {
+      if (typeof itemId === "string") {
+        void onboarding.dismissItem(itemId);
+      }
+    }),
+  );
+
   // ---- 5. Default context keys for the contributed when-clauses ------------
   // P3 (QA-FILE-07): the four dead keys (promptBarVisible, promptBarFocused,
   // composerFocused, subagentTabsVisible) were removed — nothing ever sets
@@ -846,6 +4050,22 @@ export function activate(context: vscode.ExtensionContext): void {
   const defaults: Array<[string, boolean]> = [
     ["ideAgent.chatInputFocused", false],
     ["ideAgent.toolApprovalVisible", false],
+    // DEV-GAPS-12 (agent-shell-approval-keyboard-flow): gates the core
+    // `composer.approvePendingShellToolDecision` (Enter) /
+    // `composer.approvePendingShellToolDecisionAllowlist` (Shift+Enter) /
+    // `composer.skipPendingShellToolDecision` (Esc) keybindings; set by the
+    // approval subscription above while a shell-tool approval is pending.
+    ["ideAgent.shellToolPendingKeybindingsActive", false],
+    ["ideAgent.shellToolAllowlistShortcutActive", false],
+    // GAPS-14 (agent-shell-approval-keyboard-flow): gates core
+    // `composer.cancelTerminalToolCall` (Shift+Backspace); set by
+    // TerminalService while a terminal tool call runs.
+    ["ideAgent.terminalToolCallRunning", false],
+    // DEV-FULLSCREEN-COMPOSER: mirrors the VERBATIM Cursor context key
+    // `glassEditorPanelFullscreen` (binary workbench.glass.main.js 3.25.9;
+    // read by the `glass.enterEditorPanelFullscreen` /
+    // `glass.exitEditorPanelFullscreen` keybinding `when` clauses in core).
+    ["glassEditorPanelFullscreen", false],
   ];
   for (const [key, value] of defaults) {
     void vscode.commands.executeCommand("setContext", key, value);
@@ -856,7 +4076,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // become unhandled rejections that silently disable Tab.
   // DEV-HOOKS: the Tab engine gets the hook service for beforeTabFileRead /
   // afterTabFileEdit (Cursor parity).
-  activateTab(context, hookService).catch((err: unknown) => {
+  // TAB-BACKEND: Tab reuses the active chat tab's engine adapter — the SAME
+  // sidecar process (dedicated tab session inside it). It never spawns its
+  // own engine. In stub engine mode the getter resolves a non-engine and Tab
+  // stays honestly silent ("no model backend", no fake suggestions).
+  activateTab(context, hookService, {
+    getEngineAdapter: () => tabs.activeComposer.getEngineAdapter(),
+  }).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     void vscode.window.showWarningMessage(`IDE Agent: Tab completion failed to activate (${message}).`);
   });
@@ -879,27 +4105,83 @@ export function activate(context: vscode.ExtensionContext): void {
       .catch(() => {});
   }
 
-  // ---- Agents Window ----
+  // DEV-GAPS-34 (hooks-21-events): workspaceOpen "fires once when Cursor
+  // opens a workspace and again on every workspace folder change. Skipped
+  // when the window has zero workspace folders." (cursor.com/docs/hooks).
   context.subscriptions.push(
-    vscode.commands.registerCommand("ide.openAgentsWindow", () => {
-      // Opens the Agents Window via the built-in workbench command
-      // (workbench.action.openAgentsWindow), which routes through the
-      // native host service to the main process.
-      void vscode.commands.executeCommand("workbench.action.openAgentsWindow").then(
-        undefined,
-        () => {
-          void vscode.window.showErrorMessage(
-            "Could not open the Agents Window. Please try again.",
-            "Retry"
-          ).then(selection => {
-            if (selection === "Retry") {
-              void vscode.commands.executeCommand("ide.openAgentsWindow");
-            }
-          });
-        }
-      );
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const roots = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+      if (roots.length === 0) {
+        return; // docs: skipped when the window has zero workspace folders
+      }
+      if (hookService.hasHooks("workspaceOpen")) {
+        void hookService
+          .runHooks("workspaceOpen", { workspaceRoots: roots })
+          .catch(() => {});
+      }
+    }),
+  );
+
+  // ---- Agents Window (F7 fix 2026-10-20) ----
+  // Opens/focuses the IDE's dedicated Agents ("glass") window via the core
+  // `ide.openOrFocusGlassWindow` command — the analog of Cursor's
+  // `cursor.openOrFocusGlassWindow` (binary evidence in
+  // src/vs/workbench/contrib/composer/electron-browser/glassWindowActions.ts).
+  // Must NEVER delegate to the stock `workbench.action.openAgentsWindow`
+  // (the VS Code Copilot-style agent-sessions window,
+  // `INativeHostService.openAgentsWindow`, precondition
+  // `chat.agent.enabled`) — opening that window was finding F7.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ide.openAgentsWindow", (...args: unknown[]) => {
+      const rawArgs = args[0] as { agentsWindowOpenSource?: unknown } | undefined;
+      const agentsWindowOpenSource =
+        typeof rawArgs?.agentsWindowOpenSource === "string"
+          ? rawArgs.agentsWindowOpenSource
+          : "ide_extension_open_agents_window";
+      return vscode.commands.executeCommand("ide.openOrFocusGlassWindow", {
+        agentsWindowOpenSource,
+      });
     })
   );
+
+  // ---- Subagent preview tray (WORKER-GAPS-11D) ----
+  // Cursor `glass.openSubagentPreviewInAgentsTray` parity ("Open subagent
+  // preview in agents tray", palette-hidden f1:!1, glassCategory Agent).
+  // Validates args against Cursor's schema, opens/focuses the Agents Window
+  // (the "agents tray" surface), and emits
+  // `openSubagentPreviewInAgentsTrayRequested` for tray consumers.
+  // See subagentPreviewService.ts for binary evidence + HONEST-DIVERGENCE.
+  const subagentPreviews = new SubagentPreviewService({
+    executeCommand: (cmd, args) => vscode.commands.executeCommand(cmd, args),
+  });
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      OPEN_SUBAGENT_PREVIEW_IN_AGENTS_TRAY_COMMAND,
+      (rawArgs: unknown) => subagentPreviews.requestPreview(rawArgs),
+    ),
+    subagentPreviews,
+  );
+
+  // ---- Desktop bridge (ide-code desktop ls|send parity, spec §3.1/§5 P2) ---
+  // Unix-socket HTTP server the `ide-code desktop` CLI talks to:
+  // ~/.ide-code/desktop-bridge/instance-<pid>.json advertises the socket +
+  // 64-hex bearer token. Started last so every service it reads (chat tabs)
+  // is already up; failures are surfaced, never silent.
+  const desktopBridge = new DesktopBridgeServer({
+    chatTabs: tabs,
+    appVersion: context.extension.packageJSON?.version ?? "0.1.0-alpha",
+    userDataDir: context.globalStorageUri?.fsPath ?? "",
+  });
+  desktopBridgeServerRef = desktopBridge;
+  desktopBridge.start().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    void vscode.window.showWarningMessage(
+      `IDE Agent: desktop bridge failed to start (${message}) — "ide-code desktop" will not see this instance.`,
+    );
+  });
+
+  // Extension exports: the `cursor.*` API surface (Cursor parity).
+  return { cursor: cursorApi };
 }
 
 async function pickMode(composer: ComposerDataService): Promise<void> {
@@ -945,6 +4227,39 @@ export interface IdeChatUiConfig {
   fontSmoothingAntialiased: boolean;
   /** Cmd/Ctrl+P opens the file picker in the chat input. */
   cmdPFilePicker: boolean;
+  /** Max width of agent conversations in px (mirrors cursor.composer.chatMaxWidth).
+   *  Always normalized to [600, 1600] by normalizeChatWidth; default 900 is
+   *  our choice — Cursor's canonical default is UNKNOWN (see chatWidthService). */
+  chatMaxWidth: number;
+}
+
+/**
+ * WORKER-GAPS-24C: canonicalize a raw `ide.composer.conversationDensity`
+ * value to one of the 3 changelog levels. Mirrors Cursor 3.25.6
+ * (workbench.glass.main.js): normalizeDensity passes through the known
+ * values, "verbose"→"detailed", "minimal"→"compact-all-grouped", and
+ * unknown→"compact-all-grouped"; the SNv settings migration maps legacy
+ * "compact-shells"→"compact-ungrouped" (Balanced) and
+ * "compact-grouped"→"compact-all-grouped" (Compact).
+ */
+export function normalizeConversationDensity(
+  raw: unknown,
+): "compact-all-grouped" | "compact-ungrouped" | "detailed" {
+  switch (raw) {
+    case "detailed":
+      return "detailed";
+    case "compact-shells": // legacy "Diff Focus" → Balanced
+    case "compact-ungrouped":
+      return "compact-ungrouped";
+    case "compact-grouped": // legacy "Grouped" → Compact
+    case "compact-all-grouped":
+    case "minimal":
+      return "compact-all-grouped";
+    case "verbose":
+      return "detailed";
+    default:
+      return "compact-all-grouped";
+  }
 }
 
 /** Read the chat UI settings into a webview-safe snapshot. */
@@ -955,12 +4270,21 @@ export function readChatUiConfig(): IdeChatUiConfig {
   const density = composer.get<string>("conversationDensity", "compact-all-grouped");
   return {
     textSizeScale: [0.85, 1, 1.15, 1.3].includes(scale) ? scale : 1,
-    conversationDensity:
-      density === "detailed" || density === "compact-ungrouped" ? density : "compact-all-grouped",
+    // WORKER-GAPS-24C: canonicalize the density at the config boundary.
+    // Mirrors Cursor 3.25.6 (workbench.glass.main.js): normalizeDensity
+    // passes through the 5 known values, maps "verbose"→"detailed",
+    // "minimal"→"compact-all-grouped", and falls back to
+    // "compact-all-grouped" for anything else; the SNv migration maps
+    // legacy "compact-shells"→Balanced and "compact-grouped"→Compact so
+    // the webview only ever sees the 3 changelog levels.
+    conversationDensity: normalizeConversationDensity(density),
     codeBlockWordWrap: composer.get<boolean>("codeBlockWordWrap", false),
     showEmptyStateTips: composer.get<boolean>("showEmptyStateTips", true),
     fontSmoothingAntialiased: general.get<boolean>("fontSmoothingAntialiased", true),
     cmdPFilePicker: composer.get<boolean>("cmdPFilePicker2", true),
+    // CHAT-WIDTH: normalizeChatWidth clamps hand-edited values to
+    // [600, 1600] and falls back to our 900px default for non-numbers.
+    chatMaxWidth: normalizeChatWidth(composer.get<unknown>("chatMaxWidth", 900)),
   };
 }
 
@@ -984,8 +4308,12 @@ function getEnabledModels(): string[] {
  * Callers: manageModels (after writing the setting), the
  * `ide.agent.enabledModels` config-change listener, and once at startup
  * (covers the persisted-selection restore path).
+ *
+ * Named export (not module-private) ONLY so the Round B lock-in tests
+ * (run-roundb-lockin-tests.ts, RB-X3 items 1+2) can exercise the real
+ * reconcile path; nothing else in the extension imports it.
  */
-async function reconcileSelectionWithAllowlist(composer: ComposerDataService): Promise<boolean> {
+export async function reconcileSelectionWithAllowlist(composer: ComposerDataService): Promise<boolean> {
   const allowlist = getEnabledModels();
   const current = composer.models.getSelection();
   // Virtual selectors ("auto"/"cursor-default") are automatic, never a fixed
@@ -1034,8 +4362,12 @@ async function reconcileSelectionWithAllowlist(composer: ComposerDataService): P
  *
  * Returns the previous label of every tab whose selection changed, for honest
  * reporting ("which tabs were affected").
+ *
+ * Named export (not module-private) ONLY so the Round B lock-in tests
+ * (run-roundb-lockin-tests.ts, RB-X3 item 1) can exercise the real multi-tab
+ * path; nothing else in the extension imports it.
  */
-async function reconcileAllTabsWithAllowlist(
+export async function reconcileAllTabsWithAllowlist(
   tabs: ChatTabService,
 ): Promise<Array<{ tabId: string; previousLabel: string }>> {
   const changed: Array<{ tabId: string; previousLabel: string }> = [];
@@ -1148,6 +4480,80 @@ export async function pickModel(composer: ComposerDataService): Promise<void> {
         : 'IDE Agent: model set to Auto for new turns; existing sessions keep their model until a new chat.',
   );
 }
+/**
+ * DEV-GAPS-29 (chat-cycle-model-parameter fix, 2026-10-20): real
+ * implementation of Cursor 3.25.9's `lhw()` = cycleFocusedTargetInWindow.
+ * Scans the current model's parameterDefinitions (services/
+ * modelParameterService.ts) for `isCycleableByHotkey && options.length > 1`
+ * — the binary's `isCycleableByHotkey&&count>1` lookup — and cycles the
+ * first cycleable parameter to its next option (wrapping). Returns true when
+ * a parameter was cycled, false when nothing is cycleable; the caller
+ * (ide.cycleModelParameter) then falls back to ide.cycleModel, exactly as
+ * the binary's `lhw() || executeCommand(cycleModel)` does.
+ *
+ * The fork's real per-model multi-option surface is the engine catalog's
+ * model `variant` (e.g. thinking/non-thinking variants of the same model);
+ * the value is applied via adapter.setModel (engine first, like cycleModel)
+ * and persisted per model in globalState. Cursor's binary keywords
+ * ("effort"/"thinking") have no counterpart in our engine catalog — no fake
+ * effort levels are invented; see modelParameterService.ts.
+ */
+async function cycleFocusedModelParameter(
+  composer: ComposerDataService,
+  globalState: vscode.Memento,
+): Promise<boolean> {
+  const models = await loadEngineModels(composer, "the model parameter cycler");
+  if (!models) {
+    return false;
+  }
+  const current = composer.models.getSelection();
+  const definitions = buildModelParameterDefinitions(models, current.ref);
+  const cycleable = findCycleableParameters(definitions);
+  if (cycleable.length === 0) {
+    return false;
+  }
+  // Cursor cycles the FOCUSED parameter target in the window; this fork has
+  // a single parameter surface, so the first cycleable parameter of the
+  // current model is the target.
+  const def = cycleable[0]!;
+  const stateKey = `ideAgent.modelParameter.${current.ref!.providerID}.${current.ref!.id}.${def.id}`;
+  const stored = globalState.get<string>(stateKey);
+  const next = nextParameterOption(def, stored ?? current.ref!.variant);
+  if (def.id === "variant") {
+    const ref: ModelRef = {
+      id: current.ref!.id,
+      providerID: current.ref!.providerID,
+      ...(next ? { variant: next } : {}),
+    };
+    const adapter = composer.getEngineAdapter();
+    try {
+      await adapter.setModel!(ref);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      void vscode.window.showErrorMessage(
+        `IDE Agent: the engine rejected the parameter switch — ${message}.`,
+      );
+      return false;
+    }
+    await globalState.update(stateKey, next);
+    const info: EngineModelInfo = {
+      id: ref.id,
+      providerID: ref.providerID,
+      name: current.label,
+      ...(next ? { variant: next } : {}),
+    };
+    // The picker shows the bare model name, so append the cycled variant to
+    // keep the header honest about which variant is active.
+    const label = next ? `${ModelService.labelFor(info)} (${next})` : current.label;
+    composer.models.setSelection({ kind: "explicit", ref, label });
+    void vscode.window.showInformationMessage(
+      `IDE Agent: ${def.label} cycled to "${next}". Applies to new turns immediately.`,
+    );
+    return true;
+  }
+  return false;
+}
+
 /**
  * M-09 (real): cycle to the next ENABLED model.
  *
@@ -1299,11 +4705,84 @@ async function restoreCheckpoint(composer: ComposerDataService): Promise<void> {
   }
 }
 
-/** K-parity: generate a git commit message from the staged diff.
+/** DEV-GAPS-65 `cursor-install-cli` (Cursor parity).
  *
- * Asks the agent for a one-line message, waits for the turn, then fills the
- * Source Control input box (falls back to offer-copy when the git API is
- * unavailable). Mirrors cursor.composer.generateGitCommitMessage.
+ * VS Code-facing half of the binary-verbatim `cursor.installCli` handler
+ * (workbench.desktop.main.js @36708706, Cursor 3.25.9). The decision logic
+ * lives in `./cli-install` (node-tested); this builds the real probe deps
+ * (PATH + ~/.local/bin, mirroring `checkPathForExecutables` @40635349) and
+ * the real side effects: globalState persistence (Cursor persists in
+ * `applicationUserPersistentStorage` under the same `cliDetectionStatus`
+ * key — HONEST-DIVERGENCE), an info toast, and a Panel terminal that runs
+ * the verbatim install command.
+ */
+async function runInstallCliCommand(context: vscode.ExtensionContext): Promise<void> {
+  const probeDeps: CliProbeDeps = {
+    pathEnv: process.env.PATH,
+    pathDelimiter: path.delimiter,
+    homeDir: os.homedir(),
+    joinPath: (...parts: string[]) => path.join(...parts),
+    isExecutableFile: (candidate: string) => {
+      try {
+        if (!fs.existsSync(candidate)) {
+          return false;
+        }
+        if (process.platform === "win32") {
+          return true;
+        }
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    executableVariants: (name: string) =>
+      process.platform === "win32" ? [name, `${name}.exe`, `${name}.cmd`] : [name],
+  };
+  const refreshStatus = (): CliDetectionStatus =>
+    buildCliDetectionStatus(probeCliExecutables(probeDeps), Date.now());
+  await runInstallCliFlow({
+    readStatus: () =>
+      parseCliDetectionStatus(context.globalState.get(CLI_DETECTION_STATUS_STORAGE_KEY)),
+    refreshStatus,
+    writeStatus: async (status) => {
+      await context.globalState.update(CLI_DETECTION_STATUS_STORAGE_KEY, status);
+    },
+    showAlreadyInstalled: () => {
+      // HONEST-DIVERGENCE: binary toast text (nls 10693) UNKNOWN — the
+      // message constant is a documented placeholder, not a verbatim string.
+      void vscode.window.showInformationMessage(ALREADY_INSTALLED_MESSAGE);
+    },
+    runInstallInPanelTerminal: (command: string) => {
+      // Binary: createTerminal({location: Panel}) → set active, show panel,
+      // focus, then run the command. In VS Code ext API terms:
+      // createTerminal({location: TerminalLocation.Panel}) + show() focuses
+      // the panel terminal; sendText(text, true) types + executes.
+      const terminal = vscode.window.createTerminal({
+        name: "Install CLI",
+        location: vscode.TerminalLocation.Panel,
+      });
+      terminal.show();
+      terminal.sendText(command, true);
+    },
+  });
+}
+
+/** DEV-GAPS-54 `ai-commit-message-generation` (Cursor parity).
+ *
+ * Mirrors Cursor's `cursor.generateGitCommitMessage` pipeline
+ * (cursor-always-local, Cursor 3.25.9):
+ *   GetCurrentIndexAndRecentCommits({rawUris, rootPath})
+ *     -> {diffs, previousCommitMessages}
+ *   generateCommitMessage({diffs, previousCommitMessages, explicitContext})
+ *     -> input.setValue(message)
+ *
+ * Flow: prefer the staged (index) change set, fall back to the working
+ * tree when nothing is staged; fetch recent commit subjects as style
+ * context; build the explicit context; run one composer turn and wait for
+ * it; write the message into the SCM input box (falling back to an
+ * offer-copy notification when the git extension API is unavailable).
+ * Errors surface as notifications.
  */
 async function generateGitCommitMessage(composer: ComposerDataService): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -1316,41 +4795,53 @@ async function generateGitCommitMessage(composer: ComposerDataService): Promise<
     void vscode.window.showInformationMessage("IDE Agent: the workspace folder is not a git repository.");
     return;
   }
-  const diff = await runGit(folder, ["diff", "--cached", "--", "."]);
+  // Cursor: collects staged (index-group) OR working-tree files. Prefer the
+  // index; use the working tree only when the index is empty.
+  let source: CommitDiffSource = "staged";
+  let diff = await runGit(folder, ["diff", "--cached", "--", "."]);
+  let stat = await runGit(folder, ["diff", "--cached", "--stat", "--", "."]);
+  if (!diff.trim()) {
+    diff = await runGit(folder, ["diff", "--", "."]);
+    stat = await runGit(folder, ["diff", "--stat", "--", "."]);
+    source = "working-tree";
+  }
   if (!diff.trim()) {
     void vscode.window.showInformationMessage(
-      "IDE Agent: no staged changes — stage something first (git add).",
+      "IDE Agent: no changes to describe — modify a file or stage something first (git add).",
     );
     return;
   }
+  // Recent commit messages as style reference (Cursor's
+  // previousCommitMessages input). Best-effort: empty on failure.
+  const previousCommitMessages = parseRecentCommitMessages(
+    await runGit(folder, ["log", "--format=%s", "-n", String(COMMIT_MESSAGE_RECENT_COUNT), "--", "."]),
+  );
   if (composer.isRunning) {
     void vscode.window.showWarningMessage("IDE Agent: wait for the current turn to finish first.");
     return;
   }
-  const stat = await runGit(folder, ["diff", "--cached", "--stat", "--", "."]);
   const before = new Set(composer.bubbles.getOrderedIds());
-  composer.submit(
-    `Write a single git commit message for the staged changes below. Rules: imperative mood, ` +
-      `subject line of 72 characters or fewer, no body unless the change needs explanation, ` +
-      `output ONLY the message text — no code fences, no explanation.\n\n${stat}\n\n${diff.slice(0, 12000)}`,
+  const prompt = buildCommitMessagePrompt({ diff, stat, previousCommitMessages, source });
+  const message = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "Generating commit message…" },
+    async () => {
+      composer.submit(prompt);
+      return waitForNewAssistantText(composer, before, 180_000);
+    },
   );
-  const message = await waitForNewAssistantText(composer, before, 180_000);
-  const cleaned =
-    message
-      .replace(/^```[a-z]*\s*/i, "")
-      .replace(/\s*```$/, "")
-      .trim()
-      .split("\n")[0]
-      ?.trim() ?? "";
+  const cleaned = cleanCommitMessage(message);
   if (!cleaned) {
     void vscode.window.showWarningMessage("IDE Agent: the agent did not produce a commit message.");
     return;
   }
   const repo = findGitRepo(folder);
   if (repo) {
+    // Cursor: input.setValue(message).
     repo.inputBox.value = cleaned;
     void vscode.window.showInformationMessage(
-      "IDE Agent: commit message generated — review it in Source Control before committing.",
+      source === "staged"
+        ? "IDE Agent: commit message generated — review it in Source Control before committing."
+        : "IDE Agent: commit message generated from unstaged changes (nothing is staged) — review it in Source Control before committing.",
     );
   } else {
     const choice = await vscode.window.showInformationMessage(
@@ -1363,16 +4854,14 @@ async function generateGitCommitMessage(composer: ComposerDataService): Promise<
   }
 }
 
-/** Run git and return stdout ("" on any failure). */
+/** Run git and return stdout ("" on any failure).
+ * DEV-GAPS-14 `ext-git-sanitize`: URL credentials stripped, safe `-c`
+ * configs forced before the subcommand. */
 function runGit(cwd: string, args: string[]): Promise<string> {
-  return new Promise((resolve) => {
-    childProcess.execFile(
-      "git",
-      args,
-      { cwd, timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
-      (err, stdout) => resolve(err ? "" : stdout),
-    );
-  });
+  return gitExecFile(cwd, args, { timeoutMs: 15_000, maxBuffer: 4 * 1024 * 1024 }).then(
+    ({ stdout }) => stdout,
+    () => "",
+  );
 }
 
 /** Best-effort access to the built-in git extension's API. */
@@ -1413,6 +4902,95 @@ async function waitForNewAssistantText(
 }
 
 /** K-13 (Cursor parity): Cmd/Ctrl+Shift+E — send selection/file + diagnostics to the agent to fix. */
+/**
+ * DEV-GAPS-83 (agent-fix-with-agent-error): handler for `ide.fixWithAgent`,
+ * the extension runtime of the core `editor.action.fixInAgent` command.
+ * Builds the production seam for services/fixWithAgentService.ts:
+ * documents via the workspace API, dedupe against the ACTIVE composer's
+ * bubbles (role "human" — the fork's BubbleRole for user bubbles),
+ * new-chat via ChatTabService.createAndActivate, context chip via the
+ * shared chat attach host (explicit new-tab id so the chip lands in the
+ * NEW tab), submit via the target tab's composer.
+ */
+async function fixWithAgentFromCore(
+  tabs: ChatTabService,
+  uriString: unknown,
+  errorMessage: unknown,
+  range: unknown,
+  addToCurrent: unknown,
+): Promise<void> {
+  if (typeof uriString !== "string" || typeof errorMessage !== "string" || !range || typeof range !== "object") {
+    return;
+  }
+  const r = range as Partial<FixWithAgentRange>;
+  if (
+    typeof r.startLineNumber !== "number" || typeof r.startColumn !== "number" ||
+    typeof r.endLineNumber !== "number" || typeof r.endColumn !== "number"
+  ) {
+    return;
+  }
+  let targetTabId: string | undefined;
+  await fixErrorWithAgent(
+    {
+      uriString,
+      errorMessage,
+      range: {
+        startLineNumber: r.startLineNumber,
+        startColumn: r.startColumn,
+        endLineNumber: r.endLineNumber,
+        endColumn: r.endColumn,
+      },
+      addToCurrent: addToCurrent !== false,
+    },
+    {
+      openDocument: async (uri) => {
+        try {
+          const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(uri));
+          return {
+            lineCount: doc.lineCount,
+            getLines: (startLine: number, endLine: number) => {
+              const from = Math.max(1, Math.min(startLine, doc.lineCount));
+              const to = Math.max(from, Math.min(endLine, doc.lineCount));
+              return doc.getText(
+                new vscode.Range(from - 1, 0, to - 1, doc.lineAt(to - 1).range.end.character),
+              );
+            },
+          };
+        } catch {
+          return undefined;
+        }
+      },
+      lastHumanBubbleText: () => {
+        const humans = tabs.activeComposer.bubbles.getAllInOrder().filter((b) => b.role === "human");
+        return humans.length ? humans[humans.length - 1].text : undefined;
+      },
+      isGenerating: () => tabs.activeComposer.isRunning,
+      createNewChat: async () => {
+        const tab = tabs.createAndActivate({ mode: "agent" });
+        targetTabId = tab.id;
+      },
+      addSelectionContext: (label: string, content: string) => {
+        makeChatAttachHost(tabs, targetTabId).postToWebview({ type: "addSelectionContext", label, content });
+      },
+      submit: (prompt: string) => {
+        const target = targetTabId
+          ? tabs.listTabs().find((t) => t.id === targetTabId)?.composer
+          : tabs.activeComposer;
+        (target ?? tabs.activeComposer).submit(prompt);
+      },
+      focusChat: () => focusChatSurface(tabs),
+      trackEvent: (eventName: string, data: Record<string, unknown>) => {
+        if (!newAgentTelemetryChannel) {
+          newAgentTelemetryChannel = vscode.window.createOutputChannel("IDE Agent");
+        }
+        newAgentTelemetryChannel.appendLine(
+          `[telemetry] ${eventName} useCurrent=${String(data.useCurrent)} mode=${String(data.mode)}`,
+        );
+      },
+    },
+  );
+}
+
 async function fixWithAI(tabs: ChatTabService, composer: ComposerDataService): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -1465,6 +5043,67 @@ async function focusChatSurface(tabs: ChatTabService): Promise<void> {
 }
 
 /**
+ * DEV-FULLSCREEN-COMPOSER (Cursor 3.25.9 parity).
+ *
+ * Binary: `glass.enterEditorPanelFullscreen` ("Enter Full Screen") /
+ * `glass.exitEditorPanelFullscreen` ("Exit Full Screen"), both bound to
+ * Ctrl/Cmd+Shift+M with mutually exclusive `when` clauses on the fullscreen
+ * state. Our surface is the chat editor tab (`ide-chat` URI scheme); the
+ * "fullscreen" is the editor group maximized via the real workbench
+ * commands — never a CSS/DOM fake.
+ *
+ * State is tracked here AND mirrored to the VERBATIM Cursor
+ * `glassEditorPanelFullscreen` context key (binary workbench.glass.main.js
+ * 3.25.9, `VXt`; read by the `glass.enterEditorPanelFullscreen` /
+ * `glass.exitEditorPanelFullscreen` keybinding `when` clauses in core
+ * composerActions.ts). Enter uses the maximize-only
+ * `workbench.action.maximizeEditorHideSidebar` so re-entering (or entering
+ * while the user already maximized manually) is a no-op instead of a
+ * toggle-off; exit uses `workbench.action.toggleMaximizeEditorGroup` to
+ * restore the previous layout.
+ */
+let fullscreenComposerActive = false;
+
+async function setFullscreenComposerActive(active: boolean): Promise<void> {
+  fullscreenComposerActive = active;
+  // WORKER-GAPS-20C: verbatim binary key `glassEditorPanelFullscreen`
+  // (supersedes the earlier `composer.fullscreenActive` analog).
+  await vscode.commands.executeCommand("setContext", "glassEditorPanelFullscreen", active);
+}
+
+async function enterFullscreenComposer(tabs: ChatTabService): Promise<void> {
+  if (fullscreenComposerActive) {
+    return;
+  }
+  if (openChatAsEditorTabs()) {
+    await openChatEditor(tabs, undefined, tabs.activeTab.id);
+  } else {
+    // Sidebar surface: open the chat as an editor tab just for this
+    // fullscreen session (does NOT flip the user's ide.chat.openAsEditorTabs
+    // preference); maximizing the editor group only makes sense for a tab.
+    await vscode.commands.executeCommand(
+      "vscode.openWith",
+      chatEditorUriForTab(tabs.activeTab.id),
+      CHAT_EDITOR_VIEW_TYPE,
+    );
+  }
+  await vscode.commands.executeCommand("workbench.action.maximizeEditorHideSidebar");
+  await setFullscreenComposerActive(true);
+  // Move DOM focus into the composer input once the tab is maximized.
+  makeChatAttachHost(tabs).postToWebview({ type: "focusInput" });
+}
+
+async function exitFullscreenComposer(tabs: ChatTabService): Promise<void> {
+  if (!fullscreenComposerActive) {
+    return;
+  }
+  await vscode.commands.executeCommand("workbench.action.toggleMaximizeEditorGroup");
+  await setFullscreenComposerActive(false);
+  // Return focus to the chat on the user's configured surface.
+  await focusChatSurface(tabs);
+}
+
+/**
  * REVERIFY-P2-3 (H2): shared editor-tab-aware attach host. ALL chat-attach
  * paths (addToChat, browser image/element attach, native browser bridge,
  * fixWithAI) must route through here so chips land in the OPEN chat editor
@@ -1511,6 +5150,225 @@ function makeChatAttachHost(tabs: ChatTabService, explicitTabId?: string): AddTo
   };
 }
 
+/**
+ * WORKER-GAPS-22A (agent-new-agent-command-family): runtime of the
+ * workbench-core `glass.newAgent*` family (Cursor 3.25.9 parity,
+ * workbench.glass.main.js @45354715).
+ *
+ * Binary `newAgent` run branches (verbatim):
+ *  1. args[0].cloudRepoUrls is an array -> emit
+ *     `newAgentWithCloudTargetRequested` {repoUrls} and return.
+ *  2. args[0].folderUri is a non-empty string -> parse as a URI; on parse
+ *     failure or non-`file` scheme -> emit `newAgentRequested` (plain new
+ *     agent) and return; otherwise resolve the single-folder workspace
+ *     identifier and emit `newAgentWithWorkspaceTargetRequested`
+ *     (presentation "picker-with-files" when source === "cli").
+ *  3. Default -> emit `newAgentRequested` (plain new agent).
+ *
+ * Fork port (real behavior, ChatTabService-owned):
+ *  1. Cloud repos: the fork has no cloud-agent target service (honest
+ *     divergence) — a new agent tab is created and every repo URL is
+ *     attached as a context chip, so the agent starts with the repos in
+ *     context instead of silently dropping them.
+ *  2. folderUri: `file`-scheme URIs are added to the workspace folders (so
+ *     the new agent targets that folder, the fork's analog of Cursor's
+ *     workspace-targeted agent) before the new agent tab opens; parse
+ *     failure / non-file scheme falls through to the plain new agent,
+ *     exactly like the binary.
+ *  3. Default (incl. Ctrl+N "keyboard_shortcut" source): new agent tab +
+ *     reveal on the configured chat surface.
+ *  `shouldOpenEditorPanel` (Ctrl+Alt+N "preserve editor panel"): the new
+ *  agent tab is opened in the EDITOR panel (chat editor tab) directly,
+ *  bypassing the sidebar fallback — the editor panel stays visible, which
+ *  is the fork's real meaning of Cursor's "preserve editor panel".
+ *
+ * Telemetry: the core forwards the binary's
+ * `trackEvent("agent_layout.new_agent_clicked", {source, keybinding})`
+ * payload in `args`; it is logged to the IDE Agent output channel here
+ * (no fake analytics service).
+ */
+export interface NewAgentArgs {
+  source?: string;
+  keybinding?: string;
+  cloudRepoUrls?: string[];
+  folderUri?: string;
+  shouldOpenEditorPanel?: boolean;
+}
+
+let newAgentTelemetryChannel: vscode.OutputChannel | undefined;
+/** W65D (chat-cancel-generation-shortcut): inspectable log for the binary's
+ * trackEvent("composer.cancel_chat", {composerId, source:"cmd_backspace"}). */
+let cancelChatTelemetryChannel: vscode.OutputChannel | undefined;
+
+export function sanitizeNewAgentArgs(raw: unknown): NewAgentArgs | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const out: NewAgentArgs = {};
+  let known = false;
+  if (typeof record.source === "string") {
+    out.source = record.source;
+    known = true;
+  }
+  if (typeof record.keybinding === "string") {
+    out.keybinding = record.keybinding;
+    known = true;
+  }
+  if (Array.isArray(record.cloudRepoUrls)) {
+    const urls = record.cloudRepoUrls.filter(
+      (u): u is string => typeof u === "string" && u.trim().length > 0,
+    );
+    if (urls.length > 0) {
+      out.cloudRepoUrls = urls;
+      known = true;
+    }
+  }
+  if (typeof record.folderUri === "string" && record.folderUri.length > 0) {
+    out.folderUri = record.folderUri;
+    known = true;
+  }
+  if (record.shouldOpenEditorPanel === true) {
+    out.shouldOpenEditorPanel = true;
+    known = true;
+  }
+  return known ? out : undefined;
+}
+
+export async function newAgent(tabs: ChatTabService, args?: NewAgentArgs): Promise<void> {
+  const telemetry = args?.source
+    ? `agent_layout.new_agent_clicked source=${args.source}${args.keybinding ? ` keybinding=${args.keybinding}` : ""}`
+    : undefined;
+  if (telemetry) {
+    // The binary's trackEvent payload, logged inspectably (no fake
+    // analytics service in the fork).
+    if (!newAgentTelemetryChannel) {
+      newAgentTelemetryChannel = vscode.window.createOutputChannel("IDE Agent");
+    }
+    newAgentTelemetryChannel.appendLine(`[telemetry] ${telemetry}`);
+  }
+
+  // Binary branch 1: cloudRepoUrls array -> cloud-target agent.
+  if (args?.cloudRepoUrls && args.cloudRepoUrls.length > 0) {
+    const tab = tabs.createAndActivate({ mode: "agent" });
+    const host = makeChatAttachHost(tabs, tab.id);
+    await host.focusChatView();
+    for (const url of args.cloudRepoUrls) {
+      // Honest divergence (no cloud-agent service in the fork): attach the
+      // repo URLs as context chips in the fresh agent tab instead of
+      // dropping them.
+      host.postToWebview({ type: "addSelectionContext", label: `cloud repo: ${url}`, content: url });
+    }
+    return;
+  }
+
+  // Binary branch 2: folderUri string -> workspace-target agent.
+  if (args?.folderUri) {
+    let uri: vscode.Uri | undefined;
+    try {
+      uri = vscode.Uri.parse(args.folderUri);
+    } catch {
+      uri = undefined;
+    }
+    if (uri && uri.scheme === "file") {
+      const alreadyOpen = vscode.workspace.workspaceFolders?.some(
+        (f) => f.uri.fsPath === uri!.fsPath,
+      );
+      if (!alreadyOpen) {
+        const index = vscode.workspace.workspaceFolders?.length ?? 0;
+        vscode.workspace.updateWorkspaceFolders(index, 0, { uri });
+      }
+    }
+    // Parse failure / non-file scheme: fall through to the plain new agent
+    // (the binary emits newAgentRequested in both cases).
+  }
+
+  // Binary default branch + shouldOpenEditorPanel (Ctrl+Alt+N) payload.
+  const tab = tabs.createAndActivate({ mode: "agent" });
+  if (args?.shouldOpenEditorPanel) {
+    // Preserve the editor panel: open the new agent as a chat EDITOR tab
+    // directly (never yank focus to the sidebar), keeping the editor area
+    // visible.
+    await vscode.commands.executeCommand("vscode.openWith", chatEditorUriForTab(tab.id), CHAT_EDITOR_VIEW_TYPE);
+    return;
+  }
+  await focusChatSurface(tabs);
+}
+
+/**
+ * WORKER-GAPS-40B: runtime of `glass.newProjectSubagent` (Cursor 3.25.9
+ * parity, workbench.glass.main.js @45345673). The binary emits
+ * `newProjectSubagentRequested` (with {source:"keyboard_shortcut"} on the
+ * Ctrl+T path) — a DISTINCT event from `newAgentRequested`.
+ *
+ * HONEST-DIVERGENCE: the fork has no separate project-subagent target (no
+ * project selector, no workspace-target agent service beyond the folderUri
+ * branch), and the run body past the emission was not statically recovered.
+ * The runtime therefore creates a new agent session through the shared
+ * newAgent() path — the same real behavior as the sibling "New Agent"
+ * commands — while preserving the distinct `newProjectSubagentRequested`
+ * emission name in the telemetry log so the two can diverge later without
+ * renaming.
+ */
+export async function newProjectSubagent(tabs: ChatTabService, args?: NewAgentArgs): Promise<void> {
+  const emission = `newProjectSubagentRequested${args?.source ? ` source=${args.source}` : ""}${
+    args?.keybinding ? ` keybinding=${args.keybinding}` : ""
+  }`;
+  if (!newAgentTelemetryChannel) {
+    newAgentTelemetryChannel = vscode.window.createOutputChannel("IDE Agent");
+  }
+  // The binary's emission, logged inspectably (no fake analytics service).
+  newAgentTelemetryChannel.appendLine(`[telemetry] ${emission}`);
+  await newAgent(tabs, args);
+}
+
+/**
+ * WORKER-GAPS-22A: runtime of `glass.newAgentWithModel` (Cursor 3.25.9
+ * parity). Binary XQb: emit newAgentRequested, then
+ * setModelConfigForComposer({selectedModels:[{modelId, parameters}]},
+ * updateGlobalConfig:!0) — the new session is seeded with the given model.
+ *
+ * Fork port (real behavior): create a new agent tab, resolve `modelId`
+ * against the engine catalog (the same entry values the model picker uses:
+ * "auto" | "cursor-default" | "providerID/modelID[#variant]"), switch the
+ * engine to it FIRST, then persist the selection on the new tab's composer
+ * (the composer never shows a model the engine rejected — same discipline
+ * as the model picker). Unknown modelId -> warning, the new agent keeps
+ * the current model (never a silent wrong model).
+ */
+export async function newAgentWithModel(tabs: ChatTabService, modelId: string): Promise<void> {
+  const tab = tabs.createAndActivate({ mode: "agent" });
+  const composer = tab.composer;
+  const models = await loadEngineModels(composer, "New Agent with Model");
+  if (models) {
+    const entries = buildModelPickerEntries(models, getEnabledModels());
+    const entry = entries.find((e) => e.value === modelId);
+    if (!entry) {
+      void vscode.window.showWarningMessage(
+        `IDE Agent: unknown model "${modelId}" — the new agent keeps the current model.`,
+      );
+    } else {
+      const selection: ModelSelection =
+        entry.value === CURSOR_DEFAULT_VALUE
+          ? cursorDefaultSelection()
+          : entry.value === AUTO_MODEL_VALUE || !entry.ref
+            ? autoSelection()
+            : { kind: "explicit", ref: entry.ref, label: entry.label };
+      try {
+        const adapter = composer.getEngineAdapter();
+        await adapter.setModel!(selection.ref);
+        composer.models.setSelection(selection);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(
+          `IDE Agent: the engine rejected the model switch — ${message}.`,
+        );
+      }
+    }
+  }
+  await focusChatSurface(tabs);
+}
+
 /** K-07 (Cursor parity): Cmd/Ctrl+Shift+L — attach the editor selection as a chip in the chat input. */
 /**
  * Cursor parity: "Add to Chat" (Ctrl+L, editor/context + terminal/context,
@@ -1555,6 +5413,19 @@ function addToChat(tabs: ChatTabService, args?: AddToChatArgs): void {
  * P2-1: the title menu forwards the right-clicked tab's resource URI as the
  * first command arg — it must be honored, not dropped.
  */
+/**
+ * WORKER-GAPS-66A (`chat-tab-title-menu-inventory`): the last assistant
+ * bubble's request id for a chat tab — the fork analog of the binary's
+ * `latestChatGenerationUUID` (workbench.desktop.main.js @29931829, `Fgm`).
+ * Shared by the `ide.copyRequestId` handler and the `ide.getChatRequestId`
+ * provider command the core `composer.copyRequestId` action calls.
+ */
+function lastChatRequestId(tab: ChatTab): string | undefined {
+  const bubbles = tab.composer.bubbles.getAllInOrder().filter((b) => b.role === "assistant");
+  const last = bubbles[bubbles.length - 1];
+  return last?.serverBubbleId ?? last?.bubbleId;
+}
+
 async function runChatTitleCommand(
   commandId: string,
   tabs: ChatTabService,
@@ -1569,29 +5440,10 @@ async function runChatTitleCommand(
     return;
   }
   switch (commandId) {
-    case "ide.exportTranscript": {
-      const md = transcriptToMarkdown(tab!);
-      // P3-3: default into the workspace folder, not the filesystem root.
-      const fileName = `${tab!.title.replace(/[^\w\- ]+/g, "").trim() || "chat"}.md`;
-      const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-      const defaultUri = folder ? vscode.Uri.joinPath(folder, fileName) : vscode.Uri.file(fileName);
-      const uri = await vscode.window.showSaveDialog({
-        defaultUri,
-        filters: { Markdown: ["md"] },
-        saveLabel: "Export Transcript",
-      });
-      if (uri) {
-        await vscode.workspace.fs.writeFile(uri, Buffer.from(md, "utf8"));
-        void vscode.window.showInformationMessage(`IDE Agent: transcript exported to ${uri.fsPath}`);
-      }
-      break;
-    }
     case "ide.copyRequestId": {
       // Cursor's Copy Request ID copies the last turn's backend request id
       // (for support). Ours: the last assistant bubble's server-assigned id.
-      const bubbles = tab!.composer.bubbles.getAllInOrder().filter((b) => b.role === "assistant");
-      const last = bubbles[bubbles.length - 1];
-      const requestId = last?.serverBubbleId ?? last?.bubbleId;
+      const requestId = lastChatRequestId(tab!);
       if (requestId) {
         await vscode.env.clipboard.writeText(requestId);
         void vscode.window.showInformationMessage("IDE Agent: request ID copied to the clipboard.");
@@ -1678,30 +5530,281 @@ async function runChatTitleCommand(
       await vscode.commands.executeCommand("workbench.action.openSettings", "ide.agent");
       break;
     }
+    case "ide.shareChat": {
+      // WORKER-GAPS-66A: Cursor's `composer.shareChat` shares the conversation
+      // through its server (shareConversation + manage-sharing modal). The
+      // fork has NO share backend — report that honestly instead of faking a
+      // link. The core menu item is additionally gated on
+      // `isSharedChatsEnabled` (false until a backend lands), so this path is
+      // only reachable by direct command execution.
+      void vscode.window.showInformationMessage(
+        "IDE Agent: chat sharing isn't available in this build yet — use Export Transcript to save the chat as Markdown instead.",
+      );
+      break;
+    }
+    // Cursor 2.1 parity (cursor.com/changelog/page/13): pin the chat so it
+    // stays at the top of every chat list, ordered by pin time. Target-tab
+    // resolution is shared with the other chat title menu commands above.
+    case "ide.pinChat": {
+      if (!tabs.pinChat(tab!.id)) {
+        void vscode.window.showInformationMessage("IDE Agent: this chat is already pinned.");
+      }
+      break;
+    }
+    case "ide.unpinChat": {
+      if (!tabs.unpinChat(tab!.id)) {
+        void vscode.window.showInformationMessage("IDE Agent: this chat is not pinned.");
+      }
+      break;
+    }
   }
 }
 
 
-/** Conversation search across agent turns. */
+/**
+ * Conversation search across ALL agent chat sessions (DEV-GAPS-45,
+ * chat-conversation-search).
+ *
+ * REA spec (deep-docs-all.md:59): "Cmd/Ctrl+K in Agents Window searches past
+ * chats (3.11+, local index, thousands of conversations)" — a local index
+ * across past transcripts, NOT just the current one (audit-fix-queue P2:
+ * "Conversation search is current-transcript-only").
+ *
+ * The index (services/conversationSearch.ts) scores every tab's transcript
+ * (title + all turns). The QuickPick shows the match snippet, the session
+ * title, the role and the date; picking a result switches to that tab and
+ * reveals the chat surface.
+ */
 async function searchConversations(composer: ComposerDataService, tabs: ChatTabService): Promise<void> {
-  // ENGINE: list real sessions when the session store lands; for now the
-  // transcript's human turns are the searchable conversations.
-  const humans = composer.bubbles.getAllInOrder().filter((b) => b.role === "human");
-  if (!humans.length) {
-    void vscode.window.showInformationMessage("IDE Agent: no conversations yet.");
+  const sessions: SearchableSession[] = tabs.listTabs().map((t) => ({
+    id: t.id,
+    title: t.title,
+    createdAt: t.createdAt,
+    messages: t.composer.bubbles.getAllInOrder().map((b) => ({
+      id: b.bubbleId,
+      role: (b.role === "human" || b.role === "assistant" ? b.role : "system") as
+        | "human"
+        | "assistant"
+        | "system",
+      text: b.text ?? "",
+      createdAt: b.createdAt,
+    })),
+  }));
+  const query = await vscode.window.showInputBox({
+    title: "Search Conversations",
+    prompt: "Search across all agent chats",
+    placeHolder: "Type to search past chats…",
+  });
+  if (query === undefined || !query.trim()) {
     return;
   }
-  const picked = await vscode.window.showQuickPick(
-    humans.map((b) => ({
-      label: b.text.slice(0, 80) || "(empty)",
-      description: new Date(b.createdAt).toLocaleString(),
-      id: b.bubbleId,
+  const results = searchConversationIndex(query, sessions);
+  if (!results.length) {
+    void vscode.window.showInformationMessage(
+      `IDE Agent: no conversations match "${query.trim()}".`,
+    );
+    return;
+  }
+  interface SearchPick extends vscode.QuickPickItem {
+    result: (typeof results)[number];
+  }
+  const picked = await vscode.window.showQuickPick<SearchPick>(
+    results.map((r) => ({
+      label: r.snippet || "(empty)",
+      description: r.sessionTitle,
+      detail: `${r.role === "human" ? "You" : "Agent"} · ${new Date(r.createdAt).toLocaleString()}`,
+      result: r,
     })),
-    { placeHolder: "Search conversations", matchOnDescription: true },
+    { placeHolder: `Search conversations — ${results.length} match${results.length === 1 ? "" : "es"}`, matchOnDescription: true },
   );
   if (picked) {
     // QA-REVERIFY-2-02: reveal the chat editor tab, not the sidebar.
+    tabs.switchTab(picked.result.sessionId);
     await focusChatSurface(tabs);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* User Rules (GAPS-36D, rules-user) — Cursor knowledge-base parity      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * DEV-GAPS-74 (W74C): runtime of the `ide.resolveConflictsInChat` command —
+ * the fork's `ide.*` alias of Cursor's binary-verbatim
+ * `composer.resolveAllConflictsInChat` ("Resolve All Conflicts in Chat",
+ * f1:false; binary evidence in services/chatConflictService.ts header).
+ * The service shipped with tests but no activate() call site (same
+ * handler-less trap as DEV-GAPS-77F); the host below is built from the same
+ * seams the service's unit tests mock: new tab via
+ * ChatTabService.createAndActivate, webview posts via the editor-tab-aware
+ * makeChatAttachHost (explicit tab id — the tab was just created, so the
+ * VS Code tab-group state has not caught up yet), git via the shared
+ * gitExecFile-backed runGit helper.
+ */
+async function resolveConflictsInChatFlow(
+  tabs: ChatTabService,
+  rawArgs?: unknown,
+): Promise<number> {
+  const service = new ChatConflictService({
+    createTab: (title: string) => tabs.createAndActivate({ title }).id,
+    postToWebview: (tabId: string, message: unknown) =>
+      makeChatAttachHost(tabs, tabId).postToWebview(message),
+    focusChatInput: async (tabId: string) => {
+      await focusChatSurface(tabs);
+      makeChatAttachHost(tabs, tabId).postToWebview({ type: "focusInput" });
+    },
+    runGit: (args: string[], cwd: string) => runGit(cwd, args),
+    readFile: (absPath: string) => fs.promises.readFile(absPath, "utf8"),
+    repoRoot: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    showInformationMessage: (message: string) =>
+      void vscode.window.showInformationMessage(message),
+    showWarningMessage: (message: string) => void vscode.window.showWarningMessage(message),
+    showErrorMessage: (message: string) => void vscode.window.showErrorMessage(message),
+  });
+  return service.resolveAllConflicts(sanitizeResolveConflictsArgs(rawArgs));
+}
+
+/** Keep only the binary's `{conflictedFiles, fileCount}` shape, validated. */
+function sanitizeResolveConflictsArgs(rawArgs: unknown): ResolveConflictsArgs | undefined {
+  if (!rawArgs || typeof rawArgs !== "object") {
+    return undefined;
+  }
+  const rec = rawArgs as Record<string, unknown>;
+  const out: ResolveConflictsArgs = {};
+  if (Array.isArray(rec.conflictedFiles)) {
+    out.conflictedFiles = rec.conflictedFiles.filter(
+      (f): f is string => typeof f === "string",
+    );
+  }
+  if (typeof rec.fileCount === "number") {
+    out.fileCount = rec.fileCount;
+  }
+  return out;
+}
+
+/**
+ * `editor.action.knowledgeBase.add` ("Add User Rule", binary-verified in
+ * Cursor 3.25.9). Collects a title and the rule content, then stores the
+ * rule globally — "User Rules apply to all of your chats".
+ */
+async function addUserRuleFlow(tabs: ChatTabService): Promise<void> {
+  const title = await vscode.window.showInputBox({
+    title: "Add User Rule",
+    prompt: "Short title for this rule",
+    placeHolder: "e.g. Always use TypeScript strict mode",
+  });
+  if (title === undefined) {
+    return; // Esc — cancelled.
+  }
+  const content = await vscode.window.showInputBox({
+    title: "Add User Rule",
+    prompt: "Rule content — instructions applied to every Agent chat (Agent Chat only, never Tab or Cmd+K)",
+    placeHolder: "e.g. Prefer functional components; never use class components.",
+  });
+  if (content === undefined) {
+    return; // Esc — cancelled.
+  }
+  if (!content.trim()) {
+    void vscode.window.showWarningMessage("IDE Agent: user rule not added — content is empty.");
+    return;
+  }
+  try {
+    const rule = await tabs.activeComposer.userRules.addRule(title, content);
+    void vscode.window.showInformationMessage(
+      `IDE Agent: user rule "${rule.title}" added — applies to all of your Agent chats.`,
+    );
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `IDE Agent: could not add user rule — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+interface UserRulePickItem extends vscode.QuickPickItem {
+  ruleId?: string;
+}
+
+/**
+ * `editor.action.knowledgeBase.list` ("View User Rules", binary-verified in
+ * Cursor 3.25.9). Lists the global rules with per-rule Edit / Rename /
+ * Delete actions and an entry point into the Add flow.
+ */
+async function viewUserRulesFlow(tabs: ChatTabService): Promise<void> {
+  const svc = tabs.activeComposer.userRules;
+  for (;;) {
+    const rules = svc.getRules();
+    const items: UserRulePickItem[] = [
+      {
+        label: "$(add) New User Rule",
+        description: "Add a rule that applies to all of your Agent chats",
+      },
+      ...rules.map((r) => ({
+        label: r.title,
+        description: r.content.length > 100 ? `${r.content.slice(0, 100)}…` : r.content,
+        ruleId: r.id,
+      })),
+    ];
+    const choice = await vscode.window.showQuickPick(items, {
+      title: "View User Rules",
+      placeHolder: rules.length
+        ? "User Rules apply to all of your chats — pick one to manage"
+        : "No user rules yet — pick “New User Rule” to add one",
+    });
+    if (!choice) {
+      return; // Esc.
+    }
+    if (!choice.ruleId) {
+      await addUserRuleFlow(tabs);
+      continue;
+    }
+    const rule = svc.getRule(choice.ruleId);
+    if (!rule) {
+      continue; // Deleted elsewhere; refresh the list.
+    }
+    const action = await vscode.window.showQuickPick(
+      ["Edit content", "Rename", "Delete", "← Back to rules"],
+      { title: rule.title, placeHolder: rule.content.slice(0, 160) },
+    );
+    if (!action || action.startsWith("←")) {
+      continue;
+    }
+    if (action === "Delete") {
+      const confirm = await vscode.window.showWarningMessage(
+        `Delete user rule "${rule.title}"?`,
+        { modal: true },
+        "Delete",
+      );
+      if (confirm === "Delete") {
+        await svc.removeRule(rule.id);
+      }
+      continue;
+    }
+    if (action === "Rename") {
+      const next = await vscode.window.showInputBox({
+        title: "Rename User Rule",
+        value: rule.title,
+        prompt: "Short title for this rule",
+      });
+      if (next !== undefined && next.trim() && next.trim() !== rule.title) {
+        await svc.updateRule(rule.id, { title: next });
+      }
+      continue;
+    }
+    // "Edit content".
+    const next = await vscode.window.showInputBox({
+      title: `Edit User Rule — ${rule.title}`,
+      value: rule.content,
+      prompt: "Rule content — instructions applied to every Agent chat",
+    });
+    if (next !== undefined && next.trim() && next.trim() !== rule.content) {
+      try {
+        await svc.updateRule(rule.id, { content: next });
+      } catch (err) {
+        void vscode.window.showErrorMessage(
+          `IDE Agent: could not update user rule — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 }
 
@@ -1790,7 +5893,7 @@ async function createWorktreeFlow(service: WorktreeService, root: string): Promi
   if (!branch) return;
   const trimmed = branch.trim();
 
-  const defaultDir = service.defaultWorktreePath(root, trimmed);
+  const defaultDir = service.resolveWorktreePath(root, trimmed);
   const dirPick = await vscode.window.showQuickPick(
     [
       { id: "default", label: "Use default location", description: defaultDir },
@@ -1963,9 +6066,9 @@ async function applyWorktreeFlow(service: WorktreeService): Promise<void> {
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: `Merging ${picked.branch}…` },
       async () => {
-        const { execFile } = await import("node:child_process");
-        const { promisify } = await import("node:util");
-        await promisify(execFile)("git", ["merge", "--no-edit", picked.branch], { cwd: root, timeout: 120_000 });
+        // DEV-GAPS-14 `ext-git-sanitize`: merge through the sanitizing
+        // wrapper — URL credentials stripped, safe `-c` configs forced.
+        await gitExecFile(root, ["merge", "--no-edit", picked.branch], { timeoutMs: 120_000 });
       },
     );
     void vscode.window.showInformationMessage(`IDE Agent: merged ${picked.branch} into the current checkout.`);
@@ -1983,22 +6086,52 @@ type WebviewMessage =
   | { type: "cycleMode" }
   | { type: "acceptPlan" }
   | { type: "discardPlan" }
+  // DEV-GAPS-77 (W77D): Cursor `glass.copy-plan-markdown` parity — plan tray
+  // "Copy as Markdown" button (binary PlanTabContent `onCopyAsMarkdown`).
+  | { type: "copyPlanMarkdown" }
+  /**
+   * GAPS-46D (agent-custom-modes): Alt+Enter / "Use as Mode" on a `/` menu
+   * skill entry — enter a custom mode backed by that skill.
+   */
+  | { type: "useSkillAsMode"; name: string }
+  /** GAPS-46D (agent-custom-modes): exit the active custom mode. */
+  | { type: "exitCustomMode" }
   | { type: "openModelPicker" }
+  // GAPS-167 (canvas-context-usage-report): tray "View Report" → host builds
+  // the report from real measured data and posts `ctxUsageReport` back;
+  // "Debug with Agent" → new chat seeded with the binary's verbatim prompt.
+  | { type: "openContextUsageReport" }
+  | { type: "debugContextUsage" }
   | { type: "inputFocus"; focused: boolean }
+  | { type: "inputEmpty"; empty: boolean }  // DEV-GAPS-119: prompt emptiness -> ideAgent.chatInputEmpty
+  | { type: "findBarState"; open: boolean; inputFocused?: boolean }  // DEV-GAPS-29 + GAPS-134: find-bar state -> composerFindWidgetFocused + glassChatFindBarVisible/glassChatFindInputFocused
+  | { type: "planFindBarState"; open: boolean; inputFocused?: boolean }  // GAPS-157: plan find-bar state -> glassPlanFindBarVisible + glassFindInputFocused
   | { type: "approvalResolve"; approvalId: string; optionId: string }
   | { type: "webviewReady" }
+  // GAPS-176: webview-reported tooltip-pipeline chat events (allowlist in
+  // services/tooltipEvents.ts) -> core bridge `composer.tooltip.registerEvent`.
+  | { type: "tooltipEvent"; event: string }
   | { type: "stopTurn" }
-  // DETAIL-CHAT §5 (P1): empty-composer submit morphs to "Start voice chat".
-  // No realtime voice infrastructure exists yet (mic capture, speech-to-text,
-  // voice session) — the host answers honestly instead of faking a session.
-  | { type: "startVoiceChat" }
   // Cursor parity: per-human-message Restore button → checkout_to_message.
   | { type: "restoreCheckpoint"; bubbleId: string }
+  // Cursor parity — per-message "Fork Chat" (binary 3.25.9: `jav` in
+  // AgentTranscriptTurnActions.js + command `composer.duplicateChat` with
+  // {sourceComposerId, bubbleId}: branch a new chat from one message).
+  | { type: "forkChatFromBubble"; bubbleId: string }
+  // DEV-GAPS-73 (chat-copy-message, Cursor 3.25.6 parity): per-message
+  // "Copy Message" — clipboard + trackEvent('composer.copy_message') +
+  // toast 'Message copied to clipboard' (verbatim).
+  | { type: "copyMessage"; bubbleId: string }
+  // Edit-resubmit: user edited a sent message → resubmit dialog → truncate + resubmit.
+  | { type: "resubmitEditedMessage"; bubbleId: string; text: string }
   // Doc-gap B8: chat tab bar controls.
   | { type: "newTab" }
   | { type: "switchTab"; tabId: string }
   | { type: "closeTab"; tabId: string }
   | { type: "renameTab"; tabId: string; title: string }
+  // Cursor 2.1 pin parity: sidebar tab-bar context menu.
+  | { type: "pinTab"; tabId: string }
+  | { type: "unpinTab"; tabId: string }
   // Doc-gap A14/A15: queue list management (remove/reorder/send-now).
   | { type: "queueRemove"; id: string }
   | { type: "queueMove"; id: string; direction: -1 | 1 }
@@ -2011,7 +6144,14 @@ type WebviewMessage =
   // VS Code state); the host replies with serializable MentionItems.
   | { type: "mentionQuery"; requestId: number; query: string }
   // @-mention chip click → open/reveal the referenced target (spec §4.2).
-  | { type: "openMention"; chip: unknown };
+  | { type: "openMention"; chip: unknown }
+  // GAPS-131 (mention-link-toolbar): link chip click → run the
+  // binary-verbatim cursor.mentionLinkToolbar command; the toolbar's
+  // Open/close report back so the host can open the URL externally and
+  // resolve the controller promise (binary closeMentionLinkToolbar).
+  | { type: "mentionLinkToolbar"; x: number; y: number; link: string; uuid?: string }
+  | { type: "mentionLinkToolbarOpen"; link: string }
+  | { type: "mentionLinkToolbarClose" };
 
 class ChatViewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
@@ -2030,6 +6170,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly tabs: ChatTabService,
     private readonly terminal?: TerminalService,
     private readonly slash?: SlashCommandService,
+    /** GAPS-152: OS pending-decision notifications (any tab, unfocused). */
+    private readonly agentNotifications?: AgentNotificationService,
   ) {
     // Project rules are workspace-scoped (identical across tabs); the
     // provider registry is built once from the first tab's service.
@@ -2041,7 +6183,42 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     return this.tabs.activeComposer;
   }
 
+  /**
+   * GAPS-46D (agent-custom-modes): enter a custom mode from a skill by name
+   * (Alt+Enter / "Use as Mode" on a `/` menu skill entry). Docs:
+   * "Any skill with a valid frontmatter block can back a mode."
+   */
+  private enterSkillAsMode(name: string): void {
+    const skill = this.slash
+      ?.getSkills()
+      .find((s) => s.name.toLowerCase() === name.toLowerCase());
+    if (!skill) {
+      void vscode.window.showWarningMessage(`IDE Agent: no skill named '${name}' found.`);
+      return;
+    }
+    this.composer.enterCustomMode({
+      name: skill.name,
+      content: skill.content,
+      filePath: skill.filePath,
+      ...(skill.icon !== undefined ? { icon: skill.icon } : {}),
+      ...(skill.color !== undefined ? { color: skill.color } : {}),
+    });
+  }
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
+    // GAPS-176: `chat.open` — the sidebar chat surface materializes here
+    // (first open / re-resolve), exactly once per resolve. NOT emitted on
+    // visibility toggles: a repeated `chat.open` would reset the editor
+    // pipeline's sequence 2 in the core matcher (see work-notes-gaps176).
+    emitTooltipEvent("chat.open");
+    // GAPS-143 (NF-1, mention-link-toolbar teardown): a RE-resolve replaces
+    // the webview HTML below, so any toolbar DOM from the previous resolve
+    // is gone — close the shared controller (bare close, no host: the old
+    // surface must not be posted to) so its promise resolves and `current`
+    // clears instead of leaking until the next show. No-op on first
+    // resolve / when nothing is open. See D2 residual in
+    // services/mentionLinkToolbar.ts (shared singleton across surfaces).
+    mentionLinkToolbarController.closeMentionLinkToolbar();
     this.view = webviewView;
     webviewView.webview.options = { enableScripts: true };
     // P2 (CX2b): the webview bakes its engine-status hint from the real
@@ -2082,6 +6259,13 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     // listeners (duplicate postMessage traffic + duplicate setContext calls).
     const viewDisposables: vscode.Disposable[] = [];
     webviewView.onDidDispose(() => {
+      // GAPS-143 (NF-1, mention-link-toolbar teardown): the surface that
+      // owned the toolbar DOM is dead — close the controller (bare close,
+      // no host) so the pending show promise resolves and `current`
+      // clears, instead of leaking until a later show overwrites the
+      // resolver. The binary has no such leak: its overlay belongs to
+      // the workbench uiOverlayService, independent of this surface.
+      mentionLinkToolbarController.closeMentionLinkToolbar();
       // P2 (QA-FILE-07): clear the view FIRST so post() drops messages
       // instead of posting to a disposed webview (unhandled rejection).
       this.view = undefined;
@@ -2143,6 +6327,19 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           void this.postTabs();
           return;
+        }
+        // DEV-ORANGE-DOT (chat-orange-dot): a clarifying question being asked
+        // or answered changes a tab's awaiting-input state even when that tab
+        // is NOT active — the tab bar needs a refresh so its orange dot
+        // appears/clears. newChat resets tab-bar-visible state too (title,
+        // queue, pending questions) on any tab. The active tab still gets
+        // its question widget / newChat reset via handleComposerEvent below.
+        if (
+          event.kind === "questionAsked" ||
+          event.kind === "questionAnswered" ||
+          event.kind === "newChat"
+        ) {
+          void this.postTabs();
         }
         if (!isActive) {
           return;
@@ -2261,6 +6458,39 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
               void this.openMentionTarget(message.chip).catch(() => undefined);
             }
             break;
+          // GAPS-131 (mention-link-toolbar): the webview's link-chip
+          // click asks the host to run the binary-verbatim command —
+          // the same renderer → commandService shape as Cursor's call
+          // site (desk @24666605). Fire-and-forget: the command promise
+          // resolves when the toolbar closes.
+          case "mentionLinkToolbar":
+            if (
+              typeof message.x === "number" &&
+              typeof message.y === "number" &&
+              typeof message.link === "string"
+            ) {
+              void vscode.commands.executeCommand(CURSOR_MENTION_LINK_TOOLBAR_ID, {
+                x: message.x,
+                y: message.y,
+                link: message.link,
+                uuid: typeof message.uuid === "string" ? message.uuid : undefined,
+              });
+            }
+            break;
+          case "mentionLinkToolbarOpen":
+            // Toolbar "Open" (binary: openerService.open(link), then
+            // close). Only http/https URLs ever become link chips.
+            if (
+              typeof message.link === "string" &&
+              (message.link.startsWith("https://") || message.link.startsWith("http://"))
+            ) {
+              void vscode.env.openExternal(vscode.Uri.parse(message.link));
+            }
+            mentionLinkToolbarController.closeMentionLinkToolbar();
+            break;
+          case "mentionLinkToolbarClose":
+            mentionLinkToolbarController.closeMentionLinkToolbar();
+            break;
           case "setMode":
             if (isModeName(message.mode)) {
               this.composer.modes.setMode(message.mode);
@@ -2277,11 +6507,84 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           case "discardPlan":
             this.composer.discardPlan();
             break;
+          case "copyPlanMarkdown":
+            // DEV-GAPS-77 (W77D): Cursor `glass.copy-plan-markdown` parity —
+            // binary-verbatim copy/toast/log flow (planCopyService.ts).
+            void copyPendingPlanMarkdownToClipboard(this.composer, makePlanCopySeam()).catch(
+              (err: unknown) => {
+                const m = err instanceof Error ? err.message : String(err);
+                void vscode.window.showErrorMessage(`IDE Agent: copy failed — ${m}`);
+              },
+            );
+            break;
+          // GAPS-46D (agent-custom-modes): Alt+Enter / "Use as Mode" on a
+          // `/` menu skill entry — enter a custom mode backed by that skill.
+          case "useSkillAsMode":
+            this.enterSkillAsMode(message.name);
+            break;
+          case "exitCustomMode":
+            this.composer.exitCustomMode();
+            break;
           case "openModelPicker":
             void pickModel(this.composer);
             break;
+          case "openContextUsageReport":
+            // GAPS-167: build the report from the same REAL measured data
+            // as the context ring and post it back for the report panel.
+            void this.post({
+              type: "ctxUsageReport",
+              report: this.composer.getContextUsageReport({
+                chatName: this.tabs.activeTab.title,
+                repository: vscode.workspace.workspaceFolders?.[0]?.name,
+              }),
+            });
+            break;
+          case "debugContextUsage": {
+            // GAPS-167: Cursor's canvas dispatches `newComposerChat` with
+            // CONTEXT_REDUCTION_PROMPT — fork equivalent: new tab + submit.
+            const created = this.tabs.createAndActivate({});
+            created.composer.submit(CONTEXT_REDUCTION_PROMPT);
+            break;
+          }
           case "inputFocus":
             void vscode.commands.executeCommand("setContext", "ideAgent.chatInputFocused", message.focused === true);
+            break;
+          case "tooltipEvent":
+            // GAPS-176: forward allowlisted webview chat events (chat.type /
+            // chat.paste / chat.copy.codeblock.manual / chat.insert_selection.*)
+            // to the core tooltipService bridge.
+            forwardWebviewTooltipEvent(message.event);
+            break;
+          case "inputEmpty":
+            // DEV-GAPS-119 (chat-jump-messages-kbd): prompt emptiness for
+            // the jump keybindings' when-clause (see chatEditorProvider's
+            // identical case for the editor-tab surface).
+            void vscode.commands.executeCommand("setContext", CHAT_INPUT_EMPTY_CONTEXT_KEY, message.empty === true);
+            break;
+          case "findBarState":
+            // DEV-GAPS-29: the chat webview's find bar reports its open/close
+            // state so the verbatim context key `composerFindWidgetFocused`
+            // gates the core composer.find.hide/next/previous keybindings
+            // (binary when-clauses), exactly like Cursor.
+            // GAPS-134: the same report also maintains the pane-level
+            // family's verbatim keys `glassChatFindBarVisible` /
+            // `glassChatFindInputFocused` (findBarContextUpdates is the
+            // single pure mapping shared with the editor-tab surface).
+            for (const [key, value] of findBarContextUpdates(message)) {
+              void vscode.commands.executeCommand("setContext", key, value);
+            }
+            break;
+          case "planFindBarState":
+            // GAPS-157: the webview's plan find bar reports its state so
+            // the verbatim keys `glassPlanFindBarVisible` /
+            // `glassFindInputFocused` gate the core hidePlanFind /
+            // nextPlanFindMatch / previousPlanFindMatch keybindings
+            // (binary when-clauses @45501848–@45502700).
+            // planFindBarContextUpdates is the single pure mapping
+            // shared with the editor-tab surface (services/findInPlan.ts).
+            for (const [key, value] of planFindBarContextUpdates(message)) {
+              void vscode.commands.executeCommand("setContext", key, value);
+            }
             break;
           case "approvalResolve":
             if (typeof message.approvalId === "string" && typeof message.optionId === "string") {
@@ -2299,20 +6602,22 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             for (const pending of this.pendingOutbound.splice(0)) {
               void this.post(pending);
             }
+            // Context ring: initial live breakdown (later deltas arrive via
+            // the `contextUsage` composer event → handleComposerEvent).
+            void this.post({ type: "ctxUsage", ...this.composer.getContextUsageSnapshot() });
+            // GAPS-46D (agent-custom-modes): restore the custom-mode badge
+            // on webview re-resolve (the mode survives webview reloads).
+            void this.post({
+              type: "customMode",
+              active: serializeCustomMode(this.composer.getActiveCustomMode()),
+              exitedLabel: null,
+            });
             break;
           // P1 (QA-FILE-01): Stop button → abort the running turn.
+          // GAPS-11B (agent-abort-restore-query): restoreQuery puts the
+          // aborted turn's prompt back into the input (Cursor parity).
           case "stopTurn":
-            this.composer.abort();
-            break;
-          // DETAIL-CHAT §5 (P1): the empty-composer submit slot morphs to
-          // "Start voice chat". GAP (honest): no realtime voice-chat
-          // infrastructure exists yet (no mic capture, no speech-to-text,
-          // no voice session), so clicking it shows an informational
-          // message instead of pretending to start a session.
-          case "startVoiceChat":
-            void vscode.window.showInformationMessage(
-              "IDE Agent: voice chat is not available in this build yet.",
-            );
+            this.composer.abort({ restoreQuery: true });
             break;
           // Cursor parity: per-message Restore button (no confirmation).
           case "restoreCheckpoint":
@@ -2320,6 +6625,51 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
               void this.composer.revertToCheckpoint(message.bubbleId).catch((err: unknown) => {
                 const m = err instanceof Error ? err.message : String(err);
                 void vscode.window.showErrorMessage(`IDE Agent: restore failed — ${m}`);
+              });
+            }
+            break;
+          // Cursor parity — per-message "Fork Chat" (binary 3.25.9:
+          // `composer.duplicateChat` with {sourceComposerId, bubbleId}):
+          // branch a new chat seeded with the transcript prefix through
+          // the selected message (see chatForkFromBubble.ts for the
+          // verbatim truncation semantics).
+          case "forkChatFromBubble":
+            if (typeof message.bubbleId === "string") {
+              try {
+                const result = forkTabFromBubble(this.tabs, this.tabs.activeTab, message.bubbleId);
+                void openChatEditor(this.tabs, undefined, result.tab.id);
+                void vscode.window.showInformationMessage(forkInfoMessage(result));
+              } catch (err) {
+                const m = err instanceof Error ? err.message : String(err);
+                void vscode.window.showErrorMessage(m);
+              }
+            }
+            break;
+          // DEV-GAPS-73 (chat-copy-message, Cursor 3.25.6 parity):
+          // binary-verbatim message action — clipboard write +
+          // trackEvent('composer.copy_message') + 'Message copied to
+          // clipboard' toast. The text copied is the bubble's raw
+          // markdown source (chatCopyMessageService.ts).
+          case "copyMessage":
+            if (typeof message.bubbleId === "string") {
+              void copyBubbleMessageToClipboard(
+                this.tabs.activeComposer,
+                message.bubbleId,
+                makeCopyMessageSeam(),
+              ).catch((err: unknown) => {
+                const m = err instanceof Error ? err.message : String(err);
+                void vscode.window.showErrorMessage(`IDE Agent: copy failed — ${m}`);
+              });
+            }
+            break;
+          // Edit-resubmit: user edited a sent message → resubmit dialog
+          // ("Continue and revert" / "Continue without reverting") → truncate
+          // + resubmit (chatResubmitService).
+          case "resubmitEditedMessage":
+            if (typeof message.bubbleId === "string" && typeof message.text === "string") {
+              void this.composer.resubmitEditedMessage(message.bubbleId, message.text).catch((err: unknown) => {
+                const m = err instanceof Error ? err.message : String(err);
+                void vscode.window.showErrorMessage(`IDE Agent: resubmit failed — ${m}`);
               });
             }
             break;
@@ -2340,6 +6690,17 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
           case "renameTab":
             if (typeof message.tabId === "string" && typeof message.title === "string") {
               this.tabs.renameTab(message.tabId, message.title);
+            }
+            break;
+          // Cursor 2.1 pin parity: sidebar tab-bar context menu.
+          case "pinTab":
+            if (typeof message.tabId === "string") {
+              this.tabs.pinChat(message.tabId);
+            }
+            break;
+          case "unpinTab":
+            if (typeof message.tabId === "string") {
+              this.tabs.unpinChat(message.tabId);
             }
             break;
           // Doc-gap A14/A15: queue list management from the webview.
@@ -2421,6 +6782,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     for (const q of composer.getPendingQuestions()) {
       void this.post({ type: "question", question: q });
     }
+    // Context ring: the newly active tab has its own breakdown.
+    void this.post({ type: "ctxUsage", ...composer.getContextUsageSnapshot() });
     void this.postTabs();
   }
 
@@ -2447,28 +6810,54 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         tab.composer.reviews.onDidChangeApproval((request: ApprovalRequest | undefined) => {
           if (tabId === this.tabs.activeTab.id) {
             void this.post({ type: "approval", request: request ?? null });
+            // DEV-GAPS-45 (chat-sound-notify): "Play a sound when agents
+            // finish or need attention" — an approval request is the
+            // canonical "needs attention" moment (orange dot on the tab).
+            // The same toggle as the post-turn chime; off by default.
+            if (request !== undefined) {
+              this.playAttentionChime();
+            }
             void vscode.commands.executeCommand(
               "setContext",
               "ideAgent.toolApprovalVisible",
               request !== undefined,
             );
-            // Cursor parity: OS-level nudge when the agent needs approval while the
-            // window is in the background (gated by ide.agent.terminal.notifyOnApproval).
-            if (request && vscode.window.state.focused === false) {
-              const notify = vscode.workspace
-                .getConfiguration("ide.agent.terminal")
-                .get<boolean>("notifyOnApproval", true);
-              if (notify) {
-                void vscode.window
-                  .showInformationMessage(`IDE Agent needs approval: ${request.title}`, "Review")
-                  .then((sel) => {
-                    if (sel === "Review") {
-                      // QA-REVERIFY-2-02: reveal the chat editor tab, not the
-                      // hidden sidebar, when editor tabs are ON.
-                      void focusChatSurface(this.tabs);
-                    }
-                  });
-              }
+            // DEV-GAPS-12 (agent-shell-approval-keyboard-flow): Cursor's
+            // `composerShellToolPendingKeybindingsActive` /
+            // `composerShellToolAllowlistShortcutActive` — the Enter /
+            // Shift+Enter / Esc bindings only live while a *shell* tool
+            // approval is pending (bridged to the `composer.*` keys in core).
+            // An allowlisted identity never shows a card (requestApproval
+            // auto-resolves), so a pending shell approval always has
+            // allowlist candidates — both keys share the value.
+            const shellPending =
+              request !== undefined && isShellToolApproval(request);
+            void vscode.commands.executeCommand(
+              "setContext",
+              "ideAgent.shellToolPendingKeybindingsActive",
+              shellPending,
+            );
+            void vscode.commands.executeCommand(
+              "setContext",
+              "ideAgent.shellToolAllowlistShortcutActive",
+              shellPending,
+            );
+          }
+          // GAPS-152 (agent-notification-actions): OS notification for the
+          // pending decision — the binary's `onAddPendingAction`
+          // (workbench.desktop.main.js 3.25.9 @31370281) fires per composer
+          // (ANY tab, not just the active one) when a blocking decision
+          // appears while the window is unfocused, with Accept/Reject
+          // actions on the notification itself. This replaces the previous
+          // active-tab-only VS Code toast ("IDE Agent needs approval",
+          // gated by ide.agent.terminal.notifyOnApproval): Cursor uses a
+          // real OS notification with action buttons, never an in-app
+          // toast. All gating (focus / enabled / blocking group) lives in
+          // AgentNotificationService.notifyPendingDecision.
+          if (request !== undefined && this.agentNotifications) {
+            const tab = this.tabs.listTabs().find((t) => t.id === tabId);
+            if (tab) {
+              void this.agentNotifications.notifyPendingDecision(toNotificationTab(tab), request);
             }
           }
           // Any tab's approval change refreshes the tab bar (pending dot).
@@ -2476,6 +6865,24 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         }),
       );
     }
+  }
+
+  /**
+   * DEV-GAPS-45 (chat-sound-notify): play the completion chime when the
+   * agent needs attention (an approval request appeared). Gated by the same
+   * `ide.composer.shouldChimeAfterChatFinishes` toggle ("Play a sound when
+   * agents finish or need attention", OFF by default); fire-and-forget,
+   * never throws (see services/chime.ts).
+   */
+  private playAttentionChime(): void {
+    const cfg = vscode.workspace.getConfiguration("ide.composer");
+    if (!cfg.get<boolean>("shouldChimeAfterChatFinishes", false)) {
+      return;
+    }
+    void playChime({
+      customPath: cfg.get<string>("customChimeSoundPath", ""),
+      defaultPath: defaultChimePath(this.context.extensionPath),
+    });
   }
 
   /**
@@ -2510,12 +6917,32 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       // Plan mode: a plan-mode turn completed → webview shows the plan tray.
+      // GAPS-157: the post also carries the plan's bubbleId (the webview's
+      // plan find bar scopes its search to exactly that bubble — the
+      // host's PendingPlan.bubbleId), and the host maintains the
+      // fork-only `composerPlanTrayVisible` context key (the port of the
+      // binary's glassActiveTabKind==Plan when-arm) from the same events.
       case "planReady": {
-        void this.post({ type: "planReady" });
+        void this.post({ type: "planReady", bubbleId: event.plan.bubbleId });
+        for (const [key, value] of planTrayContextUpdates(true)) {
+          void vscode.commands.executeCommand("setContext", key, value);
+        }
         break;
       }
       case "planCleared": {
         void this.post({ type: "planCleared" });
+        for (const [key, value] of planTrayContextUpdates(false)) {
+          void vscode.commands.executeCommand("setContext", key, value);
+        }
+        break;
+      }
+      // GAPS-46D (agent-custom-modes): push badge state to the webview.
+      case "customModeChanged": {
+        void this.post({
+          type: "customMode",
+          active: serializeCustomMode(event.active),
+          exitedLabel: event.exitedLabel,
+        });
         break;
       }
       // Doc-gap A12: clarifying question → clickable widget in the webview.
@@ -2530,6 +6957,25 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       // P1 (QA-FILE-01): turn lifecycle → webview Stop/Send toggle.
       case "turnState": {
         void this.post({ type: "turnState", running: event.running });
+        break;
+      }
+      // GAPS-11B (agent-abort-restore-query): the aborted turn's prompt
+      // goes back into the composer input for editing (Cursor parity).
+      case "restorePrompt": {
+        void this.post({ type: "restoreInput", text: event.text });
+        break;
+      }
+      // Context ring: host-computed real 8-category breakdown, live after
+      // every settled turn (tokens are chars/4 estimates — never fabricated).
+      case "contextUsage": {
+        void this.post({
+          type: "ctxUsage",
+          sources: event.sources,
+          totalTokens: event.totalTokens,
+          windowPct: event.windowPct,
+          // GAPS-183: the denominator windowPct was computed against.
+          contextWindowTokens: event.contextWindowTokens,
+        });
         break;
       }
       // Cursor parity: restore done → webview shows the "checked out" chip.
@@ -2596,6 +7042,15 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
             "vscode.open",
             vscode.Uri.file(rule.fullPath),
           );
+        }
+        break;
+      }
+      case "linkSelection": {
+        // GAPS-131: link chips normally open the mention-link toolbar
+        // (the webview intercepts their click); if a click ever lands
+        // here directly, fall back to opening the URL externally.
+        if (p.url.startsWith("https://") || p.url.startsWith("http://")) {
+          await vscode.env.openExternal(vscode.Uri.parse(p.url));
         }
         break;
       }
@@ -2687,6 +7142,13 @@ export function deactivate(): void {
   // Browser tab: stop the screencast and kill the tab Chromium.
   try {
     void browserTabsRef?.dispose().catch(() => {});
+  } catch {
+    /* never throw from deactivate */
+  }
+  // Desktop bridge: close the socket server, delete the instance JSON +
+  // socket (best-effort, never throws).
+  try {
+    void desktopBridgeServerRef?.stop().catch(() => {});
   } catch {
     /* never throw from deactivate */
   }

@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-go",
+  "patterns": [
+    {
+      "include": "source.go"
+    }
+  ]
+}

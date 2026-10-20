@@ -50,6 +50,28 @@ export interface PageDriver {
   close(): Promise<void>;
 }
 
+/**
+ * Extract the page's real error message from a Runtime.evaluate response
+ * that carries exceptionDetails.
+ *
+ * V8 reports `exceptionDetails.text` as the generic label "Uncaught" — the
+ * actual message lives in `result.description`
+ * ("Error: <message>\n    at ..."). Prefer the description's first line so
+ * callers (e.g. SnapshotController.validate's recovery-message regex) see
+ * the page's message instead of "Uncaught".
+ */
+export function pageErrorMessage(res: {
+  result?: { description?: string };
+  exceptionDetails?: { text?: string };
+}): string {
+  const desc = res.result?.description;
+  if (typeof desc === "string" && desc.length > 0) {
+    const firstLine = desc.split("\n")[0].trim();
+    if (firstLine) return firstLine;
+  }
+  return res.exceptionDetails?.text ?? "unknown";
+}
+
 /** Options for PageDriver.startScreencast. */
 export interface ScreencastOptions {
   format?: "jpeg" | "png";
@@ -267,7 +289,10 @@ export class CdpPageDriver implements PageDriver {
   }
 
   async evaluate<T>(script: string): Promise<T> {
-    let res: { result?: { value?: T; subtype?: string }; exceptionDetails?: { text?: string } };
+    let res: {
+      result?: { value?: T; subtype?: string; description?: string };
+      exceptionDetails?: { text?: string };
+    };
     try {
       res = await this.client.send("Runtime.evaluate", {
         expression: script,
@@ -278,7 +303,7 @@ export class CdpPageDriver implements PageDriver {
       throw new BrowserError("EVAL_FAILED", `Runtime.evaluate failed: ${(e as Error).message}`);
     }
     if (res.exceptionDetails) {
-      throw new BrowserError("EVAL_FAILED", `page script threw: ${res.exceptionDetails.text ?? "unknown"}`);
+      throw new BrowserError("EVAL_FAILED", `page script threw: ${pageErrorMessage(res)}`);
     }
     return (res.result?.value ?? null) as T;
   }

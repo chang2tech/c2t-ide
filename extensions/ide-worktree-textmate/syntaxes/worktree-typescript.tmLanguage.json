@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-typescript",
+  "patterns": [
+    {
+      "include": "source.ts"
+    }
+  ]
+}

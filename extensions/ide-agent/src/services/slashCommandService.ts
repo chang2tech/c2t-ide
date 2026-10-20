@@ -13,6 +13,16 @@ import {
   type SlashItemType,
   type SlashMru,
 } from "./slashRegistry";
+import {
+  LOOP_SKILL_CONTENT,
+  LOOP_SKILL_DESCRIPTION,
+  LOOP_SKILL_KEYWORDS,
+  LOOP_SKILL_NAME,
+} from "./loopSkill";
+import {
+  buildSubagentInvokeMacro,
+  getBuiltinSubagent,
+} from "./builtinSubagents";
 
 /**
  * SlashCommandService — Cursor `/` slash-command parity.
@@ -20,8 +30,9 @@ import {
  * Spec: docs/rea/parity-slash-commands.md
  *
  * Built-ins (§2.1): /worktree, /apply-worktree, /delete-worktree, /best-of-n,
- * /summarize, /create-skill, /migrate-to-skills. Cloud-only (/in-cloud,
- * /autopilot) are honestly reported as unavailable — no silent stubs.
+ * /summarize, /create-skill, /migrate-to-skills, /multitask, /loop.
+ * Cloud-only (/in-cloud, /autopilot, /babysit) are honestly reported as
+ * unavailable — no silent stubs.
  *
  * Custom file-based commands (§2.2): <workspace>/.cursor/commands/*.md|*.txt
  * and ~/.cursor/commands/*.md|*.txt. 100 MB cap (raised per user directive
@@ -63,6 +74,12 @@ export interface SkillSlashItem {
   content: string;
   /** disable-model-invocation: menu-only, never auto-pulled by the model. */
   menuOnly: boolean;
+  /**
+   * GAPS-46D (agent-custom-modes): optional `icon` / `color` frontmatter
+   * fields that style the custom mode's badge (docs.cursor.com/agent/prompting).
+   */
+  icon?: string;
+  color?: string;
 }
 
 const MAX_COMMAND_FILE_BYTES = 100 * 1024 * 1024; // user directive 2026-10-19: no artificial limits
@@ -223,6 +240,46 @@ export class SlashCommandService {
         keywords: ["skill", "migrate", "convert", "rules"],
       },
       {
+        // /loop — recurring skill execution. Binary evidence (Cursor 3.25.9
+        // slashMenuData.js @18202214):
+        // loop:{searchKeywords:["Repeat","Recurring","Interval","Periodic"]}.
+        // Description is docs-sourced (cursor.com/docs: "Recurring skill
+        // execution"); the binary entry carries no description. The daemon
+        // mechanism (LOOP_PROTECTED_SKILL_NAMES + protectLoopSkillDescription)
+        // lives in ./loopSkill.ts.
+        name: LOOP_SKILL_NAME,
+        description: LOOP_SKILL_DESCRIPTION,
+        source: "builtin",
+        keywords: [...LOOP_SKILL_KEYWORDS],
+      },
+      {
+        name: "multitask",
+        description: "Run subtasks in parallel, each in its own git worktree",
+        source: "builtin",
+        keywords: ["parallel", "tasks", "multitask", "worktree"],
+      },
+      {
+        // DEV-GAPS-40 (subagent-builtin): Cursor's built-in subagents
+        // (docs/rea/deep-docs-all.md: "Built-in: explore (codebase search),
+        // browser (browser automation via MCP)"). Invoke via `/name`
+        // (Cursor's invoke syntax) — run() below expands to the subagent
+        // invoke macro; the engine resolves the agent id server-side.
+        name: "explore",
+        description:
+          "Delegate to the built-in explore subagent (codebase search)",
+        argumentHint: "<task>",
+        source: "builtin",
+        keywords: ["explore", "codebase", "search", "subagent"],
+      },
+      {
+        name: "browser",
+        description:
+          "Delegate to the built-in browser subagent (browser automation via MCP)",
+        argumentHint: "<task>",
+        source: "builtin",
+        keywords: ["browser", "automation", "mcp", "subagent"],
+      },
+      {
         name: "in-cloud",
         description: "Run the next task as a cloud subagent (requires IDE Code cloud)",
         source: "builtin",
@@ -232,7 +289,18 @@ export class SlashCommandService {
         name: "autopilot",
         description: "Let a cloud agent take over the PR (requires IDE Code cloud)",
         source: "builtin",
-        keywords: ["cloud", "pr"],
+        // Binary-exact keywords (Cursor 3.25.9 slashMenuData.js @18200750):
+        // autopilot:{searchKeywords:["PR","CI","Comments","Merge"]}.
+        keywords: ["PR", "CI", "Comments", "Merge"],
+      },
+      {
+        // Cursor lists `babysit` as its own slash-menu entry with the same
+        // keywords as autopilot (slashMenuData.js @18200750), and maps the
+        // two as aliases (HAh: e==="autopilot"?["babysit"] @18190628).
+        name: "babysit",
+        description: "Let a cloud agent take over the PR (requires IDE Code cloud)",
+        source: "builtin",
+        keywords: ["PR", "CI", "Comments", "Merge"],
       },
     ];
   }
@@ -335,6 +403,9 @@ export class SlashCommandService {
           filePath: file,
           content: raw.trim(),
           menuOnly: fm.disableModelInvocation === true,
+          // GAPS-46D (agent-custom-modes): badge styling from frontmatter.
+          ...(fm.icon !== undefined ? { icon: fm.icon } : {}),
+          ...(fm.color !== undefined ? { color: fm.color } : {}),
         });
       }
     }
@@ -525,8 +596,51 @@ export class SlashCommandService {
       case "migrate-to-skills":
         await this.migrateToSkills();
         return {};
+      case "multitask": {
+        // DEV-MULTITASK: entrypoint "slash" — Cursor's `/multitask` slash
+        // (spec §4.1: `A==="multitask" && startMultitasking({entrypoint:"slash"})`).
+        const composer = this.getComposer();
+        if (!composer) {
+          void vscode.window.showErrorMessage("IDE Agent: /multitask — chat is not available.");
+          return {};
+        }
+        composer.modes.setMode("multitask");
+        if (args.trim()) {
+          // Submit the args as the orchestration request; the multitask
+          // branch of runTurn picks up the real fan-out.
+          composer.submit(args.trim());
+        }
+        // No args: just switch mode — the next submit in multitask mode
+        // starts the orchestration.
+        return {};
+      }
+      case "loop": {
+        // /loop — built-in recurring-skill invocation. Same prompt-macro
+        // treatment as §2.4 skills: the loop skill content is prepended to
+        // the prompt as structured context (see ./loopSkill.ts for the
+        // binary evidence and the HONEST-DIVERGENCE note on the content).
+        const argSuffix = args.trim() ? `\n\nArguments: ${args.trim()}` : "";
+        return { macro: `<skill name="${LOOP_SKILL_NAME}">\n${LOOP_SKILL_CONTENT}${argSuffix}\n</skill>` };
+      }
+      case "explore":
+      case "browser": {
+        // DEV-GAPS-40 (subagent-builtin): `/name` invoke syntax for Cursor's
+        // built-in subagents (docs/rea/deep-docs-all.md). Prompt-macro
+        // treatment (§5): the macro names the builtin agent; the model
+        // dispatches the engine's subagent tool with that agent id. The
+        // engine resolves "explore" out of the box (builtin); "browser"
+        // resolves once a browser-capable agent is configured (see
+        // builtinSubagents.ts HONEST-DIVERGENCE).
+        const def = getBuiltinSubagent(lower);
+        if (!def) {
+          void vscode.window.showWarningMessage(`IDE Agent: unknown slash command /${name}.`);
+          return {};
+        }
+        return { macro: buildSubagentInvokeMacro(def.name, args) };
+      }
       case "in-cloud":
       case "autopilot":
+      case "babysit":
         // Cloud-only by design — honest capability message, not a stub.
         void vscode.window.showInformationMessage(
           `IDE Agent: /${lower} needs the IDE Code cloud backend, which is not connected in this build. ` +
@@ -576,7 +690,7 @@ export class SlashCommandService {
         for (let i = 1; i <= n; i++) {
           const branch = `bestofn/${slug}-${i}`;
           try {
-            const wt = await service.create(repoRoot, service.defaultWorktreePath(repoRoot, branch), branch);
+            const wt = await service.create(repoRoot, service.resolveWorktreePath(repoRoot, branch), branch);
             created.push(wt.path);
           } catch (err) {
             void vscode.window.showErrorMessage(

@@ -17,1037 +17,661 @@
         "name": "ide"
       }
     ],
-    "commands": [
-      {
-        "category": "IDE Agent",
-        "command": "ide.newChat",
-        "title": "New Chat"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.newFollowup",
-        "title": "Focus Chat Followup"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.newAgentChat",
-        "title": "New Agent Chat"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.openInlinePrompt",
-        "title": "Open Inline Prompt"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.sendToAgent",
-        "title": "Send Inline Prompt to Agent"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.acceptInlineEdit",
-        "title": "Accept Inline Edit"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.rejectInlineEdit",
-        "title": "Reject Inline Edit"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.openModeMenu",
-        "title": "Open Mode Menu"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.openModelPicker",
-        "title": "Open Model Picker"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.cycleModel",
-        "title": "Cycle Model"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.manageModels",
-        "title": "Manage Models…"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.toggleChatAsEditor",
-        "title": "Toggle Chat as Editor"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.nextChatTab",
-        "title": "Next Chat Tab"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.previousChatTab",
-        "title": "Previous Chat Tab"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.selectNextChat",
-        "title": "Select Next Chat"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.selectPreviousChat",
-        "title": "Select Previous Chat"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.selectNextSubagentTab",
-        "title": "Select Next Subagent Tab"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.selectPreviousSubagentTab",
-        "title": "Select Previous Subagent Tab"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.closeChatTab",
-        "title": "Close Chat Tab"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.cancelAgentStep",
-        "title": "Cancel Agent Step"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.findInChat",
-        "title": "Find in Chat"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.hideFindInChat",
-        "title": "Hide Find in Chat"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.openAddContextMenu",
-        "title": "Add Context…"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.approveShellTool",
-        "title": "Approve Pending Shell Command"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.approveShellToolAllowlist",
-        "title": "Approve Pending Shell Command and Allowlist It"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.skipShellTool",
-        "title": "Skip Pending Shell Command"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.worktreeCommand",
-        "title": "Worktree Command (/worktree)"
-      },
-      {
-        "command": "ide.deleteWorktree",
-        "title": "Delete Worktree…"
-      },
-      {
-        "command": "ide.listWorktrees",
-        "title": "List Worktrees"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.focusEditorFromDiff",
-        "title": "Focus Editor from Inline Diff"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.acceptPlan",
-        "title": "Accept Plan"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.restoreCheckpoint",
-        "title": "Restore Checkpoint…"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.toggleTabCompletion",
-        "title": "Toggle Tab Completion"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.snoozeTabCompletion",
-        "title": "Snooze Tab Completion"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.unsnoozeTabCompletion",
-        "title": "Unsnooze Tab Completion"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.openBrowser",
-        "title": "Open Browser for Agent"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.openBrowserTab",
-        "title": "Open Browser Tab"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.newTab",
-        "title": "Browser Tab: New Tab"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.reloadTab",
-        "title": "Browser Tab: Reload"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.focusOmnibar",
-        "title": "Browser Tab: Focus Address Bar"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.screenshotToChat",
-        "title": "Browser Tab: Screenshot to Chat"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.togglePicker",
-        "title": "Browser Tab: Toggle Element Picker"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.captureAreaScreenshot",
-        "title": "Browser Tab: Capture Area Screenshot"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.hardReload",
-        "title": "Browser Tab: Hard Reload"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.copyCurrentUrl",
-        "title": "Browser Tab: Copy Current URL"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.zoomIn",
-        "title": "Browser Tab: Zoom In"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.zoomOut",
-        "title": "Browser Tab: Zoom Out"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.zoomReset",
-        "title": "Browser Tab: Reset Zoom"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.clearBrowsingData",
-        "title": "Browser Tab: Clear Browsing Data"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.browserTab.openDevTools",
-        "title": "Browser Tab: Open DevTools"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.reviewChanges",
-        "title": "Review Changes with Agent"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.fixWithAI",
-        "title": "Fix with AI"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.addToChat",
-        "title": "Add to Chat"
-      },
-      {
-        "command": "ide.exportTranscript",
-        "title": "Export Transcript"
-      },
-      {
-        "command": "ide.copyRequestId",
-        "title": "Copy Request ID"
-      },
-      {
-        "command": "ide.giveFeedback",
-        "title": "Give Feedback"
-      },
-      {
-        "command": "ide.renameChat",
-        "title": "Rename Chat"
-      },
-      {
-        "command": "ide.forkChat",
-        "title": "Fork Chat"
-      },
-      {
-        "command": "ide.openAgentSettings",
-        "title": "Agent Settings"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.terminalAiCommand",
-        "title": "Generate Terminal Command with AI"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.terminalRunBackground",
-        "title": "Run Command in Background"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.searchConversations",
-        "title": "Search Conversations"
-      },
-      {
-        "category": "IDE Agent",
-        "command": "ide.openSettings",
-        "title": "Open IDE Agent Settings"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.triggerTabSuggestion",
-        "title": "Trigger Tab Suggestion"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.acceptTabSuggestionFull",
-        "title": "Accept Tab Suggestion"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.acceptTabSuggestionPartial",
-        "title": "Accept Next Word of Tab Suggestion"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.peekTabSuggestion",
-        "title": "Peek Tab Suggestion"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.revertTabSuggestion",
-        "title": "Revert Tab Suggestion"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.abortTabRequests",
-        "title": "Abort Tab Requests"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.enableTabGlobally",
-        "title": "Enable Tab Completion"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.disableTabGlobally",
-        "title": "Disable Tab Completion"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.pickTabModel",
-        "title": "Pick Tab Model…"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.toggleTabForLanguage",
-        "title": "Toggle Tab for Current Language"
-      },
-      {
-        "category": "IDE Tab",
-        "command": "ide.tabStatusClicked",
-        "title": "IDE Tab Status"
-      },
-      {
-        "command": "ide.openAgentsWindow",
-        "title": "Open Agents Window",
-        "category": "IDE Agent"
-      },
-      {
-        "command": "ide.addSelectionToInlinePrompt",
-        "title": "Add Selection to Inline Prompt",
-        "category": "IDE Agent"
-      },
-      {
-        "command": "ide.setAgentMode",
-        "title": "Open Chat in Agent Mode",
-        "category": "IDE Agent"
-      },
-      {
-        "command": "ide.setPlanMode",
-        "title": "Open Chat in Plan Mode",
-        "category": "IDE Agent"
-      },
-      {
-        "command": "ide.setAskMode",
-        "title": "Open Chat in Ask Mode",
-        "category": "IDE Agent"
-      },
-      {
-        "command": "ide.setDebugMode",
-        "title": "Open Chat in Debug Mode",
-        "category": "IDE Agent"
-      },
-      {
-        "command": "ide.setMultitaskMode",
-        "title": "Open Chat in Multitask Mode",
-        "category": "IDE Agent"
-      },
-      {
-        "command": "ide.openDocs",
-        "title": "Open IDE Code Documentation",
-        "category": "IDE Agent"
-      }
-    ],
     "configuration": [
       {
-        "title": "IDE Code › General",
-        "order": 10,
+        "title": "IDE Inline Diff",
         "properties": {
-          "ide.chat.openAsEditorTabs": {
-            "default": true,
-            "description": "Open chats as editor tabs instead of the legacy stacked sidebar view (Cursor \"Open Chat as Editor Tabs\" parity).",
+          "ide.inlineDiff.enablePerformanceProtection": {
             "type": "boolean",
+            "default": true,
+            "markdownDescription": "Enable performance protection for inline diffs. When enabled, inline diff decorations will be suppressed if there are too many changes to prevent editor unresponsiveness.",
             "scope": "window"
           },
-          "ide.composer.conversationDensity": {
+          "ide.inlineDiff.maxDecorations": {
+            "type": "number",
+            "default": 100,
+            "markdownDescription": "Maximum number of inline diff changes before decorations are suppressed. Mirrors `inline_diff_performance_config.maxDecorations` (requires `ide.inlineDiff.enablePerformanceProtection`).",
+            "scope": "window"
+          }
+        }
+      },
+      {
+        "title": "IDE CPP",
+        "properties": {
+          "ide.cpp.enablePartialAccepts": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Enable partial accept/reject of individual changes in an inline edit diff preview. When disabled, only the full Accept/Reject commands apply. Inspired by Cursor's `cursor.cpp.enablePartialAccepts` (Cursor 3.25.9) — note Cursor's toggle gates Tab's next-word partial accept, while this one applies the same idea to inline-edit hunks (Cursor has no config gate on inline-diff partial edit). This is a different feature from `ide.tab.enablePartialAccepts`, which is the true equivalent of Cursor's toggle for Tab's next-word partial accept.",
+            "scope": "window"
+          }
+        }
+      },
+      {
+        "title": "IDE Onboarding",
+        "properties": {
+          "ide.onboarding.showChecklist": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Show the IDE Agent onboarding checklist view. Uncheck to hide it once you're finished; the checklist can be shown again with the \"IDE Agent: Show Onboarding Checklist\" command.",
+            "scope": "window"
+          }
+        }
+      },
+      {
+        "title": "IDE Bugbot",
+        "properties": {
+          "ide.bugbot.autoReviewOnCommit": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Automatically review your changes for issues after each commit (Cursor's verbatim \"Start Agent Review on Commit\" setting). Settings-UI surface for the `autoRunBugbotOnCommit` storage flag; the `cursor.enableAutoReviewOnCommit` command enables the same flag.",
+            "scope": "window",
+            "title": "Start Agent Review on Commit"
+          }
+        }
+      },
+      {
+        "title": "IDE Git & PRs",
+        "properties": {
+          "ide.git.attributeCommitsToAgent": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Mark Agent commits as 'Made with Cursor' (Cursor's verbatim \"Commit Attribution\" setting, storage key `attributeCommitsToAgent`, default true in Cursor 3.25.9). Settings-UI surface for the attribution flag the agent request context carries as `commitAttributionMessage: \"enabled\"`; when off, the field is omitted and Agent commits get no `Co-authored-by: Cursor <cursoragent@cursor.com>` trailer.",
+            "scope": "window",
+            "title": "Commit Attribution"
+          },
+          "ide.git.attributePRsToAgent": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Mark pull requests as made with Cursor (Cursor's verbatim \"PR Attribution\" setting, storage key `attributePRsToAgent`, default true in Cursor 3.25.9). Settings-UI surface for the attribution flag the agent request context carries as `prAttributionMessage: \"enabled\"`; when off, the field is omitted and Agent pull requests are not marked.",
+            "scope": "window",
+            "title": "PR Attribution"
+          }
+        }
+      },
+      {
+        "title": "IDE Agent Host API",
+        "properties": {
+          "ide.agent.privacyMode": {
             "type": "string",
             "enum": [
-              "compact-all-grouped",
-              "compact-ungrouped",
-              "detailed"
+              "UNSPECIFIED",
+              "NO_STORAGE",
+              "NO_TRAINING",
+              "USAGE_DATA_TRAINING_ALLOWED",
+              "USAGE_CODEBASE_TRAINING_ALLOWED"
             ],
-            "default": "compact-all-grouped",
-            "description": "Controls how shell and edit-file tool calls are displayed and grouped in agent conversations. Mirrors cursor.composer.conversationDensity."
+            "default": "NO_STORAGE",
+            "markdownDescription": "Privacy mode reported by the `cursor.getPrivacyModeEnum()` extension API. Enum names are verbatim from Cursor's `aiserver.v1.PrivacyMode`. HONEST-DIVERGENCE: Cursor derives this per-account from its auth service; this fork has no Cursor account, so the local setting is authoritative. Defaults to NO_STORAGE (never store code remotely).",
+            "scope": "window"
           },
-          "ide.composer.showEmptyStateTips": {
-            "type": "boolean",
-            "default": true,
-            "description": "Show rotating tips on the empty chat screen. Mirrors cursor.composer.showEmptyStateTips."
+          "ide.agent.featureGates": {
+            "type": "object",
+            "default": {},
+            "markdownDescription": "Local feature-gate overrides backing the `cursor.checkFeatureGate()` extension API, as a map of gate name to boolean. HONEST-DIVERGENCE: Cursor's gates are server-driven via its experiment service; this fork resolves gates locally and unknown gates are false.",
+            "scope": "window"
           },
-          "ide.window.openAgentsWindowOnStartup": {
-            "type": "boolean",
-            "default": false,
-            "description": "Open the Agents Window instead of the default window on startup.",
-            "scope": "application"
+          "ide.agent.dynamicConfig": {
+            "type": "object",
+            "default": {},
+            "markdownDescription": "Local dynamic-config values backing the `cursor.getDynamicConfigValue()` extension API, as a map of config key to value. HONEST-DIVERGENCE: Cursor serves these server-side via its experiment service; this fork resolves them locally and unknown keys are undefined.",
+            "scope": "window"
           },
-          "ide.composer.shouldChimeAfterChatFinishes": {
-            "type": "boolean",
-            "default": false,
-            "description": "Play a sound when a chat response is completed. Mirrors cursor.composer.shouldChimeAfterChatFinishes."
-          },
-          "ide.composer.customChimeSoundPath": {
-            "type": "string",
-            "default": "",
-            "description": "Path to a custom sound file (mp3, wav, ogg) to play when the agent finishes responding. Leave empty to use the default sound. Mirrors cursor.composer.customChimeSoundPath."
-          },
-          "ide.agent.terminal.notifyOnApproval": {
-            "type": "boolean",
-            "default": true,
-            "description": "Show an OS-level notification when the agent needs tool approval while the IDE window is in the background."
-          },
-          "ide.general.privacyMode": {
-            "type": "boolean",
-            "default": true,
-            "description": "Privacy Mode: disable telemetry and keep all processing local. IDE Code is local-first, so this is on by default."
-          },
-          "ide.general.leakDetectionEnabled": {
-            "type": "boolean",
-            "default": true,
-            "description": "Warn before sending a chat message that looks like it contains a secret (API keys, tokens, private keys)."
-          },
-          "ide.general.globalCursorIgnoreList": {
+          "ide.agent.egressAllowedFeatures": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "default": [],
-            "description": "Global list of files to always ignore in IDE features, across all workspaces. Glob patterns — same effect as adding them to a .cursorignore file in every workspace. Mirrors cursor.general.globalCursorIgnoreList."
-          },
-          "ide.general.fontSmoothingAntialiased": {
-            "type": "boolean",
-            "default": true,
-            "description": "Use grayscale antialiased text rendering in the chat view for thinner, crisper text. Mirrors cursor.general.fontSmoothingAntialiased_v2."
-          },
-          "ide.composer.cmdPFilePicker2": {
-            "type": "boolean",
-            "default": true,
-            "description": "Enable Cmd+P / Ctrl+P shortcut for the file picker in the chat input. Mirrors cursor.composer.cmdPFilePicker2."
-          }
-        }
-      },
-      {
-        "title": "IDE Code › Profile",
-        "order": 20,
-        "properties": {}
-      },
-      {
-        "title": "IDE Code › Appearance",
-        "order": 30,
-        "properties": {
-          "ide.composer.textSizeScale": {
-            "type": "number",
-            "enum": [
-              0.85,
-              1,
-              1.15,
-              1.3
-            ],
-            "default": 1,
-            "description": "Text size scale (relative to base) of AI chat messages. Mirrors cursor.composer.textSizeScale."
-          },
-          "ide.composer.codeBlockWordWrap": {
-            "type": "boolean",
-            "default": false,
-            "description": "Wrap long lines in agent chat code blocks. Mirrors cursor.composer.codeBlockWordWrap."
-          },
-          "ide.cmdk.useThemedDiffBackground": {
-            "type": "boolean",
-            "default": true,
-            "description": "Use themed background colors for inline diffs. Mirrors cursor.cmdk.useThemedDiffBackground2."
-          }
-        }
-      },
-      {
-        "title": "IDE Code › Plan & Usage",
-        "order": 40,
-        "properties": {}
-      },
-      {
-        "title": "IDE Code › Agents",
-        "order": 50,
-        "properties": {
-          "ide.composer.runMode": {
-            "type": "string",
-            "enum": [
-              "autoReview",
-              "allowlist",
-              "runEverything"
-            ],
-            "default": "autoReview",
-            "description": "Agent tool approval mode (Cursor's Run Modes). autoReview: ask before each tool call. allowlist: auto-approve safe read-only tools (read, grep, web search...), ask for the rest. runEverything: approve everything without asking — use with care."
-          },
-          "ide.agent.approvalShadowMode": {
-            "type": "boolean",
-            "default": false,
-            "description": "Approval shadow mode (Cursor smartModeClassifierShadowMode parity): approval evaluation runs and is logged but does not enforce — approvals auto-resolve as approve-once so turns are never blocked. For evaluation only.",
-            "scope": "machine"
-          },
-          "ide.composer.queueMessageDefaultBehavior": {
-            "type": "string",
-            "enum": [
-              "send",
-              "stop-and-send",
-              "queue"
-            ],
-            "default": "send",
-            "description": "Default behavior of sending a message (Enter) while the agent is streaming. send: deliver at the next opportune time. stop-and-send: stop the agent immediately and send. queue: queue after the current turn finishes. Mirrors cursor.composer.queueMessageDefaultBehavior."
-          },
-          "ide.composer.queueManualSendBehavior": {
-            "type": "string",
-            "enum": [
-              "send",
-              "stop-and-send",
-              "queue"
-            ],
-            "default": "stop-and-send",
-            "description": "Behavior of manually sending a message (Send button / Cmd+Enter) while the agent is streaming. Mirrors cursor.composer.queueManualSendBehavior."
-          },
-          "ide.composer.shouldAutoSaveNonAgent": {
-            "type": "boolean",
-            "default": true,
-            "description": "Automatically save open files when a chat turn completes. Mirrors cursor.composer.shouldAutoSaveNonAgent."
-          },
-          "ide.agent.terminal.enableAiChecks": {
-            "type": "boolean",
-            "default": true,
-            "description": "Allow AI features (@Terminal mentions, the terminal Cmd+K prompt) to read terminal output. Mirrors Cursor's terminal.enableAiChecks.",
-            "scope": "window"
-          },
-          "ide.agent.terminal.maxBufferChars": {
-            "type": "number",
-            "default": 20000,
-            "description": "Maximum characters of terminal output attached as chat context by @Terminal.",
-            "scope": "window"
-          },
-          "ide.terminal.toolbarOnSelection": {
-            "default": true,
-            "description": "Show the Add to Chat button when selecting text in the terminal.",
-            "type": "boolean",
+            "markdownDescription": "Feature keys whose network egress is explicitly decided as allowed, backing the `cursor.isFeatureEgressAllowed()` privacy egress gate. Only `github-context` consults this list: Cursor documents \"all GitHub egress stays off until it is decided\", so `github-context` egress stays blocked even with privacy mode off until its key is listed here.",
             "scope": "window"
           }
         }
       },
       {
-        "title": "IDE Code › Cloud Agents",
-        "order": 60,
-        "properties": {}
-      },
-      {
-        "title": "IDE Code › Models",
-        "order": 70,
+        "title": "IDE Worktrees",
         "properties": {
-          "ide.agent.enabledModels": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "default": [],
-            "description": "Models enabled for agent turns, as \"providerID/modelID[#variant]\" entries (see IDE Agent: Manage Models…). Empty (default) = every model the engine reports is enabled. Non-empty = exact allowlist: only listed models appear in the picker and the model cycler. Manage via the \"IDE Agent: Manage Models…\" command instead of editing raw strings.",
-            "scope": "window"
-          },
-          "ide.agent.engineMode": {
-            "type": "string",
-            "enum": [
-              "stub",
-              "sidecar"
-            ],
-            "default": "stub",
-            "description": "Agent engine backend: 'stub' runs the scripted demo engine, 'sidecar' spawns the real ide-code engine as a sidecar process.",
-            "scope": "machine"
-          },
-          "ide.agent.enginePath": {
-            "type": "string",
-            "default": "",
-            "description": "Path to the ide-code engine checkout (empty = auto-detect ~/workspace/ide-code). Used when ide.agent.engineMode is 'sidecar'.",
-            "scope": "machine"
-          }
-        }
-      },
-      {
-        "title": "IDE Code › Voice",
-        "order": 80,
-        "properties": {}
-      },
-      {
-        "title": "IDE Code › Source Control",
-        "order": 90,
-        "properties": {}
-      },
-      {
-        "title": "IDE Code › Browser & Network",
-        "order": 100,
-        "properties": {
-          "ide.browser.chromiumPath": {
-            "default": "",
-            "description": "Path to a Chrome/Chromium (or chrome-headless-shell) executable used by the in-IDE browser tab. When empty, well-known install locations are probed.",
-            "type": "string"
-          }
-        }
-      },
-      {
-        "title": "IDE Code › Code Intelligence",
-        "order": 110,
-        "properties": {
-          "ide.tab.enabled": {
-            "default": true,
-            "description": "Enable IDE Tab inline completions.",
-            "type": "boolean"
-          },
-          "ide.tab.model": {
-            "default": "",
-            "description": "Tab model id (empty = server default). Change via the \"IDE Agent: Select Tab Model\" command or the Tab status bar item.",
-            "type": "string"
-          },
-          "ide.tab.enablePartialAccepts": {
-            "default": true,
-            "description": "Allow partial (next-word) accepts of Tab completions via Ctrl+Right.",
-            "type": "boolean"
-          },
-          "ide.tab.suggestionWhileCommenting": {
-            "type": "boolean",
-            "default": true,
-            "description": "Show Tab suggestions while typing inside comments. When off, no suggestion is offered on comment lines."
-          },
-          "ide.tab.ignorePatterns": {
-            "default": [],
-            "description": "Glob patterns of files Tab completion ignores (analog of .cursorignore).",
-            "type": "array"
-          },
-          "ide.tab.disabledLanguages": {
-            "default": [
-              "markdown"
-            ],
-            "description": "Language IDs where Tab completion is disabled.",
-            "type": "array"
-          },
-          "ide.tab.maxConcurrentRequests": {
-            "default": 4,
-            "description": "Max concurrent in-flight Tab requests; oldest is evicted.",
-            "type": "number"
-          },
-          "ide.tab.suggestionDelayMs": {
+          "ide.worktreeMaxCount": {
             "type": "number",
             "default": 25,
-            "minimum": 0,
-            "maximum": 1000,
-            "description": "Delay in milliseconds before requesting a Tab suggestion after you stop typing."
+            "markdownDescription": "Maximum number of IDE-managed worktrees to retain across all workspaces. Older worktrees are removed first when the limit is exceeded (worktrees that are git-locked or have uncommitted changes are kept). Mirrors Cursor's `cursor.worktreeMaxCount` (default 25).",
+            "scope": "machine"
           },
-          "ide.tab.promptDisableCopilot": {
-            "default": true,
-            "description": "Offer to disable GitHub Copilot on first Tab suggestion.",
-            "type": "boolean"
+          "ide.worktreeCleanupIntervalHours": {
+            "type": "number",
+            "default": 6,
+            "markdownDescription": "How often (in hours) the periodic worktree cleanup pass runs: it enforces `ide.worktreeMaxCount` and `ide.worktreesGlobalMaxSizeGb`, removing the oldest worktrees first. Mirrors Cursor's `cursor.worktreeCleanupIntervalHours` (default 6).",
+            "scope": "machine"
           },
-          "ide.tab.telemetryEnabled": {
-            "default": true,
-            "description": "Record Tab session events and fate locally (privacy gate).",
-            "type": "boolean"
+          "ide.worktreesGlobalMaxSizeGb": {
+            "type": "number",
+            "default": 50,
+            "markdownDescription": "Maximum total size (GB) of all IDE-managed worktrees across all workspaces. When exceeded, the oldest worktrees are removed first until the total is under the limit. Set to 0 to disable the limit. Mirrors Cursor's `cursor.worktreesGlobalMaxSizeGb` (default 50, 0 = disabled).",
+            "scope": "machine"
           }
         }
       },
       {
-        "title": "IDE Code › Beta",
-        "order": 120,
-        "properties": {}
+        "title": "IDE Scheduled Tasks",
+        "properties": {
+          "ide.agent.scheduledTasksEnabled": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Enable the local scheduled-tasks runner (Cursor parity: GlassLocalScheduledTasksService). The runner is feature-gated off by default, mirroring Cursor's experiment-gate behavior. Scheduled prompts open in a new agent chat and run with the agent defaults.",
+            "scope": "window"
+          },
+          "ide.agent.scheduledTasks": {
+            "type": "array",
+            "default": [],
+            "markdownDescription": "Scheduled tasks for the local scheduled-tasks runner (Cursor parity: GlassLocalScheduledTasksService, feature `local-scheduled-tasks-runner`). Each task has: id (string), cron (5-field UTC cron, e.g. \"0 9 * * 1-5\"), prompt (string, the agent instruction to run), enabled (boolean), and an optional modelConfig ({modelName, maxMode, selectedModels} — defaults to {modelName:\"default\", maxMode:false, selectedModels:[]} per Cursor's model-config parser). Tasks only fire while `ide.agent.scheduledTasksEnabled` is true.",
+            "scope": "window",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "cron": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "modelConfig": {
+                  "type": "object",
+                  "properties": {
+                    "modelName": {
+                      "type": "string"
+                    },
+                    "maxMode": {
+                      "type": "boolean"
+                    },
+                    "selectedModels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "cron",
+                "prompt"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "title": "IDE Integrations",
+        "properties": {
+          "ide.integrations.github.clientId": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "OAuth client ID of the OAuth App you register with GitHub for this IDE's direct GitHub integration (authorization-code + PKCE flow against `https://github.com/login/oauth/authorize`, scopes `repo` and `read:user` — see `src/integrations/providers.ts`). Used by the `IDE Agent: Connect Integration` flow to create, update, and merge pull requests and read repositories. Leave empty to fall back to the `IDE_INTEGRATIONS_GITHUB_CLIENT_ID` environment variable. Machine scope: the value is read only from user (machine) settings, never from a workspace, so it cannot be committed with a repository.",
+            "scope": "machine"
+          },
+          "ide.integrations.github.clientSecret": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "OAuth client secret of the same GitHub OAuth App as `ide.integrations.github.clientId`. It is sent only during the token exchange with `https://github.com/login/oauth/access_token` (and only when non-empty); the resulting access tokens are stored in the OS keychain-backed SecretStorage. Leave empty to fall back to the `IDE_INTEGRATIONS_GITHUB_CLIENT_SECRET` environment variable. Never commit this value — machine scope keeps it in user (machine) settings only, never in a workspace.",
+            "scope": "machine"
+          },
+          "ide.integrations.linear.clientId": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "OAuth client ID of the OAuth application you register with Linear for this IDE's direct Linear integration (authorization-code + PKCE flow against `https://linear.app/oauth/authorize`, scopes `read` and `write` — see `src/integrations/providers.ts`). Used by the `IDE Agent: Connect Integration` flow to read and update Linear issues, projects, and cycles. Leave empty to fall back to the `IDE_INTEGRATIONS_LINEAR_CLIENT_ID` environment variable. Machine scope: the value is read only from user (machine) settings, never from a workspace, so it cannot be committed with a repository.",
+            "scope": "machine"
+          },
+          "ide.integrations.linear.clientSecret": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "OAuth client secret of the same Linear OAuth application as `ide.integrations.linear.clientId`. It is sent only during the token exchange with `https://linear.app/oauth/token` (and only when non-empty); the resulting access tokens are stored in the OS keychain-backed SecretStorage. Leave empty to fall back to the `IDE_INTEGRATIONS_LINEAR_CLIENT_SECRET` environment variable. Never commit this value — machine scope keeps it in user (machine) settings only, never in a workspace.",
+            "scope": "machine"
+          }
+        }
       }
     ],
-    "keybindings": [
+    "commands": [
       {
-        "command": "ide.newFollowup",
-        "key": "ctrl+y",
-        "mac": "cmd+y",
-        "when": "ideAgent.chatInputFocused"
-      },
-      {
-        "command": "ide.approveShellTool",
-        "key": "enter",
-        "when": "ideAgent.toolApprovalVisible"
-      },
-      {
-        "command": "ide.approveShellToolAllowlist",
-        "key": "shift+enter",
-        "when": "ideAgent.toolApprovalVisible"
-      },
-      {
-        "command": "ide.cancelAgentStep",
-        "key": "ctrl+shift+backspace",
-        "mac": "cmd+shift+backspace",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.closeChatTab",
-        "key": "ctrl+w",
-        "mac": "cmd+w",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.findInChat",
-        "key": "ctrl+f",
-        "mac": "cmd+f",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.hideFindInChat",
-        "key": "escape",
-        "when": "focusedView == 'ideAgent.chatView' && !ideAgent.toolApprovalVisible"
-      },
-      {
-        "command": "ide.newAgentChat",
-        "key": "ctrl+shift+l",
-        "mac": "cmd+shift+l"
-      },
-      {
-        "command": "ide.openAddContextMenu",
-        "key": "ctrl+alt+p",
-        "mac": "cmd+alt+p",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.openModeMenu",
-        "key": "ctrl+.",
-        "mac": "cmd+.",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.openModelPicker",
-        "key": "ctrl+shift+/",
-        "mac": "cmd+shift+/",
-        "when": "!editorTextFocus"
-      },
-      {
-        "command": "ide.skipShellTool",
-        "key": "escape",
-        "when": "ideAgent.toolApprovalVisible"
-      },
-      {
-        "command": "ide.openInlinePrompt",
-        "key": "ctrl+i",
-        "mac": "cmd+i",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "ide.acceptInlineEdit",
-        "key": "ctrl+enter",
-        "mac": "ctrl+enter",
-        "when": "ideAgent.inlineEditPending && editorTextFocus"
-      },
-      {
-        "command": "ide.rejectInlineEdit",
-        "key": "escape",
-        "mac": "escape",
-        "when": "ideAgent.inlineEditPending && editorTextFocus"
-      },
-      {
-        "command": "ide.toggleChatAsEditor",
-        "key": "ctrl+d",
-        "mac": "cmd+d",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.selectNextChat",
-        "key": "ctrl+alt+right",
-        "mac": "cmd+alt+right",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.selectPreviousChat",
-        "key": "ctrl+alt+left",
-        "mac": "cmd+alt+left",
-        "when": "focusedView == 'ideAgent.chatView'"
-      },
-      {
-        "command": "ide.acceptTabSuggestionPartial",
-        "key": "ctrl+right",
-        "mac": "ctrl+right",
-        "when": "inlineSuggestionVisible && config.ide.tab.enablePartialAccepts"
-      },
-      {
-        "command": "ide.triggerTabSuggestion",
-        "key": "ctrl+alt+space",
-        "mac": "cmd+alt+space",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "ide.abortTabRequests",
-        "key": "alt+k",
-        "mac": "alt+k",
-        "when": "editorTextFocus"
+        "command": "ide.scheduledTasks.tickNow",
+        "title": "Run Scheduled Tasks Check Now",
+        "category": "IDE Agent"
       },
       {
         "command": "ide.openAgentsWindow",
-        "key": "ctrl+alt+n",
-        "mac": "cmd+alt+n",
-        "when": "!editorTextFocus && !terminalFocus"
+        "title": "Agents Window",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.toggleTabCompletion",
-        "key": "ctrl+/",
-        "mac": "cmd+/",
-        "when": "!editorTextFocus && !ideAgent.chatInputFocused"
+        "command": "ide.openSubagentPreviewInAgentsTray",
+        "title": "Open subagent preview in agents tray",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.fixWithAI",
-        "key": "ctrl+shift+e",
-        "mac": "cmd+shift+e",
-        "when": "editorTextFocus"
+        "command": "ide.chatDownloadFile",
+        "title": "Download File",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.addToChat",
-        "key": "ctrl+l",
-        "mac": "cmd+l",
-        "when": "terminalFocus",
-        "args": {
-          "source": "terminal"
-        }
+        "command": "ide.newSideChat",
+        "title": "Start a side chat for this conversation",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.addToChat",
-        "key": "ctrl+l",
-        "mac": "cmd+l",
-        "when": "editorTextFocus || ideAgent.chatInputFocused",
-        "args": {
-          "source": "editor"
-        }
+        "command": "ide.openSideChat",
+        "title": "Open Side Chat",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.newChat",
-        "key": "ctrl+t",
-        "mac": "cmd+t",
-        "when": "focusedView == 'ideAgent.chatView'"
+        "command": "ide.openSideChatAgentId",
+        "title": "Open Side Chat by Agent ID",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.cancelAgentStep",
-        "key": "ctrl+shift+backspace",
-        "mac": "cmd+shift+backspace",
-        "when": "ideAgent.chatInputFocused"
+        "command": "ide.openSideChatTab",
+        "title": "Open Side Chat Tab",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.worktreeCommand",
-        "key": "ctrl+shift+enter",
-        "mac": "cmd+shift+enter",
-        "when": "ideAgent.chatInputFocused"
+        "command": "ide.openSideChats",
+        "title": "Open Side Chats",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.cycleModel",
-        "key": "ctrl+/",
-        "mac": "cmd+/",
-        "when": "ideAgent.chatInputFocused"
+        "command": "aichat.action.goToDefinitionFromChatResponse",
+        "title": "Go to Definition",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.terminalAiCommand",
-        "key": "ctrl+k",
-        "mac": "cmd+k",
-        "when": "terminalFocus"
+        "command": "browser.splitEditorWithNewBrowserTab",
+        "title": "Split Browser Tab",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.rejectInlineEdit",
-        "key": "ctrl+backspace",
-        "mac": "cmd+backspace",
-        "when": "ideAgent.inlineEditPending"
+        "command": "browser.splitEditorWithNewBrowserTabToDirection",
+        "title": "Split Browser Tab to Direction",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.toggleChatAsEditor",
-        "key": "ctrl+shift+i",
-        "mac": "cmd+shift+i",
-        "when": "focusedView == 'ideAgent.chatView'"
+        "command": "ide.openChangesTab",
+        "title": "Changes",
+        "category": "IDE Agent",
+        "icon": "$(diff)"
       },
       {
-        "command": "ide.addSelectionToInlinePrompt",
-        "key": "ctrl+shift+k",
-        "mac": "cmd+shift+k",
-        "when": "editorTextFocus"
+        "command": "ide.generateGitCommitMessage",
+        "title": "Generate Commit Message",
+        "category": "IDE Agent",
+        "icon": "$(sparkle)"
       },
       {
-        "command": "ide.focusEditorFromDiff",
-        "key": "ctrl+k",
-        "mac": "cmd+k",
-        "when": "ideAgent.inlineEditPending && !terminalFocus"
+        "command": "ideAgent.inbox.revealTab",
+        "title": "Go to Chat Tab",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.toggleChatAsEditor",
-        "key": "ctrl+alt+e",
-        "when": "focusedView == 'ideAgent.chatView'"
+        "command": "ide.onboarding.showChecklist",
+        "title": "Show Onboarding Checklist",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.browserTab.newTab",
-        "key": "ctrl+t",
-        "mac": "cmd+t",
-        "when": "activeWebviewPanelId == ideAgent.browserTab"
+        "command": "ide.onboarding.resetChecklist",
+        "title": "Reset Onboarding Checklist",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.browserTab.reloadTab",
-        "key": "ctrl+r",
-        "mac": "cmd+r",
-        "when": "activeWebviewPanelId == ideAgent.browserTab"
+        "command": "ide.onboarding.completeItem",
+        "title": "Mark Complete",
+        "category": "IDE Agent"
       },
       {
-        "command": "ide.browserTab.focusOmnibar",
-        "key": "ctrl+l",
-        "mac": "cmd+l",
-        "when": "activeWebviewPanelId == ideAgent.browserTab"
+        "command": "ide.onboarding.dismissItem",
+        "title": "Dismiss",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.installSkills.runSkillsCliAdd",
+        "title": "Install Skill from Folder",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.publishSkill.packSkillPlugin",
+        "title": "Publish Skill (Pack Plugin)",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.publishSkill.reloadConfirmAndDeleteLocalSkill",
+        "title": "Publish Skill: Reload, Confirm, and Delete Local Copy",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.resyncSkill.packInstalledSkillPlugin",
+        "title": "Resync Skill: Pack Installed Plugin",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.resyncSkill.reloadAndConfirmResync",
+        "title": "Resync Skill: Reload and Confirm",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.confirmStoreSkillsSynced",
+        "title": "Skills Store: Confirm Store Skills Synced",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.copySkillsFromStore",
+        "title": "Skills Store: Copy Skills from Store",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.copySkillsToStore",
+        "title": "Skills Store: Copy Skills to Store",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.moveSkillOutOfStore",
+        "title": "Skills Store: Move Skill Out of Store",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.moveSkillToStore",
+        "title": "Skills Store: Move Skill to Store",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.trashMigratedHomeSkills",
+        "title": "Skills Store: Trash Migrated Home Skills",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.trashMigratedStoreSkills",
+        "title": "Skills Store: Trash Migrated Store Skills",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.confirmOverwrite",
+        "title": "Skills Store: Confirm Overwrite",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.skillStore.reportMigrationProgress",
+        "title": "Skills Store: Report Migration Progress",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.unpublishSkill.removePluginCache",
+        "title": "Unpublish Skill (Remove Plugin Cache)",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.unpublishSkill.restoreLocalSkill",
+        "title": "Unpublish Skill: Restore Local Skill",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.browser.takeScreenshot",
+        "title": "Take Screenshot",
+        "category": "Browser",
+        "icon": "$(device-camera)"
+      },
+      {
+        "command": "ide.browser.captureArea",
+        "title": "Capture Area Screenshot",
+        "category": "Browser",
+        "icon": "$(screen-full)"
+      },
+      {
+        "command": "ide.browser.hardReload",
+        "title": "Hard Reload",
+        "category": "Browser",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ide.browser.copyUrl",
+        "title": "Copy Current URL",
+        "category": "Browser",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "ide.browser.zoomOut",
+        "title": "Zoom Out",
+        "category": "Browser",
+        "icon": "$(zoom-out)"
+      },
+      {
+        "command": "ide.browser.zoomIn",
+        "title": "Zoom In",
+        "category": "Browser",
+        "icon": "$(zoom-in)"
+      },
+      {
+        "command": "ide.browser.resetZoom",
+        "title": "Reset Zoom",
+        "category": "Browser",
+        "icon": "$(history)"
+      },
+      {
+        "command": "ide.browser.clearHistory",
+        "title": "Clear Browsing History",
+        "category": "Browser",
+        "icon": "$(history)"
+      },
+      {
+        "command": "ide.browser.clearCookies",
+        "title": "Clear Cookies",
+        "category": "Browser",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "ide.browser.clearCache",
+        "title": "Clear Cache",
+        "category": "Browser",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "ide.browser.toggleBookmarkBar",
+        "title": "Show Bookmark Bar",
+        "category": "Browser",
+        "icon": "$(bookmark)"
+      },
+      {
+        "command": "cursor.runEditorBugbot",
+        "title": "Run Bugbot Review on Latest Commit",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "cursor.openBugbotPane",
+        "title": "Open Bugbot Pane",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "cursor.reviewBugbotFromAd",
+        "title": "Review with Bugbot",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "cursor.enableAutoReviewOnCommit",
+        "title": "Enable Bugbot Auto-Review on Commit",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "cursor.installCli",
+        "title": "Install Cursor CLI",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "editor.action.knowledgeBase.add",
+        "title": "Add User Rule",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "editor.action.knowledgeBase.list",
+        "title": "View User Rules",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.copyPlanMarkdown",
+        "title": "Copy plan markdown",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.integrations.connect",
+        "title": "Connect Integration",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.integrations.disconnect",
+        "title": "Disconnect Integration",
+        "category": "IDE Agent"
+      },
+      {
+        "command": "ide.integrations.openSettings",
+        "title": "Open Integration Settings",
+        "category": "IDE Agent"
       }
     ],
-    "menus": {
-      "view/title": [
-        {
-          "command": "ide.newChat",
-          "group": "navigation",
-          "when": "view == 'ideAgent.sessionsView'"
-        }
-      ],
-      "editor/title/context": [
-        {
-          "command": "ide.exportTranscript",
-          "group": "1_chat@1",
-          "when": "resourceScheme == 'ide-chat'"
-        },
-        {
-          "command": "ide.copyRequestId",
-          "group": "1_chat@2",
-          "when": "resourceScheme == 'ide-chat'"
-        },
-        {
-          "command": "ide.giveFeedback",
-          "group": "1_chat@3",
-          "when": "resourceScheme == 'ide-chat'"
-        },
-        {
-          "command": "ide.renameChat",
-          "group": "1_chat@4",
-          "when": "resourceScheme == 'ide-chat'"
-        },
-        {
-          "command": "ide.forkChat",
-          "group": "1_chat@5",
-          "when": "resourceScheme == 'ide-chat'"
-        },
-        {
-          "command": "ide.openAgentSettings",
-          "group": "2_settings",
-          "when": "resourceScheme == 'ide-chat'"
-        }
-      ],
-      "editor/context": [
-        {
-          "command": "ide.addToChat",
-          "group": "ideAgent@1",
-          "when": "editorHasSelection",
-          "args": {
-            "source": "editor"
-          }
-        }
-      ],
-      "commandPalette": [
-        {
-          "command": "ide.exportTranscript",
-          "when": "never"
-        },
-        {
-          "command": "ide.copyRequestId",
-          "when": "never"
-        },
-        {
-          "command": "ide.giveFeedback",
-          "when": "never"
-        },
-        {
-          "command": "ide.renameChat",
-          "when": "never"
-        },
-        {
-          "command": "ide.forkChat",
-          "when": "never"
-        },
-        {
-          "command": "ide.openAgentSettings",
-          "when": "never"
-        }
-      ]
-    },
     "customEditors": [
       {
         "viewType": "ideAgent.chatEditor",
-        "displayName": "IDE Agent Chat",
+        "displayName": "Chat Editors",
         "selector": [
           {
             "scheme": "ide-chat"
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "ideAgent.customizeEditor",
+        "displayName": "Customize",
+        "selector": [
+          {
+            "scheme": "ide-customize"
+          }
+        ],
+        "priority": "default"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "ide.openAgentsWindow",
+          "when": "false"
+        },
+        {
+          "command": "ide.openChangesTab",
+          "when": "false"
+        },
+        {
+          "command": "ide.acceptInlineEdit",
+          "when": "false"
+        },
+        {
+          "command": "ide.rejectInlineEdit",
+          "when": "false"
+        },
+        {
+          "command": "ide.acceptPartialInlineEdit",
+          "when": "false"
+        },
+        {
+          "command": "ide.rejectPartialInlineEdit",
+          "when": "false"
+        },
+        {
+          "command": "ide.cancelInlineEditGeneration",
+          "when": "false"
+        },
+        {
+          "command": "ide.generateGitCommitMessage",
+          "when": "false"
+        }
+      ],
+      "scm/inputBox": [
+        {
+          "command": "ide.generateGitCommitMessage",
+          "when": "scmProvider == git"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "ide.onboarding.completeItem",
+          "when": "view == ideAgent.onboardingChecklist && viewItem == ideAgent.onboardingItem",
+          "group": "inline@1"
+        },
+        {
+          "command": "ide.onboarding.dismissItem",
+          "when": "view == ideAgent.onboardingChecklist && viewItem == ideAgent.onboardingItem",
+          "group": "inline@2"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "ide.browser.takeScreenshot",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_shot@1"
+        },
+        {
+          "command": "ide.browser.captureArea",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_shot@2"
+        },
+        {
+          "command": "ide.browser.hardReload",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_actions@1"
+        },
+        {
+          "command": "ide.browser.copyUrl",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_actions@2"
+        },
+        {
+          "command": "ide.browser.zoomOut",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_actions_zoom@1"
+        },
+        {
+          "command": "ide.browser.zoomIn",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_actions_zoom@2"
+        },
+        {
+          "command": "ide.browser.resetZoom",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_actions_zoom@3"
+        },
+        {
+          "command": "ide.browser.clearHistory",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_data@1"
+        },
+        {
+          "command": "ide.browser.clearCookies",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_data@2"
+        },
+        {
+          "command": "ide.browser.clearCache",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_data@3"
+        },
+        {
+          "command": "ide.browser.toggleBookmarkBar",
+          "when": "activeEditor == workbench.editor.browser",
+          "group": "8_ide_actions@3",
+          "toggled": {
+            "condition": "config.ide.browser.showBookmarkBar"
+          }
+        }
+      ]
+    },
     "views": {
       "ideAgent": [
         {
@@ -1058,6 +682,15 @@
         {
           "id": "ideAgent.sessionsView",
           "name": "Sessions"
+        },
+        {
+          "id": "ideAgent.inboxView",
+          "name": "Inbox"
+        },
+        {
+          "id": "ideAgent.onboardingChecklist",
+          "name": "Onboarding",
+          "when": "config.ide.onboarding.showChecklist"
         }
       ]
     },
@@ -1070,10 +703,14 @@
         }
       ]
     },
-    "viewsWelcome": [
+    "jsonValidation": [
       {
-        "contents": "No agent sessions yet.\nRun [New Chat](command:ide.newChat) to start.",
-        "view": "ideAgent.sessionsView"
+        "fileMatch": ".cursor/permissions.json",
+        "url": "./schemas/permissions.schema.json"
+      },
+      {
+        "fileMatch": ".cursor/worktrees.json",
+        "url": "./schemas/worktrees.schema.json"
       }
     ]
   },
@@ -1086,18 +723,28 @@
   "displayName": "IDE Agent",
   "enabledApiProposals": [
     "terminalDataWriteEvent",
-    "browser"
+    "browser",
+    "cursor"
   ],
   "engines": {
     "vscode": "^1.90.0"
   },
+  "extensionDependencies": [
+    "vscode.git"
+  ],
   "license": "MIT",
   "main": "./out/extension.js",
   "name": "ide-agent",
   "publisher": "ide-code",
   "scripts": {
     "check": "tsc --noEmit -p ./",
-    "compile": "tsc -p ./"
+    "compile": "tsc -p ./",
+    "postcompile": "node -e \"require('fs').copyFileSync('src/browser/test/fixture.html','out/browser/test/fixture.html')\"",
+    "pretest": "npm run compile",
+    "test": "node scripts/run-all-tests.js",
+    "test:browser": "node --test out/browser/test/run-tests.js",
+    "test:mcp": "node --test out/mcp/test/run-tests.js && node --test out/mcp/test/run-gaps11j-tests.js",
+    "test:services": "node scripts/run-all-tests.js --only services"
   },
   "version": "0.1.0"
 }

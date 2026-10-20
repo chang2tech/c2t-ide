@@ -208,7 +208,7 @@ export async function addToChat(
   // directly as a terminal selection chip (backward compatible: no args
   // keeps the previous editor/clipboard behavior).
   if (args?.source === "terminal" && typeof args.text === "string" && args.text.length > 0) {
-    await postSelectionContextToChat(host, "terminal selection", args.text);
+    await postSelectionContextToChat(host, "terminal selection", args.text, "terminal");
     return;
   }
   // Explicit source from the keybinding args — deterministic, no focus
@@ -226,7 +226,7 @@ export async function addToChat(
   // the editor path.
   const probed = await probeTerminalSelection(seam);
   if (probed !== undefined) {
-    await postSelectionContextToChat(host, "terminal selection", probed);
+    await postSelectionContextToChat(host, "terminal selection", probed, "terminal");
     return;
   }
   await addEditorSelectionToChat(host, seam);
@@ -242,7 +242,7 @@ export async function addEditorSelectionToChat(
     return;
   }
   const { label, content } = buildEditorSelectionLabel(seam, editor.document, editor.selection);
-  await postSelectionContextToChat(host, label, content);
+  await postSelectionContextToChat(host, label, content, "editor");
 }
 
 export async function addTerminalSelectionToChat(
@@ -254,14 +254,29 @@ export async function addTerminalSelectionToChat(
     seam.showInformationMessage("IDE Agent: select text in the terminal first.");
     return;
   }
-  await postSelectionContextToChat(host, "terminal selection", text);
+  await postSelectionContextToChat(host, "terminal selection", text, "terminal");
 }
 
 export async function postSelectionContextToChat(
   host: AddToChatHost,
   label: string,
   content: string,
+  /**
+   * GAPS-176: the selection's origin, when this post is a user
+   * "Add to Chat" insert. The webview turns it into a tooltip-pipeline
+   * `chat.insert_selection.*` event ONLY when the chip is actually
+   * inserted (not deduped) — see components/composer.ts. Programmatic
+   * attach paths that reuse this helper without a source stay silent.
+   * Editor inserts from this flow always carry a NON-EMPTY selection
+   * (empty selections return early in addEditorSelectionToChat).
+   */
+  tooltipInsertSource?: "editor" | "terminal",
 ): Promise<void> {
   await host.focusChatView();
-  host.postToWebview({ type: "addSelectionContext", label, content });
+  host.postToWebview({
+    type: "addSelectionContext",
+    label,
+    content,
+    ...(tooltipInsertSource ? { tooltipInsertSource } : {}),
+  });
 }

@@ -21,10 +21,11 @@ export {
   countSnapshotNodes,
 } from "./snapshot";
 export type { SnapshotNode, SnapshotOptions, SnapshotData } from "./snapshot";
-export { BrowserService, createCdpDriverFactory, assertCdpMethodAllowed } from "./service";
+export { BrowserService, createCdpDriverFactory, createNativeDriverFactory, assertCdpMethodAllowed } from "./service";
 export type { ServiceDriver, DriverFactory, ElementTarget, ScrollOptions, ClickOptions } from "./service";
 export { createBrowserMcpTools, ALL_CURSOR_BROWSER_TOOLS } from "./mcp-tools";
 export type { BrowserToolOptions } from "./mcp-tools";
+export { NativeBrowserPageDriver, isNativeBrowserTabAvailable } from "./nativeDriver";
 export {
   BrowserTabManager,
   BROWSER_TAB_AGENT_ID,

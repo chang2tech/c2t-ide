@@ -1012,6 +1012,14 @@ export class Repository implements Disposable {
 		this._sourceControl.acceptInputCommand = { command: 'git.commit', title: l10n.t('Commit'), arguments: [this._sourceControl] };
 		this._sourceControl.inputBox.validateInput = this.validateInput.bind(this);
 
+		// Publish the repository remotes to the workbench through the internal
+		// `SourceControl.remotes` API (mirrors Cursor's built-in git extension,
+		// which feeds the `cursorOrigin.copyCodeLink*` commands). The API is
+		// intentionally not declared in `vscode.d.ts`.
+		this.repository.getRemotes().then(remotes => {
+			(this._sourceControl as unknown as { remotes: readonly Remote[] | undefined }).remotes = remotes;
+		});
+
 		this.disposables.push(this._sourceControl);
 
 		this.updateInputBoxPlaceholder();

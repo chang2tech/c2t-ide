@@ -1,0 +1,486 @@
+{
+  "name": "ide-worktree-textmate",
+  "displayName": "Worktree TextMate Syntax",
+  "description": "Provides TextMate-only syntax highlighting for .ide-code/worktrees files without activating language servers.",
+  "version": "0.0.1",
+  "publisher": "ide-code",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "worktree-c",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.c",
+          "**/*-worktrees/**/*.c"
+        ]
+      },
+      {
+        "id": "worktree-cpp",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.cpp",
+          "**/.ide-code/worktrees/**/*.h",
+          "**/.ide-code/worktrees/**/*.hpp",
+          "**/*-worktrees/**/*.cpp",
+          "**/*-worktrees/**/*.h",
+          "**/*-worktrees/**/*.hpp"
+        ]
+      },
+      {
+        "id": "worktree-css",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.css",
+          "**/*-worktrees/**/*.css"
+        ]
+      },
+      {
+        "id": "worktree-go",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.go",
+          "**/*-worktrees/**/*.go"
+        ]
+      },
+      {
+        "id": "worktree-html",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.html",
+          "**/.ide-code/worktrees/**/*.htm",
+          "**/*-worktrees/**/*.html",
+          "**/*-worktrees/**/*.htm"
+        ]
+      },
+      {
+        "id": "worktree-java",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.java",
+          "**/*-worktrees/**/*.java"
+        ]
+      },
+      {
+        "id": "worktree-javascript",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.js",
+          "**/*-worktrees/**/*.js"
+        ]
+      },
+      {
+        "id": "worktree-javascriptreact",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.jsx",
+          "**/*-worktrees/**/*.jsx"
+        ]
+      },
+      {
+        "id": "worktree-json",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.json",
+          "**/*-worktrees/**/*.json"
+        ]
+      },
+      {
+        "id": "worktree-php",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.php",
+          "**/*-worktrees/**/*.php"
+        ]
+      },
+      {
+        "id": "worktree-protobuf",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.proto",
+          "**/*-worktrees/**/*.proto"
+        ]
+      },
+      {
+        "id": "worktree-python",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.py",
+          "**/*-worktrees/**/*.py"
+        ]
+      },
+      {
+        "id": "worktree-ruby",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.rb",
+          "**/*-worktrees/**/*.rb"
+        ]
+      },
+      {
+        "id": "worktree-rust",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.rs",
+          "**/*-worktrees/**/*.rs"
+        ]
+      },
+      {
+        "id": "worktree-shellscript",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.sh",
+          "**/.ide-code/worktrees/**/*.bash",
+          "**/*-worktrees/**/*.sh",
+          "**/*-worktrees/**/*.bash"
+        ]
+      },
+      {
+        "id": "worktree-sql",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.sql",
+          "**/*-worktrees/**/*.sql"
+        ]
+      },
+      {
+        "id": "worktree-swift",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.swift",
+          "**/*-worktrees/**/*.swift"
+        ]
+      },
+      {
+        "id": "worktree-typescript",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.ts",
+          "**/*-worktrees/**/*.ts"
+        ]
+      },
+      {
+        "id": "worktree-typescriptreact",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tsx",
+          "**/*-worktrees/**/*.tsx"
+        ]
+      },
+      {
+        "id": "worktree-yaml",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.yaml",
+          "**/.ide-code/worktrees/**/*.yml",
+          "**/*-worktrees/**/*.yaml",
+          "**/*-worktrees/**/*.yml"
+        ]
+      },
+      {
+        "id": "worktree-terraform",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tf",
+          "**/*-worktrees/**/*.tf"
+        ]
+      },
+      {
+        "id": "worktree-terraform-vars",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tfvars",
+          "**/*-worktrees/**/*.tfvars"
+        ]
+      },
+      {
+        "id": "worktree-hcl",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.hcl",
+          "**/*-worktrees/**/*.hcl"
+        ]
+      },
+      {
+        "id": "worktree-terraform-stack",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tfstack.hcl",
+          "**/.ide-code/worktrees/**/*.tfcomponent.hcl",
+          "**/*-worktrees/**/*.tfstack.hcl",
+          "**/*-worktrees/**/*.tfcomponent.hcl"
+        ]
+      },
+      {
+        "id": "worktree-terraform-deploy",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tfdeploy.hcl",
+          "**/*-worktrees/**/*.tfdeploy.hcl"
+        ]
+      },
+      {
+        "id": "worktree-terraform-test",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tftest.hcl",
+          "**/*-worktrees/**/*.tftest.hcl"
+        ]
+      },
+      {
+        "id": "worktree-terraform-mock",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tfmock.hcl",
+          "**/*-worktrees/**/*.tfmock.hcl"
+        ]
+      },
+      {
+        "id": "worktree-terraform-search",
+        "filenamePatterns": [
+          "**/.ide-code/worktrees/**/*.tfquery.hcl",
+          "**/*-worktrees/**/*.tfquery.hcl"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "worktree-c",
+        "scopeName": "source.worktree-c",
+        "path": "./syntaxes/worktree-c.tmLanguage.json"
+      },
+      {
+        "language": "worktree-cpp",
+        "scopeName": "source.worktree-cpp",
+        "path": "./syntaxes/worktree-cpp.tmLanguage.json"
+      },
+      {
+        "language": "worktree-css",
+        "scopeName": "source.worktree-css",
+        "path": "./syntaxes/worktree-css.tmLanguage.json"
+      },
+      {
+        "language": "worktree-go",
+        "scopeName": "source.worktree-go",
+        "path": "./syntaxes/worktree-go.tmLanguage.json"
+      },
+      {
+        "language": "worktree-html",
+        "scopeName": "source.worktree-html",
+        "path": "./syntaxes/worktree-html.tmLanguage.json"
+      },
+      {
+        "language": "worktree-java",
+        "scopeName": "source.worktree-java",
+        "path": "./syntaxes/worktree-java.tmLanguage.json"
+      },
+      {
+        "language": "worktree-javascript",
+        "scopeName": "source.worktree-javascript",
+        "path": "./syntaxes/worktree-javascript.tmLanguage.json"
+      },
+      {
+        "language": "worktree-javascriptreact",
+        "scopeName": "source.worktree-javascriptreact",
+        "path": "./syntaxes/worktree-javascriptreact.tmLanguage.json"
+      },
+      {
+        "language": "worktree-json",
+        "scopeName": "source.worktree-json",
+        "path": "./syntaxes/worktree-json.tmLanguage.json"
+      },
+      {
+        "language": "worktree-php",
+        "scopeName": "source.worktree-php",
+        "path": "./syntaxes/worktree-php.tmLanguage.json"
+      },
+      {
+        "language": "worktree-protobuf",
+        "scopeName": "source.worktree-protobuf",
+        "path": "./syntaxes/worktree-protobuf.tmLanguage.json"
+      },
+      {
+        "language": "worktree-python",
+        "scopeName": "source.worktree-python",
+        "path": "./syntaxes/worktree-python.tmLanguage.json"
+      },
+      {
+        "language": "worktree-ruby",
+        "scopeName": "source.worktree-ruby",
+        "path": "./syntaxes/worktree-ruby.tmLanguage.json"
+      },
+      {
+        "language": "worktree-rust",
+        "scopeName": "source.worktree-rust",
+        "path": "./syntaxes/worktree-rust.tmLanguage.json"
+      },
+      {
+        "language": "worktree-shellscript",
+        "scopeName": "source.worktree-shellscript",
+        "path": "./syntaxes/worktree-shellscript.tmLanguage.json"
+      },
+      {
+        "language": "worktree-sql",
+        "scopeName": "source.worktree-sql",
+        "path": "./syntaxes/worktree-sql.tmLanguage.json"
+      },
+      {
+        "language": "worktree-swift",
+        "scopeName": "source.worktree-swift",
+        "path": "./syntaxes/worktree-swift.tmLanguage.json"
+      },
+      {
+        "language": "worktree-typescript",
+        "scopeName": "source.worktree-typescript",
+        "path": "./syntaxes/worktree-typescript.tmLanguage.json"
+      },
+      {
+        "language": "worktree-typescriptreact",
+        "scopeName": "source.worktree-typescriptreact",
+        "path": "./syntaxes/worktree-typescriptreact.tmLanguage.json"
+      },
+      {
+        "language": "worktree-yaml",
+        "scopeName": "source.worktree-yaml",
+        "path": "./syntaxes/worktree-yaml.tmLanguage.json"
+      },
+      {
+        "language": "worktree-terraform",
+        "scopeName": "source.worktree-terraform",
+        "path": "./syntaxes/worktree-terraform.tmLanguage.json"
+      },
+      {
+        "language": "worktree-terraform-vars",
+        "scopeName": "source.worktree-terraform-vars",
+        "path": "./syntaxes/worktree-terraform-vars.tmLanguage.json"
+      },
+      {
+        "language": "worktree-hcl",
+        "scopeName": "source.worktree-hcl",
+        "path": "./syntaxes/worktree-terraform.tmLanguage.json"
+      },
+      {
+        "language": "worktree-terraform-stack",
+        "scopeName": "source.worktree-terraform-stack",
+        "path": "./syntaxes/worktree-terraform-stack.tmLanguage.json"
+      },
+      {
+        "language": "worktree-terraform-deploy",
+        "scopeName": "source.worktree-terraform-deploy",
+        "path": "./syntaxes/worktree-terraform-deploy.tmLanguage.json"
+      },
+      {
+        "language": "worktree-terraform-test",
+        "scopeName": "source.worktree-terraform-test",
+        "path": "./syntaxes/worktree-terraform-test.tmLanguage.json"
+      },
+      {
+        "language": "worktree-terraform-mock",
+        "scopeName": "source.worktree-terraform-mock",
+        "path": "./syntaxes/worktree-terraform-mock.tmLanguage.json"
+      },
+      {
+        "language": "worktree-terraform-search",
+        "scopeName": "source.worktree-terraform-search",
+        "path": "./syntaxes/worktree-terraform-search.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "IDE Worktrees",
+      "properties": {
+        "ide.worktree.lspWorktreesEnabled": {
+          "title": "Enable LSPs for Worktrees",
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Enable language server by default to provide code intelligence in agent worktree workspaces",
+          "tags": [
+            "language server",
+            "worktree"
+          ],
+          "scope": "window"
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[worktree-c]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-cpp]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-css]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-go]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-html]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-java]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-javascript]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-javascriptreact]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-json]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-php]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-protobuf]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-python]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-ruby]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-rust]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-shellscript]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-sql]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-swift]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-typescript]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-typescriptreact]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-yaml]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-terraform]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-terraform-vars]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-hcl]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-terraform-stack]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-terraform-deploy]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-terraform-test]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-terraform-mock]": {
+        "editor.semanticHighlighting.enabled": false
+      },
+      "[worktree-terraform-search]": {
+        "editor.semanticHighlighting.enabled": false
+      }
+    }
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p ./",
+    "compile": "tsc -p ./",
+    "test": "node --test test/validate.js test/lsp-opt-in.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  }
+}

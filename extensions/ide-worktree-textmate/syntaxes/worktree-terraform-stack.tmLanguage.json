@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-terraform-stack",
+  "patterns": [
+    {
+      "include": "source.hcl"
+    }
+  ]
+}

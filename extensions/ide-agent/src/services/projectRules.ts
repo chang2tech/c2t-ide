@@ -386,7 +386,8 @@ function findRuleMention(prompt: string, rule: ParsedRule): boolean {
   return false;
 }
 
-function formatRuleEntry(rule: ParsedRule, matchedFiles?: string[]): string {
+/** Exported so the context-ring measures the exact injected text (honest char count). */
+export function formatRuleEntry(rule: ParsedRule, matchedFiles?: string[]): string {
   const header =
     matchedFiles && matchedFiles.length > 0
       ? `<rule name="${rule.filename}" type="${rule.kind}" matched="${matchedFiles.join(",")}">`

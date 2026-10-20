@@ -121,13 +121,16 @@ export const SNAPSHOT_SCRIPT = `
   function getElementDescription(el) {
     if (!el) return "";
     var tag = (el.tagName || "").toLowerCase();
-    var role = el.getAttribute("role") || "";
-    var ariaLabel = el.getAttribute("aria-label") || "";
-    var text = (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 80);
+    // Use the same role + name computation as the snapshot stamping, so a
+    // ref's stored description ("<role> <name>") always matches what
+    // validateElementForInteraction recomputes. (The old version only looked
+    // at explicit role/aria-label/innerText, so e.g. placeholder-named inputs
+    // described as just "input" and failed their own description check.)
+    var role = el.getAttribute("role") || getImplicitRole(el) || "";
+    var name = computeAccessibleName(el, role);
     var parts = [tag];
     if (role) parts.push('role="' + role + '"');
-    if (ariaLabel) parts.push('"' + ariaLabel.slice(0, 80) + '"');
-    else if (text) parts.push('"' + text + '"');
+    if (name) parts.push('"' + name.slice(0, 80) + '"');
     return parts.join(" ");
   }
 

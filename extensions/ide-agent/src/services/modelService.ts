@@ -76,6 +76,85 @@ export interface ModelPickerEntry {
   description?: string;
   /** Present only for concrete engine models. */
   ref?: ModelRef;
+  /**
+   * Context window size in tokens, carried through from the catalog entry
+   * (DEV-GAPS-88; Cursor's AvailableModel `contextTokenLimit`). Absent
+   * when the engine reported no limit for the model.
+   */
+  contextTokenLimit?: number;
+}
+
+/**
+ * DEV-GAPS-88: read the context window (tokens) off a raw engine
+ * Model.Info wire object.
+ *
+ * The engine's catalog schema (ide-code `packages/schema/src/model.ts`)
+ * is `limit: { context: Int, input?: Int, output: Int }` — `limit.context`
+ * is the model's context window, the counterpart of Cursor's
+ * AvailableModel `context_token_limit` (field 15). Returns undefined for
+ * anything that is not a finite positive number: the field stays absent
+ * rather than guessed when the engine omits it.
+ */
+export function contextTokenLimitFromEngineModel(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const limit = (raw as Record<string, unknown>).limit;
+  if (!limit || typeof limit !== "object") return undefined;
+  const context = (limit as Record<string, unknown>).context;
+  if (typeof context !== "number" || !Number.isFinite(context) || context <= 0) {
+    return undefined;
+  }
+  return Math.round(context);
+}
+
+/**
+ * GAPS-183: resolve the REAL context-window denominator (tokens) for the
+ * currently active model — the `contextTokenLimit` the ring/report divide by.
+ *
+ * Resolution (catalog = `EngineAdapter.listModels()` output, whose entries
+ * carry `contextTokenLimit` mapped from the engine wire `limit.context` by
+ * IdeCodeEngineAdapter — DEV-GAPS-88):
+ * - explicit selection (has `ref`): the catalog entry for that exact ref
+ *   (providerID + id + variant, via ModelService.refEquals). If no entry
+ *   matches exactly, an entry with the same providerID + id is accepted —
+ *   a variant is the same underlying model, so its window is the model's
+ *   window; the exact match is always preferred when present.
+ * - "auto" / "cursor-default" (no ref): the ENGINE DEFAULT model's limit
+ *   (`EngineAdapter.getDefaultModel()`), because that is the model the
+ *   engine will actually run. The catalog alone cannot identify the
+ *   default, so without `defaultModel` this stays unresolved.
+ *
+ * Returns undefined when nothing usable resolves (unknown model, entry
+ * without a limit, missing default) — the caller then applies the fork's
+ * documented fallback (contextUsageService FALLBACK_CONTEXT_WINDOW_TOKENS).
+ * Never guesses a limit from a different model.
+ */
+export function resolveActiveContextTokenLimit(args: {
+  selection: ModelSelection;
+  catalog: readonly EngineModelInfo[];
+  defaultModel?: EngineModelInfo;
+}): number | undefined {
+  const usable = (info: EngineModelInfo | undefined): number | undefined => {
+    const limit = info?.contextTokenLimit;
+    return typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? Math.round(limit)
+      : undefined;
+  };
+  const { selection, catalog, defaultModel } = args;
+  if (selection.ref) {
+    const ref = selection.ref;
+    const exact = catalog.find((m) =>
+      ModelService.refEquals(
+        { id: m.id, providerID: m.providerID, ...(m.variant ? { variant: m.variant } : {}) },
+        ref,
+      ),
+    );
+    if (exact) {
+      return usable(exact);
+    }
+    const sameModel = catalog.find((m) => m.providerID === ref.providerID && m.id === ref.id);
+    return usable(sameModel);
+  }
+  return usable(defaultModel);
 }
 
 /** Derive the selection kind, including for legacy persisted selections. */
@@ -138,6 +217,7 @@ export function buildModelPickerEntries(
       label: ModelService.labelFor(m),
       description: m.name && m.name !== m.id ? m.id : undefined,
       ref,
+      ...(m.contextTokenLimit !== undefined ? { contextTokenLimit: m.contextTokenLimit } : {}),
     });
   }
   return entries;

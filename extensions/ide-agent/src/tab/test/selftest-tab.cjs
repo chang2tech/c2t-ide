@@ -22,11 +22,57 @@ const { acceptNextWord, nextWordBoundary, typeOverText } = require(path.join(OUT
 const { isFileTooLarge, globMatch, matchesAnyPattern, gateEditor, isLanguageDisabled } = require(path.join(OUT, 'gates.js'));
 const { FateTracker, ClearedSuggestionTracker, TabTelemetry } = require(path.join(OUT, 'telemetry.js'));
 const { resolveNextAction, FollowupRegistry } = require(path.join(OUT, 'nextEdit.js'));
-const { SnoozeManager } = require(path.join(OUT, 'snooze.js'));
+const { SnoozeManager, formatSnoozedTimeRemaining } = require(path.join(OUT, 'snooze.js'));
 
 const { KeybindingParser } = require(path.join(VS_OUT, 'keybindingParser.js'));
 // NOTE: KeyCode is a const enum (erased at runtime); Unknown = 0, KeyK = 41.
 const KEYCODE_UNKNOWN = 0;
+
+const { EngineTabBackend, asTabEngine } = require(path.join(OUT, 'backend.js'));
+
+/**
+ * Mock engine satisfying the structural TabCompletionEngine interface.
+ * Mocks the ADAPTER boundary (completeCode/listModels/getDefaultModel) —
+ * never the completion text: the text under test is fed through the mock.
+ */
+function mockEngine({ chunks = [''], models = [], defaultModel = undefined, onCompleteCode } = {}) {
+  return {
+    async *completeCode(prefix, suffix, modelId, signal, context) {
+      if (onCompleteCode) onCompleteCode({ prefix, suffix, modelId, context });
+      for (const c of chunks) {
+        if (signal.aborted) return;
+        await sleep(1);
+        if (signal.aborted) return;
+        yield c;
+      }
+    },
+    async listModels() {
+      return models;
+    },
+    async getDefaultModel() {
+      return defaultModel;
+    },
+  };
+}
+
+function makeReq(overrides = {}) {
+  return {
+    uri: 'file:///a.ts',
+    languageId: 'typescript',
+    fileName: 'a.ts',
+    prefix: 'const x = ',
+    suffix: '\n',
+    position: { line: 0, character: 10 },
+    triggerKind: 'typing',
+    ...overrides,
+  };
+}
+
+async function collectChunks(backend, req, signal) {
+  const out = [];
+  for await (const c of backend.fetchSuggestion(req, signal)) out.push(c);
+  return out;
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passed = 0;
@@ -176,6 +222,46 @@ function ok(name, cond) {
     ok('auto re-enable on expiry', !s.isSnoozed());
   }
 
+  // ============ formatSnoozedTimeRemaining (Cursor `formatSnoozedTimeRemaining`) ============
+  // Binary evidence: `r>0?`${r}h ${s}m`:`${s}m ${o}s`` where r/hours, s/minutes,
+  // o/seconds are derived from the remaining ms.
+  console.log('== formatSnoozedTimeRemaining ==');
+  {
+    const now = 1_700_000_000_000;
+    ok('hours>0 shows Xh Ym (seconds dropped)',
+      formatSnoozedTimeRemaining(now + (1 * 3600 + 2 * 60 + 33) * 1000, now) === '1h 2m');
+    ok('exact hour boundary', formatSnoozedTimeRemaining(now + 3600 * 1000, now) === '1h 0m');
+    ok('under an hour shows Ym Zs',
+      formatSnoozedTimeRemaining(now + (4 * 60 + 59) * 1000, now) === '4m 59s');
+    ok('59m59s stays minute format', formatSnoozedTimeRemaining(now + 3599999, now) === '59m 59s');
+    ok('zero remaining', formatSnoozedTimeRemaining(now, now) === '0m 0s');
+    ok('negative remaining clamps to zero', formatSnoozedTimeRemaining(now - 5000, now) === '0m 0s');
+    ok('3h snooze formats hours', formatSnoozedTimeRemaining(now + 3 * 3600 * 1000, now) === '3h 0m');
+  }
+
+  // ============ snooze survives window reload (maybeReenableCppIfSnoozed) ============
+  console.log('== snooze reload-resume ==');
+  {
+    const store = new Map();
+    const mk = (onExpire = () => {}) => new SnoozeManager(
+      { get: (k) => store.get(k), set: (k, v) => { v === undefined ? store.delete(k) : store.set(k, v); } },
+      onExpire);
+    const t0 = 1_700_000_000_000;
+    mk().snooze(5000, t0); // snoozed until t0+5000
+    // Simulate window reload: a fresh manager on the same persistent storage.
+    const reloaded = mk();
+    ok('reload: still snoozed before expiry', reloaded.isSnoozed(t0 + 1000));
+    ok('reload: maybeReenable does not clear a live snooze', reloaded.maybeReenable(t0 + 1000) === false);
+    ok('reload: snoozedUntil preserved across reload', reloaded.snoozedUntil() === t0 + 5000);
+    // Snooze expired while the window was closed: maybeReenable clears and
+    // fires onExpire so the status bar stays consistent (P2).
+    let fired = 0;
+    const gone = mk(() => { fired++; });
+    ok('reload: maybeReenable clears expired snooze', gone.maybeReenable(t0 + 6000) === true);
+    ok('reload: onExpire fired for expired snooze', fired === 1);
+    ok('reload: not snoozed after expired clear', !gone.isSnoozed(t0 + 6000));
+  }
+
   // ============ P1 REGRESSION: typeOverText position check ============
   console.log('== typeOverText (P1 QA-FILE-06 regression) ==');
   {
@@ -218,15 +304,22 @@ function ok(name, cond) {
   }
 
   // ============ P1 REGRESSION: Alt-kill keybinding validity ============
+  // Keybindings migrated to workbench core (src/vs/workbench/contrib/composer/
+  // browser/composerActions.ts); package.json no longer carries them.
   console.log('== Alt-kill keybinding (P1 QA-FILE-06 regression) ==');
   {
-    const pkg = JSON.parse(fs.readFileSync(
-      '/home/hatch/workspace/vscode/extensions/ide-agent/package.json', 'utf8'));
-    const kb = pkg.contributes.keybindings.find((k) => k.command === 'ide.abortTabRequests');
-    ok('ide.abortTabRequests has a keybinding', !!kb);
-    ok('keybinding is not bare-modifier', kb.key !== 'alt' && kb.mac !== 'alt');
-    // The new binding must parse to a REAL chord via VS Code's own parser.
-    const parsed = KeybindingParser.parseKeybinding(kb.key);
+    const actionsSrc = fs.readFileSync(
+      '/home/hatch/workspace/vscode/src/vs/workbench/contrib/composer/browser/composerActions.ts', 'utf8');
+    const clsIdx = actionsSrc.indexOf('export class ComposerAbortTabRequestsAction');
+    ok('composer.abortTabRequests action exists in core', clsIdx >= 0);
+    const chunk = actionsSrc.slice(clsIdx, actionsSrc.indexOf('registerAction2(ComposerAbortTabRequestsAction', clsIdx));
+    const primaryMatch = /primary:\s*([^,\n]+)/.exec(chunk);
+    ok('composer.abortTabRequests has a primary chord', !!primaryMatch);
+    const primaryExpr = primaryMatch[1].trim();
+    ok('primary is Alt+K (not bare-modifier)',
+      primaryExpr.includes('KeyMod.Alt') && primaryExpr.includes('KeyCode.KeyK'));
+    // The chord must parse to a REAL chord via VS Code's own parser.
+    const parsed = KeybindingParser.parseKeybinding('alt+k');
     ok('alt+k parses', !!parsed && parsed.chords.length === 1);
     const chord = parsed.chords[0];
     const isKeyCodeChord = typeof chord.keyCode === 'number';
@@ -240,7 +333,118 @@ function ok(name, cond) {
     const oldChord = oldParsed && oldParsed.chords[0];
     ok('old bare "alt" binding is not an Alt chord (proves it was dead)',
       !!oldChord && oldChord.altKey === false);
-    ok('when clause scopes to editor', kb.when === 'editorTextFocus');
+    ok('when clause scopes to editor', chunk.includes('EditorContextKeys.editorTextFocus'));
+  }
+
+  // ============ EngineTabBackend (real backend, mocked adapter) ============
+  console.log('== EngineTabBackend ==');
+  {
+    // asTabEngine feature-check: stub-like objects are NOT engines.
+    const eng = mockEngine();
+    ok('conforming object is an engine', asTabEngine(eng) === eng);
+    ok('stub-like object is not an engine', asTabEngine({ runTurn() {}, abortTurn() {} }) === undefined);
+    ok('undefined is not an engine', asTabEngine(undefined) === undefined);
+    ok('null is not an engine', asTabEngine(null) === undefined);
+
+    const avail = new EngineTabBackend(() => eng);
+    const noEng = new EngineTabBackend(() => undefined);
+    const stubEng = new EngineTabBackend(() => ({ runTurn() {}, abortTurn() {} }));
+    const throwing = new EngineTabBackend(() => { throw new Error('boom'); });
+    ok('isEngineAvailable true with engine', avail.isEngineAvailable === true);
+    ok('isEngineAvailable false without engine', noEng.isEngineAvailable === false);
+    ok('isEngineAvailable false with stub adapter', stubEng.isEngineAvailable === false);
+    ok('isEngineAvailable false when getter throws', throwing.isEngineAvailable === false);
+
+    // fetchSuggestion maps adapter chunks -> TabSuggestionChunk with real modelId.
+    const b1 = new EngineTabBackend(() => mockEngine({
+      chunks: ['line1\n', 'line2'],
+      defaultModel: { providerID: 'p', id: 'm', name: 'M' },
+    }));
+    const chunks1 = await collectChunks(b1, makeReq(), new AbortController().signal);
+    ok('last chunk done', chunks1.length > 0 && chunks1[chunks1.length - 1].done === true);
+    ok('chunks reassemble to engine text',
+      chunks1.map((c) => c.textDelta).join('') === 'line1\nline2');
+    ok('real modelId on chunks', chunks1.every((c) => c.modelId === 'p/m'));
+    ok('non-final chunks not done', chunks1.slice(0, -1).every((c) => c.done === false));
+
+    // modelOverride is passed through to completeCode (providerID/modelID form).
+    let seen;
+    const b2 = new EngineTabBackend(() => mockEngine({
+      chunks: ['x'],
+      onCompleteCode: (args) => { seen = args; },
+    }));
+    await collectChunks(b2, makeReq({ modelOverride: 'anthropic/claude-x' }), new AbortController().signal);
+    ok('modelOverride forwarded', seen && seen.modelId === 'anthropic/claude-x');
+    ok('prefix/suffix forwarded', seen && seen.prefix === 'const x = ' && seen.suffix === '\n');
+    ok('language context forwarded',
+      seen && seen.context && seen.context.languageId === 'typescript' && seen.context.fileName === 'a.ts');
+
+    // Malformed override (no providerID/) is NOT forwarded; default is used.
+    let seen2;
+    const b3 = new EngineTabBackend(() => mockEngine({
+      chunks: ['x'],
+      defaultModel: { providerID: 'p', id: 'd', name: 'D' },
+      onCompleteCode: (args) => { seen2 = args; },
+    }));
+    const chunks3 = await collectChunks(b3, makeReq({ modelOverride: 'canned-demo' }), new AbortController().signal);
+    ok('malformed override not forwarded', seen2 && seen2.modelId === undefined);
+    ok('falls back to default model id', chunks3[chunks3.length - 1].modelId === 'p/d');
+
+    // Abort mid-stream: generator returns, no done chunk.
+    const ac = new AbortController();
+    const b4 = new EngineTabBackend(() => mockEngine({ chunks: ['aaa\n', 'bbb\n', 'ccc'] }));
+    const iter = b4.fetchSuggestion(makeReq(), ac.signal)[Symbol.asyncIterator]();
+    const first = await iter.next();
+    ok('first chunk yielded', first.done === false);
+    ac.abort();
+    const rest = [];
+    for (;;) {
+      const r = await iter.next();
+      if (r.done) break;
+      rest.push(r.value);
+    }
+    ok('no chunks after abort', rest.length === 0);
+
+    // Paired fence stripping: ```lang ... ``` is removed.
+    const b5 = new EngineTabBackend(() => mockEngine({ chunks: ['```typescript\nconst x = 1;\n```'] }));
+    const chunks5 = await collectChunks(b5, makeReq(), new AbortController().signal);
+    ok('paired fences stripped',
+      chunks5.map((c) => c.textDelta).join('') === 'const x = 1;');
+
+    // Fence split across chunks is still stripped.
+    const b5b = new EngineTabBackend(() => mockEngine({ chunks: ['``', '`ts\nconst y = 2;\n', '```'] }));
+    const chunks5b = await collectChunks(b5b, makeReq(), new AbortController().signal);
+    ok('split fences stripped',
+      chunks5b.map((c) => c.textDelta).join('') === 'const y = 2;');
+
+    // Lone trailing fence (no leading fence) is real content — kept.
+    const b6 = new EngineTabBackend(() => mockEngine({ chunks: ['code\n```'] }));
+    const chunks6 = await collectChunks(b6, makeReq(), new AbortController().signal);
+    ok('lone trailing fence kept',
+      chunks6.map((c) => c.textDelta).join('') === 'code\n```');
+
+    // No engine → no chunks at all (never fake).
+    const chunks7 = await collectChunks(noEng, makeReq(), new AbortController().signal);
+    ok('no engine yields nothing', chunks7.length === 0);
+
+    // availableModels maps the engine catalog; honest empty when unavailable.
+    const b8 = new EngineTabBackend(() => mockEngine({
+      models: [{ id: 'm1', providerID: 'p1', name: 'Model One' }],
+    }));
+    const models8 = await b8.availableModels();
+    ok('model id is providerID/id compound',
+      models8.length === 1 && models8[0].id === 'p1/m1' && models8[0].displayName === 'Model One');
+    ok('availableModels empty without engine', (await noEng.availableModels()).length === 0);
+    const failing = new EngineTabBackend(() => ({
+      async *completeCode() {},
+      async listModels() { throw new Error('down'); },
+      async getDefaultModel() { return undefined; },
+    }));
+    ok('availableModels empty when listModels throws', (await failing.availableModels()).length === 0);
+
+    // fetchServerConfig: honest client defaults (no server).
+    const sc = await avail.fetchServerConfig();
+    ok('server config is client defaults', sc.isOn === true && sc.isGhostText === true);
   }
 
   console.log(`\nALL ${passed} CHECKS PASSED`);

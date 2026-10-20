@@ -9,11 +9,16 @@
  * - HTTP: transport errors reconnect rather than die (§B8); HTTP 404 with a
  *   session id invalidates the session and re-handshakes; HTTP 401/403 is
  *   NOT retryable (auth needed → `failed` state).
+ * - Wake/network-resume: `handleWake()` retries dead states per
+ *   `McpReconnectPolicy` — the real Cursor key is `retryNonRetryableOnWake`
+ *   (see types.ts; `connectOnWake`/`retryOnWake` are fabrications, 0 hits in
+ *   3.25.9). Non-retryable (auth) failures are retried on wake ONLY when
+ *   `retryNonRetryableOnWake` is true.
  * After supervision is exhausted the server is `failed` (manual restart via
  * the `ide.mcp.restartServer` command).
  */
 import { EventEmitter } from "node:events";
-import { ConfiguredServer, McpLogger, McpServerState, McpTransportClient } from "./types";
+import { ConfiguredServer, McpLogger, McpReconnectPolicy, McpServerState, McpTransportClient } from "./types";
 import { McpAuthError, McpHttpClient } from "./httpClient";
 import { McpStdioClient, McpToolDescription } from "./stdioClient";
 
@@ -21,6 +26,22 @@ const MAX_RESTARTS_PER_WINDOW = 5;
 const RESTART_WINDOW_MS = 10 * 60_000;
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
+
+/**
+ * Default wake/network-resume reconnect policy.
+ *
+ * Key names verified in Cursor 3.25.9 (§2.5). Value choices:
+ * - `networkResumeReconnectDebounceMs: 5000` — OBSERVED in the 3.25.9 host
+ *   bundle (`networkResumeReconnectDebounceMs` dynamic config, 5s).
+ * - `networkResumeReconnectEnabled: true`, `retryNonRetryableOnWake: false`
+ *   — fork defaults; Cursor's actual default values are UNKNOWN (marked,
+ *   not claimed).
+ */
+export const DEFAULT_MCP_RECONNECT_POLICY: Required<McpReconnectPolicy> = {
+  retryNonRetryableOnWake: false,
+  networkResumeReconnectEnabled: true,
+  networkResumeReconnectDebounceMs: 5_000,
+};
 
 export type McpManagerEvent =
   | { kind: "stateChanged"; state: McpServerState }
@@ -48,7 +69,12 @@ export class McpServerManager {
     readonly server: ConfiguredServer,
     private readonly roots: string[],
     private readonly logger: McpLogger,
-  ) {}
+    policy?: McpReconnectPolicy,
+  ) {
+    // Wake/retry config uses the verified Cursor key names only
+    // (`retryNonRetryableOnWake` et al — see types.ts; GAPS-22D).
+    this.policy = { ...DEFAULT_MCP_RECONNECT_POLICY, ...policy };
+  }
 
   get currentState(): McpServerState {
     return this.state;
@@ -81,6 +107,8 @@ export class McpServerManager {
   restart(): void {
     this.restartTimestamps = [];
     this.consecutiveFailures = 0;
+    this.lastFailureNonRetryable = false;
+    this.lastWakeMs = 0;
     this.stopClient();
     this.clearBackoff();
     this.setState("idle");
@@ -112,7 +140,9 @@ export class McpServerManager {
         // P1-4: a 401/403 mid-session is NOT retryable (§B8) — the token
         // expired or was revoked. Mirror onStartFailure: surface an
         // actionable message and fail fast instead of leaving the server
-        // "ready" while every subsequent call fails.
+        // "ready" while every subsequent call fails. Flagged non-retryable
+        // so handleWake() needs retryNonRetryableOnWake to retry it.
+        this.lastFailureNonRetryable = true;
         this.lastError = `${err.message} — configure headers/OAuth credentials in mcp.json, then restart the server`;
         this.logger.appendLine(`[mcp] ${this.server.displayName}: authentication failed mid-session (${err.message})`);
         this.stopClient();
@@ -159,6 +189,7 @@ export class McpServerManager {
       if (this.disposed) return;
       this.serverInfo = init.serverInfo;
       this.consecutiveFailures = 0;
+      this.lastFailureNonRetryable = false;
       this.lastError = undefined;
       await this.refreshTools();
       if (this.disposed) return;
@@ -191,10 +222,13 @@ export class McpServerManager {
     this.logger.appendLine(`[mcp] ${this.server.displayName}: start failed (${err.message})`);
     if (err instanceof McpAuthError) {
       // §B8: auth failures are NOT retryable — needs OAuth or credentials.
+      // Flagged so handleWake() only retries them when retryNonRetryableOnWake.
+      this.lastFailureNonRetryable = true;
       this.lastError = `${err.message} — configure headers/OAuth credentials in mcp.json, then restart the server`;
       this.setState("failed");
       return;
     }
+    this.lastFailureNonRetryable = false;
     this.scheduleBackoff();
   }
 
@@ -242,6 +276,48 @@ export class McpServerManager {
     }
     this.client = undefined;
   }
+
+  private readonly policy: Required<McpReconnectPolicy>;
+  private lastFailureNonRetryable = false;
+  private lastWakeMs = 0;
+
+  /**
+   * Wake / network-resume handler — Cursor parity (§2.5).
+   *
+   * Semantics (verified key `retryNonRetryableOnWake`):
+   * - No-op when disposed, when `networkResumeReconnectEnabled` is false,
+   *   or while the connection is live/already retrying (ready/starting/backoff).
+   * - Retries immediately otherwise (idle, degraded, failed-from-exhaustion).
+   * - Servers in `failed` because of a NON-RETRYABLE failure (401/403 auth,
+   *   §B8) are retried ONLY when `retryNonRetryableOnWake` is true.
+   * Wake signals are debounced by `networkResumeReconnectDebounceMs` so a
+   * burst of resume events triggers a single reconnect attempt.
+   */
+  handleWake(): void {
+    if (this.disposed) return;
+    if (!this.policy.networkResumeReconnectEnabled) return;
+    const now = Date.now();
+    if (now - this.lastWakeMs < this.policy.networkResumeReconnectDebounceMs) return;
+    this.lastWakeMs = now;
+    const state = this.state;
+    if (state === "ready" || state === "starting" || state === "backoff" || state === "disabled") return;
+    if (state === "failed" && this.lastFailureNonRetryable && !this.policy.retryNonRetryableOnWake) {
+      this.logger.appendLine(
+        `[mcp] ${this.server.displayName}: wake — skipping retry (non-retryable failure; retryNonRetryableOnWake=false)`,
+      );
+      return;
+    }
+    this.logger.appendLine(
+      `[mcp] ${this.server.displayName}: wake — reconnecting (state=${state}, retryNonRetryableOnWake=${this.policy.retryNonRetryableOnWake})`,
+    );
+    this.clearBackoff();
+    this.setState("idle");
+    this.start();
+  }
+
+  get reconnectPolicy(): Required<McpReconnectPolicy> {
+    return { ...this.policy };
+  }
 }
 
 /**
@@ -257,7 +333,9 @@ function createTransportClient(
     onClose: (code: number | null, signal: string | null) => void;
   },
 ): McpTransportClient {
-  if (server.transport === "streamable_http" || server.transport === "sse") {
+  // WORKER-GAPS-32C (mcp-transport-types): canonical literal is the
+  // binary-verbatim camelCase `streamableHttp`.
+  if (server.transport === "streamableHttp" || server.transport === "sse") {
     return new McpHttpClient({
       url: server.config.url!,
       headers: server.config.headers,

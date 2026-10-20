@@ -1,9 +1,10 @@
 /**
  * hookTypes — Cursor-style agent Hooks: types and the verified 21-event inventory.
  *
- * Parity source: `docs/rea/parity-rules-mcp.md` §C (Hooks). Cursor's docs claim
- * 22 events; the bundle confirms 21 distinct names. The 22nd is UNKNOWN —
- * it is deliberately NOT invented here (see KNOWN_EVENTS).
+ * Parity source: cursor.com/docs/hooks (fetched 2026-10-20 — the page lists
+ * exactly 21 events: 18 agent + 2 tab + 1 app-lifecycle). An earlier REA note
+ * claimed "22 events", but its own itemized list summed to 21 — the official
+ * docs are authoritative. No 22nd event is invented here (see KNOWN_EVENTS).
  */
 
 /** The 21 hook events OBSERVED in the Cursor 3.25.6 bundle. Do not add more. */
@@ -75,6 +76,66 @@ export const MATCHER_FIELDS: Record<string, string> = {
   stop: "stopKind",
 };
 
+/**
+ * Docs matcher table (cursor.com/docs/hooks, "Available matchers by hook",
+ * verbatim). `field` = the payload field the regex tests; `constant` = the
+ * fixed value the regex tests for events whose matcher is documented as a
+ * constant (e.g. beforeReadFile is "Matched against the value `Read`").
+ * Events not listed here have no documented matcher (sessionStart,
+ * sessionEnd, preCompact, beforeMCPExecution, afterMCPExecution,
+ * workspaceOpen) — a matcher on those runs the hook unconditionally.
+ *
+ * NOTE: the `field` names are OUR payload keys (e.g. `subagentType`), which
+ * is what the trigger sites put in the payload; the docs describe the VALUES
+ * ("runs against the subagent type"), not the JSON key spelling.
+ */
+export const HOOK_MATCHER_SPECS: Record<
+  HookEventName,
+  { field?: string; constant?: string }
+> = {
+  sessionStart: {},
+  sessionEnd: {},
+  preToolUse: { field: "tool" },
+  postToolUse: { field: "tool" },
+  postToolUseFailure: { field: "tool" },
+  subagentStart: { field: "subagentType" },
+  subagentStop: { field: "subagentType" },
+  beforeShellExecution: { field: "command" },
+  afterShellExecution: { field: "command" },
+  beforeMCPExecution: {},
+  afterMCPExecution: {},
+  beforeReadFile: { constant: "Read" },
+  afterFileEdit: { constant: "Write" },
+  beforeSubmitPrompt: { constant: "UserPromptSubmit" },
+  preCompact: {},
+  stop: { constant: "Stop" },
+  afterAgentResponse: { constant: "AgentResponse" },
+  afterAgentThought: { constant: "AgentThought" },
+  beforeTabFileRead: { constant: "TabRead" },
+  afterTabFileEdit: { constant: "TabWrite" },
+  workspaceOpen: {},
+};
+
+/**
+ * Resolve the string a hook entry's `matcher` regex is tested against.
+ * Returns undefined when there is no documented matcher value for the
+ * event (or the field is absent) — callers treat that as "run the hook".
+ */
+export function getHookMatcherValue(
+  event: HookEventName,
+  payload: Record<string, unknown>,
+): string | undefined {
+  const spec = HOOK_MATCHER_SPECS[event];
+  if (!spec) {
+    return undefined;
+  }
+  if (spec.field) {
+    const v = payload[spec.field];
+    return typeof v === "string" ? v : undefined;
+  }
+  return spec.constant;
+}
+
 /** A validated hooks.json file. */
 export interface HooksConfigFile {
   version?: number;
@@ -111,6 +172,13 @@ export interface SourceLoadResult {
 /** Base input contract sent to every hook (stdin JSON + $ARGUMENTS). */
 export interface HookPayload {
   conversation_id?: string;
+  /**
+   * DEV-GAPS-112 (hooks-sessionstart-payload): Cursor's executeHookForStep
+   * (3.25.9 desk@32523436) synthesizes `session_id` for every event except
+   * workspaceOpen as `session_id ?? conversation_id`. For sessionStart the
+   * docs (cursor.com/docs/hooks) state it is "same as conversation_id".
+   */
+  session_id?: string;
   generation_id?: string;
   model?: string;
   model_id?: string;
@@ -148,6 +216,18 @@ export interface HookRunOutcome {
   agentMessage?: string;
   /** pluginPaths from the hook's stdout JSON (workspaceOpen). */
   pluginPaths?: string[];
+  /**
+   * DEV-GAPS-112: `env` from the hook's stdout JSON (sessionStart only —
+   * Cursor's sessionStartResponse validator, desk Woh: env must be an
+   * object of string→string; any non-string value invalidates the field).
+   */
+  env?: Record<string, string>;
+  /**
+   * DEV-GAPS-112: `additional_context` from the hook's stdout JSON
+   * (sessionStart and the other additional_context events in Cursor's
+   * dXi set, desk@16519397).
+   */
+  additionalContext?: string;
 }
 
 /** Aggregated result of running all matching hooks for one event. */
@@ -165,6 +245,17 @@ export interface HookResult {
   /** Raw hook stdout to append to the agent's context (capped). */
   contextAdditions: string[];
   pluginPaths: string[];
+  /**
+   * DEV-GAPS-112: merged `env` from sessionStart hooks (Cursor Qe_ merge,
+   * desk@16516541: per-key spread merge, later hooks win per key). Empty
+   * for every other event.
+   */
+  env: Record<string, string>;
+  /**
+   * DEV-GAPS-112: merged `additional_context` (Cursor Qe_: multiple hooks
+   * joined with "\n\n---\n\n"). Undefined when no hook returned one.
+   */
+  additionalContext?: string;
   outcomes: HookRunOutcome[];
 }
 

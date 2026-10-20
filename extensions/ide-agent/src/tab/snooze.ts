@@ -14,6 +14,21 @@ export interface SnoozeStorage {
 
 export const SNOOZE_UNTIL_KEY = 'ide.tab.snoozedUntil';
 
+/**
+ * Port of Cursor's `formatSnoozedTimeRemaining` (binary evidence:
+ * workbench.desktop.main.js, `r>0?`${r}h ${s}m`:`${s}m ${o}s``). Cursor calls
+ * it with the snoozed-at timestamp plus the stored snooze duration; we store
+ * `snoozedUntil` directly, which is the same arithmetic (`until - now`).
+ * Pure — safe for unit tests.
+ */
+export function formatSnoozedTimeRemaining(until: number, now: number = Date.now()): string {
+  const ms = Math.max(0, until - now);
+  const h = Math.floor(ms / (1000 * 60 * 60));
+  const m = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+  const s = Math.floor((ms % (1000 * 60)) / 1000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
+}
+
 export class SnoozeManager {
   private timer: ReturnType<typeof setTimeout> | undefined;
 

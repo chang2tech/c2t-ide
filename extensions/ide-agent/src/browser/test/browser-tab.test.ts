@@ -10,6 +10,7 @@
  */
 import { describe, it } from "node:test";
 import * as assert from "node:assert";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -22,7 +23,7 @@ import {
   ZOOM_MIN,
   ZOOM_MAX,
 } from "../tabView";
-import { browserCaptureDir, resolveChromiumPath, screenshotFilename } from "../chromium";
+import { browserCaptureDir, resolveChromiumPath, screenshotFilename, saveUserImageDataUrl, userImageAttachmentsDir } from "../chromium";
 import { PickerController } from "../picker";
 import { BrowserService, ServiceDriver } from "../service";
 import type { PageDriver, ScreencastOptions } from "../driver";
@@ -190,6 +191,29 @@ describe("chromium resolution", () => {
   });
   it("capture dir lives under the .ide-code data folder", () => {
     assert.strictEqual(browserCaptureDir(), path.join(os.homedir(), ".ide-code", "browser-captures"));
+  });
+  it("user image attachments dir prefers the workspace, falls back to home", () => {
+    assert.strictEqual(userImageAttachmentsDir("/ws/proj"), path.join("/ws/proj", ".ide-code", "attachments"));
+    assert.strictEqual(userImageAttachmentsDir(), path.join(os.homedir(), ".ide-code", "attachments"));
+  });
+  it("saveUserImageDataUrl writes a png data URL to disk and returns its path", () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ide-userimg-"));
+    try {
+      const dataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+      const filePath = saveUserImageDataUrl(dataUrl, ws);
+      assert.ok(filePath.startsWith(path.join(ws, ".ide-code", "attachments") + path.sep));
+      assert.ok(filePath.endsWith(".png"));
+      assert.ok(fs.existsSync(filePath), "file exists on disk");
+      assert.ok(fs.statSync(filePath).size > 0);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+  it("saveUserImageDataUrl rejects non-image and oversized payloads", () => {
+    assert.throws(() => saveUserImageDataUrl("data:text/plain;base64,aGk=", "/tmp"), /supported image/);
+    assert.throws(() => saveUserImageDataUrl("not-a-data-url", "/tmp"), /supported image/);
+    const huge = "A".repeat(Math.ceil((15 * 1024 * 1024 * 4) / 3) + 8);
+    assert.throws(() => saveUserImageDataUrl(`data:image/png;base64,${huge}`, "/tmp"), /15MB/);
   });
 });
 

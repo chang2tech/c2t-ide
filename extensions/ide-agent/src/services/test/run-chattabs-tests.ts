@@ -2,10 +2,12 @@
  * DEV-CHAT-TABS tests (node:test, vscode stubbed via ./vscode-stub).
  *
  * Covers:
- *  - MessageQueueService: remove / move (reorder) / overdue-steer rule
- *    (Cursor parity: resyncOverduePendingSteerFallback, 300_000 ms).
- *  - HumanReviewService: 24h approval TTL (approve-allowlist remembered),
- *    TTL expiry, shadow mode (evaluate-but-don't-enforce).
+ *  - MessageQueueService: remove / move (reorder) / unbounded (DIG-CONTINUOUS
+ *    debunked the caps and the 5-minute overdue rule — Cursor's addToQueue
+ *    is unbounded with no overdue concept in the queue UI).
+ *  - HumanReviewService: approve-allowlist remembered indefinitely
+ *    (no TTL — DIG-CONTINUOUS debunked the 24h TTL; Cursor's mcpAllowedTools
+ *    has no timestamps/expiry), shadow mode (evaluate-but-don't-enforce).
  *  - ChatTabService: create/switch/close/rename/next/prev, per-tab state
  *    isolation (bubbles/mode/queue), auto-title.
  *  - ComposerDataService.revertToCheckpoint: files-only (PRODUCT DECISION
@@ -14,7 +16,7 @@
  *
  * Run after `tsc`:  node --test out/services/test/run-chattabs-tests.js
  */
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import * as assert from "node:assert";
 import "./vscode-stub";
 import { vscodeStub } from "./vscode-stub";
@@ -25,7 +27,33 @@ import { ChatTabService } from "../chatTabService";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-describe("MessageQueueService — remove/move/overdue", () => {
+/**
+ * DEV-GAPS-25: every ComposerDataService / ChatTabService created below is
+ * tracked so the file-level after() can dispose it. An undisposed composer
+ * leaks its `bun serve` sidecar (IdeCodeEngineAdapter — engineMode defaults
+ * to "sidecar", and answering a question while idle starts a real turn via
+ * `void runTurn()`): the sidecar's piped stdio keeps the event loop alive, so
+ * node:test hangs at file level after all suites pass ("Promise resolution is
+ * still pending..."). dispose() is idempotent and kills the sidecar
+ * (SIGTERM, escalated to SIGKILL).
+ */
+const trackedDisposables = new Set<{ dispose(): void }>();
+function track<T extends { dispose(): void }>(d: T): T {
+  trackedDisposables.add(d);
+  return d;
+}
+after(() => {
+  for (const d of trackedDisposables) {
+    try {
+      d.dispose();
+    } catch {
+      /* teardown must never fail the run */
+    }
+  }
+  trackedDisposables.clear();
+});
+
+describe("MessageQueueService — remove/move/unbounded", () => {
   it("removes a queued message by id and fires the change event", () => {
     const q = new MessageQueueService();
     const seen: number[] = [];
@@ -58,19 +86,31 @@ describe("MessageQueueService — remove/move/overdue", () => {
     assert.equal(q.move("nope", 1), false);
   });
 
-  it("flags messages older than 5 minutes as overdue (steer rule)", () => {
+  it("is unbounded — no message cap, no overdue concept (DIG-CONTINUOUS 2026-10-19)", () => {
     const q = new MessageQueueService();
+    for (let i = 0; i < 25; i++) {
+      q.enqueue(`msg-${i}`, "agent");
+    }
+    // Cursor's addToQueue is unbounded: all 25 stay, nothing drops.
+    assert.equal(q.length, 25);
+    // A message older than 5 minutes is NOT "overdue" — the overdue badge
+    // was fabricated (0 hits in Cursor's queue UI); the concept is gone.
     const m = q.enqueue("stale", "agent");
-    const now = Date.now();
-    assert.equal(q.isOverdue(m, now), false);
-    // 300_000 ms = Cursor's resyncOverduePendingSteerFallback constant.
-    assert.equal(MessageQueueService.OVERDUE_MS, 300_000);
-    assert.equal(q.isOverdue(m, m.enqueuedAt + 300_000), true);
-    assert.equal(q.isOverdue(m, m.enqueuedAt + 299_999), false);
+    assert.equal(
+      (q as unknown as { isOverdue?: unknown }).isOverdue,
+      undefined,
+      "isOverdue must not exist",
+    );
+    assert.equal(
+      (MessageQueueService as unknown as { OVERDUE_MS?: unknown }).OVERDUE_MS,
+      undefined,
+      "OVERDUE_MS must not exist",
+    );
+    assert.ok(m.enqueuedAt > 0);
   });
 });
 
-describe("HumanReviewService — 24h approval TTL", () => {
+describe("HumanReviewService — allowlist (no TTL)", () => {
   /** Request an approval and capture its real approvalId. */
   function request(svc: HumanReviewService, toolCallId: string, title: string) {
     let id = "";
@@ -82,14 +122,14 @@ describe("HumanReviewService — 24h approval TTL", () => {
     return { id, promise };
   }
 
-  it("remembers approve-allowlist for 24h (no second card)", async () => {
+  it("remembers approve-allowlist indefinitely (no second card)", async () => {
     const svc = new HumanReviewService();
     const { id, promise } = request(svc, "tc-1", "rm -rf /");
     assert.ok(id, "approval was requested");
     svc.resolveApproval(id, { optionId: "approve-allowlist" });
     const r1 = await promise;
     assert.deepEqual(r1, { optionId: "approve-allowlist" });
-    // Same tool call within the TTL auto-resolves — no card is shown.
+    // Same tool call auto-resolves — no card is shown.
     let cardShown = false;
     const sub = svc.onDidChangeApproval((req) => {
       if (req) cardShown = true;
@@ -128,15 +168,17 @@ describe("HumanReviewService — 24h approval TTL", () => {
     sub.dispose();
   });
 
-  it("expires allowlist entries after the TTL", async () => {
+  it("allowlist entries never expire (no TTL)", async () => {
+    // DIG-CONTINUOUS debunked the 24h TTL: Cursor's mcpAllowedTools has no
+    // timestamps/expiry, so entries must remain valid at any point in time.
     const svc = new HumanReviewService();
     const { id, promise } = request(svc, "tc-9", "doom");
     svc.resolveApproval(id, { optionId: "approve-allowlist" });
     await promise;
     const now = Date.now();
     assert.equal(svc.isAllowlisted("doom", now), true);
-    assert.equal(svc.isAllowlisted("doom", now + 86_400_000), false);
-    assert.equal(HumanReviewService.APPROVAL_TTL_MS, 86_400_000);
+    assert.equal(svc.isAllowlisted("doom", now + 86_400_000), true);
+    assert.equal(svc.isAllowlisted("doom", now + 365 * 86_400_000), true);
   });
 
   it("approve-once does NOT create an allowlist entry", async () => {
@@ -151,7 +193,7 @@ describe("HumanReviewService — 24h approval TTL", () => {
     const orig = vscodeStub.workspace.getConfiguration;
     (vscodeStub.workspace as { getConfiguration: unknown }).getConfiguration = () => ({
       get: (key: string, def?: unknown) =>
-        key === "approvalShadowMode" ? true : def,
+        key === "smart_mode_classifier_shadow_mode" ? true : def,
     });
     try {
       const svc = new HumanReviewService();
@@ -180,7 +222,7 @@ describe("ChatTabService", () => {
   } as unknown as import("vscode").ExtensionContext;
 
   it("starts with one tab and creates/switches tabs", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     assert.equal(tabs.tabCount, 1);
     const t2 = tabs.createAndActivate({ mode: "agent" });
     assert.equal(tabs.tabCount, 2);
@@ -192,7 +234,7 @@ describe("ChatTabService", () => {
   });
 
   it("keeps per-tab state isolated (bubbles, mode, queue)", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const first = tabs.activeTab;
     first.composer.modes.setMode("chat");
     first.composer.queue.enqueue("tab-one-msg", "chat");
@@ -207,7 +249,7 @@ describe("ChatTabService", () => {
   });
 
   it("cycles next/previous with wraparound", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const a = tabs.activeTab.id;
     const b = tabs.createTab({}).id;
     tabs.switchTab(a);
@@ -217,7 +259,7 @@ describe("ChatTabService", () => {
   });
 
   it("renames tabs and rejects blank titles", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const id = tabs.activeTab.id;
     assert.equal(tabs.renameTab(id, "  My task  "), true);
     assert.equal(tabs.activeTab.title, "My task");
@@ -227,7 +269,7 @@ describe("ChatTabService", () => {
   });
 
   it("auto-titles a tab from its first human message", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tab = tabs.activeTab;
     assert.equal(tab.title, "New chat");
     tab.composer.bubbles.setBubbleData({
@@ -247,7 +289,7 @@ describe("ChatTabService", () => {
   });
 
   it("closes tabs; closing the last one clears it instead", async () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const t2 = tabs.createTab({});
     assert.equal(await tabs.closeTab(t2.id), true);
     assert.equal(tabs.tabCount, 1);
@@ -266,11 +308,15 @@ describe("ChatTabService", () => {
     assert.equal(only.composer.bubbles.getAllInOrder().length, 0);
   });
 
-  it("refuses to close a tab while its turn runs", async () => {
-    const tabs = new ChatTabService(fakeContext);
+  it("keeps a running tab when the Close Running Tab? dialog is not confirmed", async () => {
+    const tabs = track(new ChatTabService(fakeContext));
     const t2 = tabs.createTab({});
     // Simulate a running turn via the private flag through submit path is
     // heavy; instead verify the guard exists by stubbing isRunning.
+    // DEV-GAPS-81: closeTab now shows Cursor's "Close Running Tab?"
+    // confirm dialog instead of refusing outright — the vscode stub's
+    // default answer is undefined (dialog dismissed = Cancel), so the
+    // tab is kept, matching the old refusal outcome on this path.
     const running = Object.defineProperty(t2.composer, "isRunning", {
       get: () => true,
       configurable: true,
@@ -281,7 +327,7 @@ describe("ChatTabService", () => {
   });
 
   it("forwards composer events tagged with tabId", async () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const t2 = tabs.createTab({});
     const seen: Array<{ tabId: string; kind: string }> = [];
     tabs.onDidChange((e) => {
@@ -296,7 +342,7 @@ describe("ChatTabService", () => {
 
 describe("ComposerDataService — files-only checkpoint restore", () => {
   it("does NOT rewind the transcript on restore (product decision 2026-10-19)", async () => {
-    const composer = new ComposerDataService(undefined, undefined);
+    const composer = track(new ComposerDataService(undefined, undefined));
     // Seed two human bubbles + one assistant bubble.
     for (const [id, role, text] of [
       ["b1", "human", "first"],
@@ -332,7 +378,7 @@ describe("ComposerDataService — files-only checkpoint restore", () => {
 
 describe("ComposerDataService — clarifying questions", () => {
   it("answerQuestion steers the answer into the running turn", () => {
-    const composer = new ComposerDataService(undefined, undefined);
+    const composer = track(new ComposerDataService(undefined, undefined));
     // Simulate the adapter delivering a question tool call.
     const toolCall = {
       toolCallId: "tc-q",
@@ -412,7 +458,7 @@ describe("QA-CHATTABS fix regressions", () => {
   }
 
   it("P3-3: questionAsked fires only once for a re-emitted question", () => {
-    const composer = new ComposerDataService(undefined, undefined);
+    const composer = track(new ComposerDataService(undefined, undefined));
     let askedCount = 0;
     composer.onDidChange((e) => {
       if (e.kind === "questionAsked") askedCount += 1;
@@ -424,7 +470,7 @@ describe("QA-CHATTABS fix regressions", () => {
   });
 
   it("P2-4: a question approval is linked via questionApproval event (production order)", () => {
-    const composer = new ComposerDataService(undefined, undefined);
+    const composer = track(new ComposerDataService(undefined, undefined));
     // Production order (the old test had it backwards — card first, then the
     // toolCall — which is impossible: Tool.Called is published before the
     // tool's execute fiber raises the approval):
@@ -459,7 +505,7 @@ describe("QA-CHATTABS fix regressions", () => {
   });
 
   it("P2-4: questionApproval links the right card with two questions pending", () => {
-    const composer = new ComposerDataService(undefined, undefined);
+    const composer = track(new ComposerDataService(undefined, undefined));
     applyQuestion(composer, "tc-a");
     applyQuestion(composer, "tc-b");
     const pa = composer.reviews.requestApproval("tc-req-a", "question", ["reason a"]);
@@ -484,7 +530,7 @@ describe("QA-CHATTABS fix regressions", () => {
   });
 
   it("P2-12: multi-select answers submit all options together", () => {
-    const composer = new ComposerDataService(undefined, undefined);
+    const composer = track(new ComposerDataService(undefined, undefined));
     applyQuestion(composer, "tc-m", true);
     const pending = composer.getPendingQuestions();
     assert.equal(pending.length, 1);
@@ -502,63 +548,68 @@ describe("QA-CHATTABS fix regressions", () => {
     assert.equal(composer.getPendingQuestions().length, 1);
   });
 
-  it("P2-3: newChat clears pending questions and steered messages", async () => {
-    const composer = new ComposerDataService(undefined, undefined);
+  it("P2-3: newChat clears pending questions and the staged interrupt send", async () => {
+    const composer = track(new ComposerDataService(undefined, undefined));
     applyQuestion(composer, "tc-q");
     assert.equal(composer.getPendingQuestions().length, 1);
-    (composer as unknown as { pendingInterruptSends: unknown[] }).pendingInterruptSends.push({
+    (composer as unknown as { pendingInterruptSend: unknown }).pendingInterruptSend = {
       text: "stale steer",
-    });
+    };
     assert.equal(await composer.newChat(), true);
     assert.equal(composer.getPendingQuestions().length, 0);
     assert.equal(
-      (composer as unknown as { pendingInterruptSends: unknown[] }).pendingInterruptSends.length,
-      0,
+      (composer as unknown as { pendingInterruptSend: unknown }).pendingInterruptSend,
+      undefined,
     );
   });
 
-  it("P2-1/P2-2: submit while draining routes to the FIFO (no second runTurn)", () => {
-    const composer = new ComposerDataService(undefined, undefined);
+  it("P2-1/P2-2: submit while draining stages the interrupt send (no second runTurn)", () => {
+    const composer = track(new ComposerDataService(undefined, undefined));
     const c = composer as unknown as {
       drainDepth: number;
-      pendingInterruptSends: { text: string }[];
+      pendingInterruptSend: { text: string } | undefined;
       running: boolean;
     };
     // Simulate the drain window: running=false, drainDepth>0.
     c.drainDepth = 1;
     composer.submit("first steer", { sendMode: "sendNow" });
     composer.submit("second steer", { sendMode: "sendNow" });
-    assert.equal(c.pendingInterruptSends.length, 2);
+    // Single slot: the first steer is staged; the second overflows into the
+    // unbounded queue instead of being silently dropped.
+    assert.equal(c.pendingInterruptSend?.text, "first steer");
+    assert.equal(composer.queue.length, 1);
     assert.deepEqual(
-      c.pendingInterruptSends.map((s) => s.text),
-      ["first steer", "second steer"],
+      composer.queue.getItems().map((m) => m.text),
+      ["second steer"],
     );
     assert.equal(c.running, false, "no turn was started during the drain window");
     c.drainDepth = 0;
   });
 
-  it("R2 (Round B): pendingInterruptSends is capped — oldest drop first", () => {
-    const composer = new ComposerDataService(undefined, undefined);
+  it("R2 (Round B, reworked): interrupt sends are NOT capped — slot + unbounded queue overflow", () => {
+    const composer = track(new ComposerDataService(undefined, undefined));
     const c = composer as unknown as {
       drainDepth: number;
-      pendingInterruptSends: { text: string }[];
-      pushInterruptSend: (e: { text: string }) => void;
+      pendingInterruptSend: { text: string } | undefined;
     };
-    c.drainDepth = 1; // keep submissions in the FIFO, no turn starts
+    c.drainDepth = 1; // keep submissions staged, no turn starts
     for (let i = 0; i < 14; i++) {
       composer.submit(`steer-${i}`, { sendMode: "sendNow" });
     }
-    assert.equal(c.pendingInterruptSends.length, 10, "capped at 10 entries");
+    // The 10-entry cap was fabricated (DIG-CONTINUOUS 2026-10-19: Cursor has
+    // no interrupt-sends queue at all). Nothing is dropped now.
+    assert.equal(c.pendingInterruptSend?.text, "steer-0", "first steer staged in the slot");
+    assert.equal(composer.queue.length, 13, "the rest overflow into the unbounded queue");
     assert.deepEqual(
-      c.pendingInterruptSends.map((s) => s.text),
-      Array.from({ length: 10 }, (_, i) => `steer-${i + 4}`),
-      "oldest dropped first (FIFO)",
+      composer.queue.getItems().map((m) => m.text),
+      Array.from({ length: 13 }, (_, i) => `steer-${i + 1}`),
+      "overflow preserves order",
     );
     c.drainDepth = 0;
   });
 
   it("R1 (Round B): submitWithHooks after dispose starts no turn", async () => {
-    const composer = new ComposerDataService(undefined, undefined);
+    const composer = track(new ComposerDataService(undefined, undefined));
     composer.dispose();
     const c = composer as unknown as {
       disposed: boolean;
@@ -576,7 +627,7 @@ describe("QA-CHATTABS fix regressions", () => {
       globalState: { get: () => undefined, update: async () => undefined },
       workspaceState: { get: () => undefined, update: async () => undefined },
     } as unknown as import("vscode").ExtensionContext;
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const t2 = tabs.createTab({});
     const composer = t2.composer;
     const relays = (tabs as unknown as { tabRelays: Map<string, unknown> }).tabRelays;
@@ -596,12 +647,88 @@ describe("QA-CHATTABS fix regressions", () => {
       globalState: { get: () => undefined, update: async () => undefined },
       workspaceState: { get: () => undefined, update: async () => undefined },
     } as unknown as import("vscode").ExtensionContext;
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tab = tabs.activeTab;
     tab.title = "Old title";
     (tab.composer as unknown as { emitter: { fire: (e: unknown) => void } }).emitter.fire({
       kind: "newChat",
     });
     assert.equal(tab.title, "New chat");
+  });
+});
+
+describe("DEV-ORANGE-DOT — orange dot on chat tab awaiting input", () => {
+  const fakeContext = {
+    subscriptions: [],
+    globalState: { get: () => undefined, update: async () => undefined },
+    workspaceState: { get: () => undefined, update: async () => undefined },
+  } as unknown as import("vscode").ExtensionContext;
+
+  it("dot flag on when a tab has a pending approval, off when resolved", () => {
+    const tabs = track(new ChatTabService(fakeContext));
+    const tab = tabs.activeTab;
+    assert.equal(tabs.getTabStates()[0]!.approvalPending, false);
+    // The agent requests approval → awaiting user input.
+    const p = tab.composer.reviews.requestApproval("tc-dot-1", "Run the tests?", ["shell"], 60000);
+    void p.then(() => undefined); // swallow: we resolve below
+    const pending = tabs.getTabStates()[0]!;
+    assert.equal(pending.approvalPending, true, "approvalPending drives the orange dot");
+    assert.equal(pending.questionPending, false);
+    // User approves → the dot clears.
+    const approvalId = tab.composer.reviews.currentApproval!.approvalId;
+    tab.composer.reviews.resolveApproval(approvalId, { optionId: "approve-once" });
+    assert.equal(tabs.getTabStates()[0]!.approvalPending, false);
+  });
+
+  it("dot flag on when a background tab has a pending question, off when answered", () => {
+    const tabs = track(new ChatTabService(fakeContext));
+    const bg = tabs.createTab({});
+    const toolCall = {
+      toolCallId: "tc-dot-q",
+      kind: "ask_question_tool_call",
+      title: "question",
+      status: "pending" as const,
+      description: "",
+      outputPreview: "",
+      expanded: false,
+      question: {
+        questionId: "q-dot-q",
+        header: "Scope",
+        question: "Which scope?",
+        options: [
+          { id: "opt-0", label: "Repo", description: "Whole repo" },
+          { id: "opt-1", label: "File", description: "One file" },
+        ],
+        multiple: false,
+        toolCallId: "tc-dot-q",
+      },
+    };
+    (bg.composer as unknown as { applyEvent: (e: unknown) => void }).applyEvent({
+      type: "toolCall",
+      bubbleId: "b-dot",
+      toolCall,
+    });
+    const bgState = tabs.getTabStates().find((s) => s.id === bg.id)!;
+    assert.equal(bgState.questionPending, true, "questionPending drives the orange dot on the background tab");
+    assert.equal(bgState.approvalPending, false);
+    // The active tab is unaffected.
+    const activeState = tabs.getTabStates().find((s) => s.id === tabs.activeTab.id)!;
+    assert.equal(activeState.questionPending, false);
+    // Answering clears the pending question → dot clears.
+    assert.equal(bg.composer.answerQuestion("q-dot-q", "opt-1"), true);
+    assert.equal(tabs.getTabStates().find((s) => s.id === bg.id)!.questionPending, false);
+  });
+
+  it("question-pending flag clears on newChat (stale questions must not keep the dot)", async () => {
+    const tabs = track(new ChatTabService(fakeContext));
+    const tab = tabs.activeTab;
+    (tab.composer as unknown as { pendingQuestions: Map<string, unknown> }).pendingQuestions.set("q-stale", {
+      questionId: "q-stale",
+    });
+    assert.equal(tabs.getTabStates()[0]!.questionPending, true);
+    // newChat clears pending questions (QA-CHATTABS-01 P2-3); the orange
+    // dot must go away with them.
+    assert.equal(await tab.composer.newChat(), true);
+    assert.equal(tabs.getTabStates()[0]!.questionPending, false);
   });
 });

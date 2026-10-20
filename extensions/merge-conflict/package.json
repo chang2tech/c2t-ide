@@ -107,9 +107,20 @@
         "original": "Compare Current Conflict",
         "command": "merge-conflict.compare",
         "enablement": "!isMergeEditor"
+      },
+      {
+        "category": "%command.category%",
+        "title": "Resolve in Chat",
+        "command": "merge-conflict.resolve-in-chat"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "merge-conflict.resolve-in-chat",
+          "when": "false"
+        }
+      ],
       "scm/resourceState/context": [
         {
           "command": "merge-conflict.accept.all-current",

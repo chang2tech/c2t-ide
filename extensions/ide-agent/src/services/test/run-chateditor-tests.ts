@@ -20,7 +20,7 @@
  *
  * Run after `tsc`:  node --test out/services/test/run-chateditor-tests.js
  */
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import * as assert from "node:assert";
 import "./vscode-stub";
 import { vscodeStub } from "./vscode-stub";
@@ -72,6 +72,29 @@ const fakeContext = {
   globalState: { get: () => undefined, update: async () => undefined },
   workspaceState: { get: () => undefined, update: async () => undefined },
 } as unknown as import("vscode").ExtensionContext;
+
+// W68C: every ChatTabService created below is tracked so the file-level
+// after() can dispose it. An undisposed ChatTabService leaves each tab's
+// ComposerDataService alive, whose CheckpointService arms a ref'd 15 s
+// activation timer (then a re-arming 10 min interval) in
+// CheckpointStorageCompareService — that keeps the event loop alive
+// forever after all tests pass ("Promise resolution is still pending...").
+// dispose() is idempotent; same pattern as run-chattabs-tests.ts.
+const trackedDisposables = new Set<{ dispose(): void }>();
+function track<T extends { dispose(): void }>(d: T): T {
+  trackedDisposables.add(d);
+  return d;
+}
+after(() => {
+  for (const d of trackedDisposables) {
+    try {
+      d.dispose();
+    } catch {
+      /* teardown must never fail the run */
+    }
+  }
+  trackedDisposables.clear();
+});
 
 function makeSeam(overrides: Partial<VscodeSeam> = {}): VscodeSeam & { calls: string[] } {
   const calls: string[] = [];
@@ -158,7 +181,7 @@ describe("openChatAsEditorTabs (P1-3)", () => {
 // ---- Export Transcript -----------------------------------------------------
 describe("transcriptToMarkdown (Export Transcript)", () => {
   it("renders human/assistant bubbles as Markdown sections", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tab = tabs.activeTab;
     tab.composer.bubbles.setBubbleData({
       bubbleId: "b1",
@@ -183,7 +206,7 @@ describe("transcriptToMarkdown (Export Transcript)", () => {
   });
 
   it("renders an empty transcript without crashing", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const md = transcriptToMarkdown(tabs.activeTab);
     assert.ok(md.startsWith("# "));
   });
@@ -192,7 +215,7 @@ describe("transcriptToMarkdown (Export Transcript)", () => {
 // ---- resolveChatEditorTab ---------------------------------------------------
 describe("resolveChatEditorTab", () => {
   it("honors the right-clicked tab URI over the active tab (P2-1)", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tabA = tabs.activeTab;
     const tabB = tabs.createTab({ title: "B" });
     // B is open as an editor but A is the active tab; right-click B.
@@ -207,7 +230,7 @@ describe("resolveChatEditorTab", () => {
   });
 
   it("ignores a foreign right-clicked URI and falls back to heuristics", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tab = tabs.activeTab;
     const uri = chatEditorUriForTab(tab.id);
     const foreignUri = stubUriFrom({ scheme: "file", path: "/x" });
@@ -223,7 +246,7 @@ describe("resolveChatEditorTab", () => {
   });
 
   it("prefers the active tab when it is a chat editor", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tab = tabs.activeTab;
     const uri = chatEditorUriForTab(tab.id);
     stubWindow.tabGroups.activeTabGroup = {
@@ -235,7 +258,7 @@ describe("resolveChatEditorTab", () => {
   });
 
   it("falls back to the single open chat editor when the active tab is foreign", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tab = tabs.activeTab;
     const uri = chatEditorUriForTab(tab.id);
     const foreignUri = stubUriFrom({ scheme: "file", path: "/x" });
@@ -251,7 +274,7 @@ describe("resolveChatEditorTab", () => {
   });
 
   it("falls back to the sidebar active tab when no chat editor is open", () => {
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     stubWindow.tabGroups.activeTabGroup = { activeTab: { input: undefined }, tabs: [] };
     stubWindow.tabGroups.all = [stubWindow.tabGroups.activeTabGroup];
     assert.equal(resolveChatEditorTab(tabs)?.id, tabs.activeTab.id);
@@ -262,7 +285,7 @@ describe("resolveChatEditorTab", () => {
 describe("openChatEditor", () => {
   it("creates a tab and opens it with vscode.openWith", async () => {
     stubCommands.calls.length = 0;
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const before = tabs.listTabs().length;
     const tab = await openChatEditor(tabs);
     assert.equal(tabs.listTabs().length, before + 1);
@@ -276,7 +299,7 @@ describe("openChatEditor", () => {
 
   it("reveals an existing tab when a tabId is given", async () => {
     stubCommands.calls.length = 0;
-    const tabs = new ChatTabService(fakeContext);
+    const tabs = track(new ChatTabService(fakeContext));
     const tab = tabs.activeTab;
     const opened = await openChatEditor(tabs, undefined, tab.id);
     assert.equal(opened.id, tab.id);

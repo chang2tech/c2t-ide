@@ -27,7 +27,8 @@ import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
-import { BrowserService, createCdpDriverFactory } from "./service";
+import { BrowserService, createCdpDriverFactory, createNativeDriverFactory } from "./service";
+import { isNativeBrowserTabAvailable } from "./nativeDriver";
 import { launchHeadlessChromium } from "./driver";
 import { browserCaptureDir, resolveChromiumPath, screenshotFilename } from "./chromium";
 import { BrowserError, ElementPayload } from "./types";
@@ -58,6 +59,7 @@ export interface BrowserTabCallbacks {
  * re-exported here for consumers that import from ./browserTab.
  */
 export { resolveChromiumPath, browserCaptureDir } from "./chromium";
+import { BrowserTabStateStore } from "./browserTabState";
 
 interface TabRecord {
   panel: vscode.WebviewPanel;
@@ -86,18 +88,39 @@ export class BrowserTabManager {
   private tab: TabRecord | null = null;
   /** REVERIFY-P3-6: DevTools open in flight (double-click guard). */
   private devToolsOpening = false;
+  /**
+   * Browser tab state persistence (Cursor: BrowserAutomationService
+   * lastUrl/zoomLevel in storageService, key `browserAutomation.<tabId>.<field>`).
+   * Restored on open(); saved on navigation and zoom changes.
+   */
+  private readonly tabStateStore: BrowserTabStateStore;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly callbacks: BrowserTabCallbacks,
     private readonly getChromiumPathSetting: () => string | undefined,
-  ) {}
+  ) {
+    // TS2729 fix: field initializers run before parameter-property
+    // assignment with useDefineForClassFields; init here using the
+    // constructor parameter directly.
+    this.tabStateStore = new BrowserTabStateStore(context.globalState);
+  }
 
   /** Lazily launch the tab Chromium and build the BrowserService. */
   private ensureService(): Promise<BrowserService> {
     if (this.service) return Promise.resolve(this.service);
     if (this.starting) return this.starting.then(() => this.service!);
     this.starting = (async () => {
+      // Native Integrated Browser tab (WebContentsView) — the
+      // Cursor-equivalent path. No separate Chromium process is needed; each
+      // session opens its own native tab via vscode.window.openBrowserTab.
+      if (isNativeBrowserTabAvailable()) {
+        this.callbacks.output.appendLine("[browser-tab] using native integrated browser tab driver");
+        this.service = new BrowserService(createNativeDriverFactory());
+        return;
+      }
+      // Fallback for environments without the native tab API: headless
+      // Chromium + CDP screencast driver.
       const exe = resolveChromiumPath(this.getChromiumPathSetting());
       if (!exe) {
         throw new BrowserError(
@@ -119,6 +142,19 @@ export class BrowserTabManager {
       this.starting = null;
     });
     return this.starting.then(() => this.service!);
+  }
+
+  /**
+   * DEV-GAPS-88: the shared BrowserService for the built-in
+   * `cursor-ide-browser` MCP provider (browser/browserMcpProvider.ts).
+   * The agent's browser tools drive the SAME service instance as this
+   * user-visible tab (sessions stay isolated per agent id — the tab owns
+   * "user", provider calls own their composerId). Lazily starts the
+   * underlying browser exactly like opening the tab does; only tool
+   * calls go through here, never provider registration/listing.
+   */
+  async browserServiceForAgentTools(): Promise<BrowserService> {
+    return this.ensureService();
   }
 
   /** Open the browser tab (Cursor: workbench.action.openBrowserEditor). */
@@ -147,8 +183,13 @@ export class BrowserTabManager {
       },
     );
     const nonce = randomNonce();
+    // Browser state persistence (Cursor: BrowserEditor restores
+    // getTabState()?.url || getLastUrl(browserId) || "", and the saved zoom
+    // level; see ./browserTabState.ts for the storage mechanism).
+    const restoredUrl = this.tabStateStore.getLastUrl() ?? "";
+    const restoredZoom = this.tabStateStore.getSavedZoomLevel() ?? 100;
     panel.webview.html = renderBrowserTabHtml(nonce, {
-      url: "",
+      url: restoredUrl,
       title: "Browser",
       loading: false,
       canGoBack: false,
@@ -157,7 +198,7 @@ export class BrowserTabManager {
       viewportWidth: 1280,
       viewportHeight: 800,
       renderMode: "live",
-      zoomPercent: 100,
+      zoomPercent: restoredZoom,
       areaSelectMode: false,
     });
     const rec: TabRecord = {
@@ -169,7 +210,7 @@ export class BrowserTabManager {
       renderMode: "live",
       loading: false,
       disposed: false,
-      zoomPercent: 100,
+      zoomPercent: restoredZoom,
       areaSelectMode: false,
       devToolsPanels: [],
     };
@@ -201,7 +242,9 @@ export class BrowserTabManager {
     this.setupPageEventHandlers(rec, service);
 
     await this.startStreaming(rec);
-    if (url) await this.navigateTo(url);
+    // Cursor restores the saved URL into a fresh browser tab and loads it.
+    const initialUrl = url ?? (restoredUrl || undefined);
+    if (initialUrl) await this.navigateTo(initialUrl);
     else await this.pushNavState(rec);
   }
 
@@ -328,6 +371,8 @@ export class BrowserTabManager {
     await this.pushNavState(rec);
     try {
       await service.navigate(rec.sessionId, BROWSER_TAB_AGENT_ID, url);
+      // Persist the tab URL (Cursor: BrowserAutomationService.saveLastUrl).
+      this.tabStateStore.saveLastUrl(url);
     } catch (err) {
       this.toast(rec, err instanceof Error ? err.message : String(err));
     } finally {
@@ -368,6 +413,9 @@ export class BrowserTabManager {
       const st = await service.getNavState(rec.sessionId, BROWSER_TAB_AGENT_ID);
       if (!rec.disposed) {
         if (st.title) rec.panel.title = st.title;
+        // Persist on tab-state change (Cursor: tab state watcher feeds
+        // saveLastUrl; in-page navigations land here, not in navigateTo).
+        this.tabStateStore.saveLastUrl(st.url);
         rec.panel.webview.postMessage({
           type: "navState",
           url: st.url,
@@ -712,6 +760,8 @@ export class BrowserTabManager {
       return;
     }
     rec.zoomPercent = z;
+    // Persist the tab zoom (Cursor: BrowserAutomationService.saveZoomLevel).
+    this.tabStateStore.saveZoomLevel(z);
     await this.pushNavState(rec);
     if (rec.renderMode === "snapshot") await this.pushSnapshot(rec);
   }

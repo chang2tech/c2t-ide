@@ -256,6 +256,21 @@ describe("hookRunner.buildHookEnv / buildHookInput", () => {
     assert.strictEqual(env.CLAUDE_PROJECT_DIR, "/ws");
   });
 
+  it("omits CURSOR_USER_EMAIL / CURSOR_TRANSCRIPT_PATH / CURSOR_CODE_REMOTE when absent (DEV-GAPS-112)", () => {
+    // Cursor _buildHookEnvironment (desk@32514563) + docs env table: these
+    // vars are conditional — never "" and CURSOR_CODE_REMOTE is only "true".
+    const env = buildHookEnv({ ...PAYLOAD, workspace_roots: ["/ws"] }, undefined);
+    assert.ok(!("CURSOR_USER_EMAIL" in env) || env.CURSOR_USER_EMAIL === process.env.CURSOR_USER_EMAIL);
+    assert.ok(!("CURSOR_TRANSCRIPT_PATH" in env));
+    assert.ok(!("CURSOR_CODE_REMOTE" in env));
+    const withVals = buildHookEnv(
+      { ...PAYLOAD, workspace_roots: ["/ws"], user_email: "u@x.io", transcript_path: "/t/conv.jsonl" },
+      undefined,
+    );
+    assert.strictEqual(withVals.CURSOR_USER_EMAIL, "u@x.io");
+    assert.strictEqual(withVals.CURSOR_TRANSCRIPT_PATH, "/t/conv.jsonl");
+  });
+
   it("input JSON carries the input contract fields", () => {
     const p = JSON.parse(buildHookInput({ ...PAYLOAD, workspace_roots: ["/a", "/b"] })) as Record<string, unknown>;
     assert.strictEqual(p.hook_event_name, "beforeShellExecution");
@@ -389,6 +404,60 @@ describe("HookService", () => {
     assert.strictEqual(g2.blocked, false);
   });
 
+  it("checkToolGate routes user_message/agent_message on deny (no silent drop)", async () => {
+    // Cursor parity (hooks-deny-message-routing): when a hook denies, its
+    // user_message/agent_message must reach the caller so the adapter can
+    // deliver them to the agent. Binary-verified:
+    // `${tool} blocked by preToolUse hook: ${userMessage}`.
+    writeUserConfig({
+      hooks: {
+        preToolUse: [
+          {
+            command: `node -e "console.log(JSON.stringify({decision:'deny',user_message:'do not run this',agent_message:'use the safe tool instead'}))"`,
+          },
+        ],
+      },
+    });
+    const { svc } = testService();
+    const g = await svc.checkToolGate("bash", ["rm -rf /"], { command: "rm -rf /" });
+    assert.strictEqual(g.blocked, true);
+    assert.deepStrictEqual(g.userMessages, ["do not run this"]);
+    assert.deepStrictEqual(g.agentMessages, ["use the safe tool instead"]);
+  });
+
+  it("checkToolGate merges messages from preToolUse and the specialized event", async () => {
+    writeUserConfig({
+      hooks: {
+        preToolUse: [
+          { command: `node -e "console.log(JSON.stringify({decision:'allow',user_message:'pre-note'}))"` },
+        ],
+        beforeShellExecution: [
+          {
+            command: `node -e "console.log(JSON.stringify({decision:'deny',user_message:'shell blocked',agent_message:'ask the user first'}))"`,
+            matcher: "rm",
+          },
+        ],
+      },
+    });
+    const { svc } = testService();
+    const g = await svc.checkToolGate("bash", ["rm -rf /"], { command: "rm -rf /" });
+    assert.strictEqual(g.blocked, true);
+    // Both hooks' messages are concatenated (Cursor merge semantics).
+    assert.deepStrictEqual(g.userMessages, ["pre-note", "shell blocked"]);
+    assert.deepStrictEqual(g.agentMessages, ["ask the user first"]);
+  });
+
+  it("checkToolGate returns empty message arrays when nothing is denied", async () => {
+    writeUserConfig({
+      hooks: { preToolUse: [{ command: `node -e "process.exit(0)"` }] },
+    });
+    const { svc } = testService();
+    const g = await svc.checkToolGate("bash", ["ls"], { command: "ls" });
+    assert.strictEqual(g.blocked, false);
+    assert.deepStrictEqual(g.userMessages, []);
+    assert.deepStrictEqual(g.agentMessages, []);
+  });
+
   it("prompt-type hooks skip honestly without an evaluator", async () => {
     writeUserConfig({
       hooks: { stop: [{ command: "decide whether to stop: $ARGUMENTS", type: "prompt" }] },
@@ -423,6 +492,116 @@ describe("HookService", () => {
   it("refuses to invent events", async () => {
     const { svc } = testService();
     await assert.rejects(() => svc.runHooks("frobnicate" as never, {}), /unknown hook event/);
+  });
+
+  // ------------------------------------------------ DEV-GAPS-112
+  // hooks-sessionstart-payload: binary Cursor 3.25.9 desk@31874628
+  // (call site), @32523436 (executeHookForStep), @32514563
+  // (setSessionEnvironment/_buildHookEnvironment), Woh validator.
+
+  it("sessionStart payload: session_id synthesized = conversation_id, base fields verbatim", async () => {
+    writeUserConfig({
+      hooks: {
+        sessionStart: [
+          {
+            command: `node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{require('fs').writeFileSync('${dir}/payload.json',s);console.log(JSON.stringify({env:{MY_TOKEN:'abc'},additional_context:'ctx-one'}))})"`,
+          },
+        ],
+      },
+    });
+    const { svc } = testService();
+    const r = await svc.runHooks(
+      "sessionStart",
+      { conversation_id: "conv-1", generation_id: "", model: "unknown", is_background_agent: false, composer_mode: "agent" },
+      "scope-1",
+    );
+    const p = JSON.parse(fs.readFileSync(path.join(dir, "payload.json"), "utf8")) as Record<string, unknown>;
+    assert.strictEqual(p.conversation_id, "conv-1");
+    assert.strictEqual(p.session_id, "conv-1", "session_id must equal conversation_id (docs + executeHookForStep)");
+    assert.strictEqual(p.generation_id, "");
+    assert.strictEqual(p.model, "unknown");
+    assert.strictEqual(p.is_background_agent, false);
+    assert.strictEqual(p.composer_mode, "agent");
+    assert.strictEqual(p.hook_event_name, "sessionStart");
+    assert.strictEqual(p.cursor_version, "0.0.0-test");
+    assert.deepStrictEqual(r.env, { MY_TOKEN: "abc" });
+    assert.strictEqual(r.additionalContext, "ctx-one");
+    // additional_context is structured output: never the raw JSON blob.
+    assert.ok(!r.contextAdditions.some((c) => c.includes("\"env\"")), `contextAdditions leaked raw JSON: ${r.contextAdditions}`);
+    assert.ok(r.contextAdditions.includes("ctx-one"));
+    assert.ok(svc.drainContextAdditions("scope-1").includes("ctx-one"));
+    // env stored per session (Cursor setSessionEnvironment).
+    assert.deepStrictEqual(svc.getSessionEnvironment("scope-1"), { MY_TOKEN: "abc" });
+  });
+
+  it("sessionStart env propagates to subsequent hooks in the same session only", async () => {
+    writeUserConfig({
+      hooks: {
+        sessionStart: [
+          { command: `node -e "console.log(JSON.stringify({env:{MY_TOKEN:'abc',SHARED:'from-start'}}))"` },
+        ],
+        beforeSubmitPrompt: [
+          {
+            command: `node -e "require('fs').writeFileSync('${dir}/env.json',JSON.stringify({tok:process.env.MY_TOKEN||null,shared:process.env.SHARED||null,email:'CURSOR_USER_EMAIL' in process.env,remote:'CURSOR_CODE_REMOTE' in process.env,transcript:'CURSOR_TRANSCRIPT_PATH' in process.env}))"`,
+            matcher: "UserPromptSubmit",
+          },
+        ],
+      },
+    });
+    const { svc } = testService();
+    await svc.runHooks("sessionStart", { conversation_id: "conv-2" }, "scope-2");
+    await svc.runHooks("beforeSubmitPrompt", { submitKind: "UserPromptSubmit", prompt: "hi" }, "scope-2");
+    const env = JSON.parse(fs.readFileSync(path.join(dir, "env.json"), "utf8")) as Record<string, unknown>;
+    assert.strictEqual(env.tok, "abc");
+    assert.strictEqual(env.shared, "from-start");
+    // Cursor env contract: absent (not "" / "0") when not logged in / local.
+    assert.strictEqual(env.email, false);
+    assert.strictEqual(env.remote, false);
+    assert.strictEqual(env.transcript, false);
+    // A different session scope must NOT see the env.
+    assert.strictEqual(svc.getSessionEnvironment("scope-other"), undefined);
+  });
+
+  it("sessionStart merge: env per-key later-wins, additional_context joined with separator", async () => {
+    writeUserConfig({
+      hooks: {
+        sessionStart: [
+          { command: `node -e "console.log(JSON.stringify({env:{A:'1',B:'1'},additional_context:'first'}))"` },
+          { command: `node -e "console.log(JSON.stringify({env:{B:'2',C:'2'},additional_context:'second'}))"` },
+        ],
+      },
+    });
+    const { svc } = testService();
+    const r = await svc.runHooks("sessionStart", { conversation_id: "conv-3" }, "scope-3");
+    assert.deepStrictEqual(r.env, { A: "1", B: "2", C: "2" });
+    assert.strictEqual(r.additionalContext, "first\n\n---\n\nsecond");
+    assert.deepStrictEqual(svc.getSessionEnvironment("scope-3"), { A: "1", B: "2", C: "2" });
+  });
+
+  it("sessionStart env with a non-string value is invalid and not applied (Woh validator)", async () => {
+    writeUserConfig({
+      hooks: {
+        sessionStart: [{ command: `node -e "console.log(JSON.stringify({env:{BAD:42}}))"` }],
+      },
+    });
+    const { svc } = testService();
+    const r = await svc.runHooks("sessionStart", { conversation_id: "conv-4" }, "scope-4");
+    assert.deepStrictEqual(r.env, {});
+    assert.strictEqual(svc.getSessionEnvironment("scope-4"), undefined);
+  });
+
+  it("sessionEnd clears the session environment (cleanupSessionTracking)", async () => {
+    writeUserConfig({
+      hooks: {
+        sessionStart: [{ command: `node -e "console.log(JSON.stringify({env:{MY_TOKEN:'abc'}}))"` }],
+        sessionEnd: [{ command: `node -e "process.exit(0)"` }],
+      },
+    });
+    const { svc } = testService();
+    await svc.runHooks("sessionStart", { conversation_id: "conv-5" }, "scope-5");
+    assert.deepStrictEqual(svc.getSessionEnvironment("scope-5"), { MY_TOKEN: "abc" });
+    await svc.runHooks("sessionEnd", { session_id: "scope-5", reason: "user_close" }, "scope-5");
+    assert.strictEqual(svc.getSessionEnvironment("scope-5"), undefined);
   });
 
   it("records an execution log", async () => {

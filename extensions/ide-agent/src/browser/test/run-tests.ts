@@ -1,22 +1,33 @@
 /**
  * Browser-layer tests (node:test, zero extra deps).
  *
- * Unit: PNG encoder, screenshot pipeline, session mutex.
+ * Unit: PNG encoder, screenshot pipeline, session mutex, native-driver
+ * guards (API-availability probe, navigate URL validation).
  * Integration (needs IDE_BROWSER_CHROME=path to chrome-headless-shell):
  *   navigate fixture → real PNG bytes → picker pickAt → payload assertions
- *   → MCP tool handlers end-to-end.
+ *   → MCP tool handlers end-to-end — all through the REAL
+ *   NativeBrowserPageDriver. The proposed `vscode.window.openBrowserTab`
+ *   API is shimmed onto the vscode stub (see ./native-tab-shim.ts), backed
+ *   by the same headless Chromium; only the tab-opening seam is mocked.
  *
- * Run after `tsc`:  node out/browser/test/run-tests.mjs
+ * Run after `npm run compile` (postcompile copies fixture.html into out/):
+ *   node out/browser/test/run-tests.js
  */
-import { describe, it, before, after } from "node:test";
+// The vscode stub MUST be installed before any module that does
+// `import * as vscode from "vscode"` (nativeDriver.ts via service.ts).
+import "../../services/test/vscode-stub";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert";
 import * as path from "node:path";
+import { windowStub } from "../../services/test/vscode-stub";
 import { encodePngRgba, isPng, solidRgba } from "../png";
 import { captureForAgent, toImageBlock } from "../screenshot";
-import { BrowserService, ServiceDriver, assertCdpMethodAllowed } from "../service";
+import { BrowserService, ServiceDriver, assertCdpMethodAllowed, createNativeDriverFactory } from "../service";
+import { NativeBrowserPageDriver, isNativeBrowserTabAvailable } from "../nativeDriver";
+import { installNativeBrowserTabShim } from "./native-tab-shim";
 import { createBrowserMcpTools } from "../mcp-tools";
 import { isValidRef, selectorForRef, renderSnapshotText, countSnapshotNodes } from "../snapshot";
-import { launchHeadlessChromium, CdpPageDriver } from "../driver";
+import { launchHeadlessChromium } from "../driver";
 import { CaptureOptions, ScreenshotResult, BrowserError } from "../types";
 
 /* ---------- unit: PNG encoder produces real PNG bytes ---------- */
@@ -301,6 +312,51 @@ describe("browser_cdp denylist", () => {
     assert.throws(() => assertCdpMethodAllowed(""), BrowserError);
     assert.throws(() => assertCdpMethodAllowed("Runtime"), BrowserError);
     assert.throws(() => assertCdpMethodAllowed("Runtime.evaluate.extra"), BrowserError);
+  });
+});
+
+/* ---------- native browser driver (unit — no browser needed) ---------- */
+describe("native browser driver", () => {
+  const win = windowStub as unknown as { openBrowserTab?: unknown };
+  let saved: unknown;
+
+  beforeEach(() => {
+    saved = win.openBrowserTab;
+  });
+  afterEach(() => {
+    win.openBrowserTab = saved;
+  });
+
+  it("isNativeBrowserTabAvailable reflects the proposed API", () => {
+    win.openBrowserTab = undefined;
+    assert.strictEqual(isNativeBrowserTabAvailable(), false);
+    win.openBrowserTab = async () => {
+      throw new Error("not implemented in unit test");
+    };
+    assert.strictEqual(isNativeBrowserTabAvailable(), true);
+  });
+
+  it("open() throws a clear error when the API is missing", async () => {
+    win.openBrowserTab = undefined;
+    const driver = new NativeBrowserPageDriver();
+    await assert.rejects(() => driver.open("about:blank"), /unavailable/);
+  });
+
+  it("navigate() rejects non-http(s) URLs before touching CDP (P0)", async () => {
+    // No session opened: the URL guard must fire first (mirrors CdpPageDriver).
+    const driver = new NativeBrowserPageDriver();
+    await assert.rejects(
+      () => driver.navigate("file:///etc/passwd"),
+      (e: unknown) => (e as BrowserError).code === "INVALID_ARGS",
+    );
+    await assert.rejects(
+      () => driver.navigate("not a url"),
+      (e: unknown) => (e as BrowserError).code === "INVALID_ARGS",
+    );
+    await assert.rejects(
+      () => driver.navigate("javascript:alert(1)"),
+      (e: unknown) => (e as BrowserError).code === "INVALID_ARGS",
+    );
   });
 });
 
@@ -660,27 +716,33 @@ async function startFixtureServer(): Promise<string> {
   return `http://127.0.0.1:${port}/fixture.html`;
 }
 
-describe("integration (headless chromium)", { skip: !CHROME }, () => {
+describe("integration (native browser driver)", { skip: !CHROME }, () => {
   let stop: () => void = () => undefined;
   let port = 0;
+  let uninstallShim: () => void = () => undefined;
 
   before(async () => {
     FIXTURE_URL = await startFixtureServer();
     const launched = await launchHeadlessChromium(CHROME, { viewport: { width: 900, height: 700 } });
     port = launched.port;
     stop = launched.stop;
+    // Mock ONLY the tab-opening seam: the real NativeBrowserPageDriver talks
+    // to this headless Chromium through the shimmed BrowserCDPSession.
+    uninstallShim = installNativeBrowserTabShim(
+      windowStub as unknown as { openBrowserTab?: unknown },
+      "127.0.0.1",
+      port,
+    );
   });
 
   after(() => {
+    uninstallShim();
     stop();
     fixtureServer?.close();
   });
 
   it("navigate → real PNG screenshot bytes", async () => {
-    const service = new BrowserService(async () => {
-      const d = await CdpPageDriver.attach("127.0.0.1", port);
-      return d as unknown as ServiceDriver;
-    });
+    const service = new BrowserService(createNativeDriverFactory());
     const s = await service.createSession({ agentId: "agent-1" });
     const nav = await service.navigate(s.sessionId, "agent-1", FIXTURE_URL);
     assert.ok(nav.title.includes("Fixture"), `title was "${nav.title}"`);
@@ -696,10 +758,7 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
   });
 
   it("picker inject → pickAt button → real payload", async () => {
-    const service = new BrowserService(async () => {
-      const d = await CdpPageDriver.attach("127.0.0.1", port);
-      return d as unknown as ServiceDriver;
-    });
+    const service = new BrowserService(createNativeDriverFactory());
     const s = await service.createSession({ agentId: "agent-1" });
     await service.navigate(s.sessionId, "agent-1", FIXTURE_URL);
     // Button is roughly at (100, 150) in the 900x700 viewport; find it precisely.
@@ -725,10 +784,7 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
   });
 
   it("picker applies the orange hover highlight class to real elements", async () => {
-    const service = new BrowserService(async () => {
-      const d = await CdpPageDriver.attach("127.0.0.1", port);
-      return d as unknown as ServiceDriver;
-    });
+    const service = new BrowserService(createNativeDriverFactory());
     const s = await service.createSession({ agentId: "agent-1" });
     await service.navigate(s.sessionId, "agent-1", FIXTURE_URL);
     const picker = service.pickerFor(s.sessionId, "agent-1");
@@ -757,10 +813,7 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
   });
 
   it("MCP tools: navigate/click/type/screenshot/pick_element end-to-end", async () => {
-    const service = new BrowserService(async () => {
-      const d = await CdpPageDriver.attach("127.0.0.1", port);
-      return d as unknown as ServiceDriver;
-    });
+    const service = new BrowserService(createNativeDriverFactory());
     const tools = createBrowserMcpTools(service);
     // 19 tools: Cursor's 16 + browser_screenshot alias + browser_pick_element + browser_close
     assert.strictEqual(tools.length, 19);
@@ -813,11 +866,8 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
   });
 
   it("browser_snapshot: stable e<N> refs, then ref-based click/type/fill", async () => {
-    const service = new BrowserService(async () => {
-      const d = await CdpPageDriver.attach("127.0.0.1", port);
-      return d as unknown as ServiceDriver;
-    });
-    const tools = createBrowserMcpTools(service);
+    const service = new BrowserService(createNativeDriverFactory());
+    const tools = createBrowserMcpTools(service, "agent-1");
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     await byName.browser_navigate.handler({ url: FIXTURE_URL, agentId: "agent-1" });
 
@@ -867,11 +917,8 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
   });
 
   it("browser_select_option / browser_press_key / browser_get_bounding_box", async () => {
-    const service = new BrowserService(async () => {
-      const d = await CdpPageDriver.attach("127.0.0.1", port);
-      return d as unknown as ServiceDriver;
-    });
-    const tools = createBrowserMcpTools(service);
+    const service = new BrowserService(createNativeDriverFactory());
+    const tools = createBrowserMcpTools(service, "agent-1");
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     await byName.browser_navigate.handler({ url: FIXTURE_URL, agentId: "agent-1" });
     const snap = (await byName.browser_snapshot.handler({ agentId: "agent-1" })) as { snapshot: string };
@@ -908,10 +955,7 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
   });
 
   it("browser_scroll / browser_drag / browser_mouse_click_xy / browser_tabs", async () => {
-    const service = new BrowserService(async () => {
-      const d = await CdpPageDriver.attach("127.0.0.1", port);
-      return d as unknown as ServiceDriver;
-    });
+    const service = new BrowserService(createNativeDriverFactory());
     const tools = createBrowserMcpTools(service, "agent-1", { enableCdpTool: true });
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     await byName.browser_navigate.handler({ url: FIXTURE_URL, agentId: "agent-1" });
@@ -962,7 +1006,10 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
     const dropped = await page.evaluate<boolean>("window.__dropHappened");
     assert.strictEqual(dropped, true, "drop event must fire on the target");
 
-    // mouse_click_xy clicks the login button at its coordinates
+    // mouse_click_xy clicks the login button at its coordinates. The earlier
+    // scroll-down moved the button off-viewport — scroll back up first so
+    // the coordinates actually hit it.
+    await byName.browser_scroll.handler({ direction: "up", amount: 2000, agentId: "agent-1" });
     const boxRes = (await byName.browser_get_bounding_box.handler({
       ref: (snap.snapshot.match(/- button "Sign in" \[(e\d+)\]/) as RegExpMatchArray)[1],
       agentId: "agent-1",
@@ -976,19 +1023,24 @@ describe("integration (headless chromium)", { skip: !CHROME }, () => {
     const clicked = await page.evaluate<boolean>("window.__fixtureClicked");
     assert.strictEqual(clicked, true, "coordinate click must hit the button");
 
-    // browser_cdp passes through allowed methods when enabled
+    // browser_cdp passes through allowed methods when enabled. The result is
+    // the RAW CDP response: Runtime.evaluate returns { result: RemoteObject }.
     const cdpRes = (await byName.browser_cdp.handler({
       method: "Runtime.evaluate",
       params: { expression: "1+1", returnByValue: true },
       agentId: "agent-1",
-    })) as { ok: boolean; result: { value: number } };
+    })) as { ok: boolean; result: { result: { value: number } } };
     assert.strictEqual(cdpRes.ok, true);
-    assert.strictEqual(cdpRes.result.value, 2);
+    assert.strictEqual(cdpRes.result.result.value, 2);
     await service.closeSession(undefined, "agent-1");
   });
 });
 
 /* ---------- browser tab UI (DEV-BROWSER-TAB-UI) ---------- */
 import "./browser-tab.test";
+/* ---------- browser tab state persistence (WORKER-GAPS-11G) ---------- */
+import "./browser-tab-state.test";
 /* ---------- browser "..." menu host handlers (QA-BROWSERMENU P3-6) ---------- */
 import "./browser-menu-handlers.test";
+/* ---------- native browser tab "..." menu contract (DEV-GAPS-5-BROWSERMENU) ---------- */
+import "./run-native-menu-tests";

@@ -40,6 +40,10 @@ interface StdoutDecision {
   agent_message?: unknown;
   followup_message?: unknown;
   pluginPaths?: unknown;
+  // DEV-GAPS-112 (hooks-sessionstart-payload): sessionStart outputs
+  // (Cursor sessionStartResponse validator Woh, desk ~@16514371).
+  env?: unknown;
+  additional_context?: unknown;
 }
 
 function parseStdoutJson(stdout: string): StdoutDecision | undefined {
@@ -62,6 +66,25 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * DEV-GAPS-112: validate a sessionStart `env` output verbatim per Cursor's
+ * Woh validator — it must be a plain object and EVERY key/value a string;
+ * any violation invalidates the whole field (the hook's env is not applied).
+ */
+function asEnvMap(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v !== "string") {
+      return undefined;
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -75,11 +98,15 @@ export function buildHookEnv(payload: HookPayload, extraEnv?: Record<string, str
   const env: Record<string, string> = {
     ...process.env,
     // Cursor's hook env contract (compat — user hooks may read these).
+    // DEV-GAPS-112: _buildHookEnvironment (desk@32514563) + docs env table —
+    // CURSOR_USER_EMAIL is present only "If logged in", CURSOR_TRANSCRIPT_PATH
+    // only "If transcripts enabled", and CURSOR_CODE_REMOTE is only ever the
+    // string "true" for remote workspaces (omitted locally). The previous
+    // "" / "0" values appear nowhere in Cursor; omit instead of fabricating.
     CURSOR_PROJECT_DIR: projectDir,
     CURSOR_VERSION: payload.cursor_version,
-    CURSOR_USER_EMAIL: payload.user_email ?? "",
-    CURSOR_TRANSCRIPT_PATH: payload.transcript_path ?? "",
-    CURSOR_CODE_REMOTE: "0",
+    ...(payload.user_email ? { CURSOR_USER_EMAIL: payload.user_email } : {}),
+    ...(payload.transcript_path ? { CURSOR_TRANSCRIPT_PATH: payload.transcript_path } : {}),
     CLAUDE_PROJECT_DIR: projectDir,
     // Rebrand equivalents for new hooks.
     IDE_CODE_PROJECT_DIR: projectDir,
@@ -201,6 +228,9 @@ export async function runHookProcess(
         userMessage: parsed ? asString(parsed.user_message) : undefined,
         agentMessage: parsed ? asString(parsed.agent_message) : undefined,
         pluginPaths: parsed ? asStringArray(parsed.pluginPaths) : undefined,
+        // DEV-GAPS-112: sessionStart outputs (validated per Woh above).
+        env: parsed ? asEnvMap(parsed.env) : undefined,
+        additionalContext: parsed ? asString(parsed.additional_context) : undefined,
       });
     };
 
@@ -260,6 +290,11 @@ export async function runHookProcess(
     });
 
     try {
+      // DEV-GAPS-34: a hook that exits without reading stdin (the canonical
+      // `exit 2` guard script) raises async EPIPE on this stream — without
+      // an 'error' listener that becomes an uncaught exception. Swallow it;
+      // the close handler still finishes the outcome.
+      child.stdin?.on("error", () => {});
       child.stdin?.write(buildHookInput(payload));
       child.stdin?.end();
     } catch {

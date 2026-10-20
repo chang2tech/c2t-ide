@@ -1,0 +1,43 @@
+{
+  "$id": "https://ide-code.dev/schemas/permissions.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "description": "Per-workspace agent approval policy, read from <workspace>/.cursor/permissions.json. Mirrors Cursor's extensions/cursor-always-local/schemas/permissions.schema.json: properties mcpAllowlist / terminalAllowlist / approvalMode / autoRun / autoReview. approvalMode=manual means Ask Every Time.",
+  "properties": {
+    "approvalMode": {
+      "description": "Master approval switch. allowlist: auto-approve allowlisted entries, ask for the rest. unrestricted: approve everything without asking. manual: Ask Every Time — ask for every tool call.",
+      "enum": [
+        "allowlist",
+        "unrestricted",
+        "manual"
+      ],
+      "type": "string"
+    },
+    "autoReview": {
+      "description": "Reserved: parsed and validated; exact Cursor semantics UNKNOWN (see permissionsFileService.ts).",
+      "type": "boolean"
+    },
+    "autoRun": {
+      "description": "Reserved: parsed and validated; exact Cursor semantics UNKNOWN (see permissionsFileService.ts).",
+      "type": "boolean"
+    },
+    "mcpAllowlist": {
+      "description": "MCP tools the agent may call without asking, as \"server:tool\" or \"server:*\" patterns (e.g. \"github:create_pr\", \"filesystem:*\").",
+      "items": {
+        "pattern": "^[^:]+:[^:]+$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "terminalAllowlist": {
+      "description": "Shell commands the agent may run without asking, as glob patterns matched against the command text (e.g. \"git status\", \"npm run *\"). \"*\" matches any sequence of characters.",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "title": "Agent permissions (.cursor/permissions.json)",
+  "type": "object"
+}

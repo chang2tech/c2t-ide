@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { acceptFullSuggestion, acceptPartialSuggestion, peekSuggestion, revertSuggestion } from './accept';
-import { CannedTabBackend, TabBackend, TabModelInfo } from './backend';
+import { EngineTabBackend, TabBackend, TabModelInfo } from './backend';
 import { NextActionEffect, FollowupRegistry, resolveNextAction } from './nextEdit';
 import { TabCompletionProvider } from './provider';
 import { typeOverText } from './wordAccept';
@@ -27,9 +27,49 @@ import {
 } from './types';
 import { DEFAULT_DEBOUNCE } from './debounce';
 import { HookService } from '../hooks/hookService';
+import { countLines, tryGetAiCodeTracking } from '../services/aiCodeTracking';
 
 const PER_LANG_KEY = 'ide.tab.perLanguage';
 const COPILOT_PROMPTED_KEY = 'ide.tab.copilotPrompted';
+
+/** Host wiring for the engine-backed Tab backend (see `activate`). */
+export interface TabExtensionOptions {
+  getEngineAdapter?: () => unknown;
+}
+
+/**
+ * DD-SB-5/6: file key for aiCodeTracking attribution — workspace-relative
+ * when possible (matches repo-relative paths at score time for the common
+ * workspace-root repo layout), else the absolute path.
+ */
+function trackingFileKey(uri: vscode.Uri): string {
+  try {
+    return vscode.workspace.asRelativePath(uri);
+  } catch {
+    return uri.fsPath;
+  }
+}
+
+/** DD-SB-5: aiCodeTracking `tab.suggestion` analog — count + record. */
+function trackTabSuggest(text: string): void {
+  try {
+    tryGetAiCodeTracking()?.recordSuggest('TAB', countLines(text));
+  } catch {
+    /* stats must never break completions */
+  }
+}
+
+/** DD-SB-5: aiCodeTracking `tab.accept` analog — count lines + attribution. */
+function trackTabAccept(text: string, uri: vscode.Uri): void {
+  try {
+    const t = tryGetAiCodeTracking();
+    if (!t) return;
+    t.recordAccept('TAB', countLines(text));
+    t.recordAcceptedLines('TAB', trackingFileKey(uri), text);
+  } catch {
+    /* stats must never break the accept flow */
+  }
+}
 
 function readClientConfig(): TabClientConfig {
   const c = vscode.workspace.getConfiguration('ide.tab');
@@ -80,6 +120,14 @@ export async function activate(
    * (beforeTabFileRead / afterTabFileEdit). Optional.
    */
   agentHooks?: HookService,
+  /**
+   * TAB-BACKEND: host wiring for the real engine backend. `getEngineAdapter`
+   * resolves the active chat tab's engine adapter on every call — the SAME
+   * sidecar process Tab completions run against (Tab never spawns its own
+   * engine). Absent, throwing, or resolving a non-engine (stub mode) means
+   * "no model backend": the provider stays silent and the status bar says so.
+   */
+  tabOpts?: TabExtensionOptions,
 ): Promise<void> {
   let clientConfig = readClientConfig();
 
@@ -97,8 +145,18 @@ export async function activate(
   }
   const telemetry = new TabTelemetry(logDir, () => clientConfig.telemetryEnabled);
 
-  // Backend: canned until a model server is configured (see README).
-  const backend: TabBackend = new CannedTabBackend();
+  // Backend: the real engine. Resolves the active chat tab's adapter live on
+  // every call — same sidecar process, dedicated tab session, never a second
+  // engine. In stub engine mode there is no model backend: the provider stays
+  // silent and the status bar shows "no model backend" (never fake text).
+  const backend: TabBackend = new EngineTabBackend(() => {
+    try {
+      return tabOpts?.getEngineAdapter?.();
+    } catch {
+      return undefined;
+    }
+  });
+  const engineBackend = backend as EngineTabBackend;
 
   // P2 (QA-FILE-06): chained follow-up suggestions keyed by display id
   // (Cursor: followupSuggestions.getAndEvictMatchingSuggestion). Populated by
@@ -110,9 +168,14 @@ export async function activate(
     getClientConfig: () => clientConfig,
     getPerLanguageState: () => context.globalState.get<Record<string, 'disabled' | 'enabled'>>(PER_LANG_KEY, {}),
     isSnoozed: () => snooze.isSnoozed(),
+    // TAB-BACKEND: no model backend (stub engine mode) → provider silent.
+    isBackendAvailable: () => engineBackend.isEngineAvailable,
     onSuggestionShown: (requestId, text, displayId) => {
       telemetry.recordSessionEvent('tabShown', { requestId, length: text.length });
       if (displayId) followups.set(displayId, { requestId, text });
+      // DD-SB-5: aiCodeTracking `tab.suggestion` analog (linesAdded+linesRemoved
+      // of the generated suggestion — a pure insertion, so line count of text).
+      trackTabSuggest(text);
     },
     onFirstSuggestion: () => void maybePromptDisableCopilot(),
   }, agentHooks);
@@ -209,6 +272,8 @@ export async function activate(
       languageDisabled: perLang[languageId] === 'disabled' || clientConfig.disabledLanguages.includes(languageId),
       modelName: clientConfig.model || 'default',
       snoozedUntil: snooze.snoozedUntil(),
+      // TAB-BACKEND: honest "no model backend" state in stub engine mode.
+      noBackend: !engineBackend.isEngineAvailable,
     });
     void vscode.commands.executeCommand('setContext', 'ideTab.snoozed', snooze.isSnoozed());
     void vscode.commands.executeCommand('setContext', 'ideTab.enabled', clientConfig.enabled);
@@ -267,6 +332,8 @@ export async function activate(
         ownEdit = v;
       },
       agentHooks,
+      // DD-SB-5: aiCodeTracking `tab.accept` analog.
+      onAiAccept: ({ text, uri }: { text: string; uri: vscode.Uri }) => trackTabAccept(text, uri),
     };
   }
 
@@ -394,6 +461,9 @@ export async function activate(
           fate = 'PARTIAL_ACCEPT';
           via = 'type_over';
           s.appliedLength += typedText.length;
+          // DD-SB-5: type-over is a partial accept of the typed portion —
+          // count it like any other `tab.accept` event.
+          trackTabAccept(typedText, e.document.uri);
         }
         if (provider.fate.record(s.requestId, fate, fileExtension)) {
           telemetry.recordSessionEvent(
@@ -426,7 +496,9 @@ export async function activate(
 
     vscode.window.onDidChangeActiveTextEditor(() => refreshStatusBar()),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('ide.tab') || e.affectsConfiguration('ide.general')) {
+      // TAB-BACKEND: ide.agent.engineMode decides whether a model backend
+      // exists at all — refresh the status bar when it changes.
+      if (e.affectsConfiguration('ide.tab') || e.affectsConfiguration('ide.general') || e.affectsConfiguration('ide.agent')) {
         clientConfig = readClientConfig();
         applyDebounceConfig();
         refreshStatusBar();

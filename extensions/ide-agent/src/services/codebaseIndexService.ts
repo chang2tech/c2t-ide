@@ -22,6 +22,7 @@ import * as path from "path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { defaultEnginePath } from "./composerDataService";
+import { filterGloballyIgnored } from "./globalIgnore";
 
 const execFileAsync = promisify(execFile);
 
@@ -139,7 +140,9 @@ export async function searchCodebase(
   if (root) {
     const cached = cacheGet(cacheKey(root, query, symbols, opts.include));
     if (cached) {
-      return cached.slice(0, opts.limit ?? 10);
+      // DEV-GAPS-14 `ext-global-ignore`: filter at read time (not at cache
+      // time) so a config change applies immediately, before the TTL expires.
+      return filterGloballyIgnored<CodebaseHit>(root, cached, (h) => h.path).slice(0, opts.limit ?? 10);
     }
   }
   const args = ["search", "--json", "--limit", String(fetchLimit)];
@@ -169,6 +172,10 @@ export async function searchCodebase(
         : (parsed.matches ?? []).map((m) => ({ kind: "text" as const, path: m.path, line: m.line, text: m.text }));
     if (root) {
       cacheSet(cacheKey(root, query, symbols, opts.include), hits);
+      // ext-global-ignore: global ignore patterns
+      // (`ide.general.globalCursorIgnoreList`) merged on top of .cursorignore —
+      // ignored paths are dropped from retrieval even if the index has them.
+      return filterGloballyIgnored<CodebaseHit>(root, hits, (h) => h.path).slice(0, opts.limit ?? 10);
     }
     return hits.slice(0, opts.limit ?? 10);
   } catch {

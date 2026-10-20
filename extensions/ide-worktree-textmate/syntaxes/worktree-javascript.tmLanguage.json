@@ -1,0 +1,8 @@
+{
+  "scopeName": "source.worktree-javascript",
+  "patterns": [
+    {
+      "include": "source.js"
+    }
+  ]
+}

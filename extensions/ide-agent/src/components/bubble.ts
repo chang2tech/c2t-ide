@@ -48,7 +48,7 @@ export function statusLabel(status: ToolCallStatus): string {
 }
 
 /** First-paint welcome bubble, rendered extension-side. */
-export function welcomeBubbleHtml(): string {
+export function welcomeBubbleHtml(engineConnected: boolean): string {
   // SETTINGS-PARITY (ide.composer.showEmptyStateTips, mirrors
   // cursor.composer.showEmptyStateTips): rotating tips on the empty screen.
   // The webview hides the whole block via body.no-tips when disabled.
@@ -60,9 +60,15 @@ export function welcomeBubbleHtml(): string {
     "Tip: press Ctrl+P in the chat input to pick a file without typing @.",
   ];
   const tip = tips[new Date().getDate() % tips.length];
+  // Zero-placeholder: the demo-engine sentence is only true when turns really
+  // run against the scripted stub — showing it in sidecar mode would be a lie.
+  // The span is toggled live by the webview's {type:'engineStatus'} handler.
+  const engineNote = engineConnected
+    ? `<span id="welcomeEngineNote" hidden></span>`
+    : `<span id="welcomeEngineNote"> Turns run against a scripted demo engine until the IDE Code engine is connected.</span>`;
   return `<div class="msg assistant" data-bubble="welcome" role="article" aria-label="Message from IDE Agent">
     <div class="role" aria-hidden="true">IDE Agent</div>
-    <div class="bubble-text">Welcome to IDE Agent. Pick a mode, attach context with @, run a slash command with /, then Send. Turns run against a scripted demo engine until the IDE Code engine is connected.</div>
+    <div class="bubble-text">Welcome to IDE Agent. Pick a mode, attach context with @, run a slash command with /, then Send.${engineNote}</div>
     <div class="empty-tips"><div class="tip-label">Did you know?</div><div>${tip}</div></div>
     <div class="tool-calls"></div>
   </div>`;

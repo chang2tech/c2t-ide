@@ -8,6 +8,7 @@ import {
   parseRunEnd,
   stripAnsiText,
 } from "./terminalUtils";
+import { SHELL_BACKGROUND_TIMEOUT_MS } from "./agentRuntime";
 
 /**
  * TerminalService — Cursor-style terminal integration for the agent.
@@ -38,8 +39,13 @@ import {
 const MAX_RAW_BUFFER = 256 * 1024;
 /** Default cap for terminal chars attached as chat context. */
 const DEFAULT_CONTEXT_CHARS = 20000; // curation restored 2026-10-19: tail window keeps @Terminal context focused; user-configurable via ide.agent.terminal.maxBufferChars
-/** Background command timeout — then Ctrl+C is sent. */
-const BG_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Background command timeout — then Ctrl+C is sent.
+ * DD-AR-10 (Cursor parity): 10 min = SHELL_BACKGROUND_TIMEOUT_MS.
+ * (Foreground 30s / hard 24h / default 5min live in agentRuntime.ts; the
+ * engine's own shell tool enforces them server-side.)
+ */
+const BG_TIMEOUT_MS = SHELL_BACKGROUND_TIMEOUT_MS;
 /** Chat bubble refresh throttle while streaming (ms). */
 const STREAM_FLUSH_MS = 500;
 
@@ -80,8 +86,13 @@ export class TerminalService implements vscode.Disposable {
 
   dispose(): void {
     if (this.activeRun) {
-      clearTimeout(this.activeRun.timer);
+      const run = this.activeRun;
       this.activeRun = null;
+      clearTimeout(run.timer);
+      // GAPS-14: run ended — drop the cancel keybinding's scope and settle
+      // the awaiting turn instead of leaking a never-settling promise.
+      this.setTerminalToolCallRunning(false);
+      run.reject(new Error("the IDE Agent terminal service was disposed"));
     }
     for (const d of this.disposables) {
       d.dispose();
@@ -129,6 +140,8 @@ export class TerminalService implements vscode.Disposable {
           false,
         );
         run.resolve(exitCode);
+        // GAPS-14: run ended — drop the cancel keybinding's scope.
+        this.setTerminalToolCallRunning(false);
       }
     }
   }
@@ -148,6 +161,8 @@ export class TerminalService implements vscode.Disposable {
           false,
         );
         run.reject(new Error("the IDE Agent terminal was closed"));
+        // GAPS-14: run ended — drop the cancel keybinding's scope.
+        this.setTerminalToolCallRunning(false);
       }
     }
   }
@@ -217,6 +232,17 @@ export class TerminalService implements vscode.Disposable {
     }
     const input = vscode.window.createInputBox();
     input.title = "Terminal AI command";
+    // DEV-GAPS-9C: visibility sync for the core `promptBarVisible` context key
+    // (browser/terminalCmdkActions.ts — the `cursorai.action.*` Cmd+K family's
+    // when-clauses). The workbench side registers
+    // `composer.terminalPromptBar.setVisible`; args are JSON-safe for the
+    // extension-host boundary. No-op if the workbench side isn't registered.
+    const notifyPromptBarVisible = (visible: boolean) => {
+      void vscode.commands.executeCommand(
+        "composer.terminalPromptBar.setVisible",
+        visible,
+      );
+    };
     input.prompt =
       "Describe the command in plain language. Enter sends it to the agent with terminal context; Esc accepts your text into the terminal without running it; the insert button does the same explicitly.";
     input.placeholder = "e.g. find the largest files in this repo";
@@ -229,11 +255,21 @@ export class TerminalService implements vscode.Disposable {
     const close = () => {
       done = true;
       input.dispose();
+      notifyPromptBarVisible(false);
     };
     input.onDidAccept(() => {
       const desc = input.value.trim();
       close();
       if (desc) {
+        // GAPS-170: tooltip pipeline disable producer — the binary emits
+        // `terminal.cmdk.submit` when the terminal prompt bar is submitted
+        // (desk@36718187). The fork's terminal prompt bar lives in this
+        // extension, so the event reaches the core tooltipService through
+        // the fork-local bridge command `composer.tooltip.registerEvent`.
+        void vscode.commands.executeCommand(
+          "composer.tooltip.registerEvent",
+          "terminal.cmdk.submit",
+        );
         this.sendTerminalRequest(term, desc);
       }
     });
@@ -253,6 +289,7 @@ export class TerminalService implements vscode.Disposable {
         // without running it (same as the insert button).
         const desc = input.value.trim();
         input.dispose();
+        notifyPromptBarVisible(false);
         if (desc) {
           term.sendText(desc, false);
           term.show();
@@ -262,6 +299,7 @@ export class TerminalService implements vscode.Disposable {
       }
     });
     input.show();
+    notifyPromptBarVisible(true);
   }
 
   private sendTerminalRequest(term: vscode.Terminal, desc: string): void {
@@ -335,18 +373,11 @@ export class TerminalService implements vscode.Disposable {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         const run = this.activeRun;
-        this.activeRun = null;
         if (run) {
-          term.sendText("\u0003", false); // Ctrl+C
-          const display = extractRunOutput(run.raw) ?? "";
-          this.composer.updateTerminalOutput(run.bubbleId, display);
-          this.composer.finishTerminalRun(
-            run.bubbleId,
-            -1,
-            Date.now() - run.startedAt,
-            true,
-          );
-          run.reject(new Error("timed out after 10 minutes (sent Ctrl+C)"));
+          this.endActiveRun(run, {
+            timedOut: true,
+            error: new Error("timed out after 10 minutes (sent Ctrl+C)"),
+          });
         }
       }, BG_TIMEOUT_MS);
       this.activeRun = {
@@ -358,7 +389,82 @@ export class TerminalService implements vscode.Disposable {
         bubbleId,
         lastFlush: 0,
       };
+      this.setTerminalToolCallRunning(true);
       term.sendText(wrapped, true);
     });
+  }
+
+  /**
+   * GAPS-14: whether a terminal tool call is currently running. Used by the
+   * `ide.cancelTerminalToolCall` handler to pick the binary's run-body order
+   * (reject pending terminal decisions first, else cancel the running
+   * stream) without racing cancelActiveRun().
+   */
+  hasActiveRun(): boolean {
+    return this.activeRun !== null;
+  }
+
+  /**
+   * GAPS-14 (agent-shell-approval-keyboard-flow): cancel the currently
+   * running terminal tool call — the runtime half of Cursor's
+   * `composer.cancelTerminalToolCall` (Shift+Backspace). Sends Ctrl+C to
+   * the background terminal (the same interrupt the 10-minute timeout
+   * uses), marks the chat bubble cancelled and rejects the awaiting turn
+   * so the agent observes the cancellation. Returns true when a run was
+   * actually interrupted, false when nothing was running.
+   */
+  cancelActiveRun(): boolean {    const run = this.activeRun;
+    if (!run) {
+      return false;
+    }
+    this.endActiveRun(run, {
+      cancelled: true,
+      error: new Error("cancelled by user"),
+    });
+    return true;
+  }
+
+  /**
+   * Shared interrupt path for the timeout and the user cancel: Ctrl+C to
+   * the background terminal, bubble bookkeeping, promise settlement and
+   * clearing the `ideAgent.terminalToolCallRunning` context key.
+   */
+  private endActiveRun(
+    run: ActiveRun,
+    opts: { timedOut?: boolean; cancelled?: boolean; error: Error },
+  ): void {
+    this.activeRun = null;
+    clearTimeout(run.timer);
+    if (this.bgTerminal) {
+      this.bgTerminal.sendText("\u0003", false); // Ctrl+C
+    }
+    const display = extractRunOutput(run.raw) ?? "";
+    this.composer.updateTerminalOutput(run.bubbleId, display);
+    this.composer.finishTerminalRun(
+      run.bubbleId,
+      -1,
+      Date.now() - run.startedAt,
+      opts.timedOut ?? false,
+      opts.cancelled ?? false,
+    );
+    run.reject(opts.error);
+    this.setTerminalToolCallRunning(false);
+  }
+
+  /**
+   * GAPS-14: publish whether a terminal tool call is running. Core bridges
+   * `ideAgent.terminalToolCallRunning` -> `composer.terminalToolCallRunning`
+   * (composerContextKeysBridge.ts) to scope the Shift+Backspace binding.
+   */
+  private setTerminalToolCallRunning(running: boolean): void {
+    try {
+      void vscode.commands.executeCommand(
+        "setContext",
+        "ideAgent.terminalToolCallRunning",
+        running,
+      );
+    } catch {
+      // setContext is best-effort: a missing command must never break runs.
+    }
   }
 }

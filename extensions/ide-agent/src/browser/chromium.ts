@@ -13,6 +13,64 @@ export function browserCaptureDir(): string {
 }
 
 /**
+ * agent-image-files-disk-convention (mirrors the core convention in
+ * src/vs/workbench/contrib/composer/common/imageAttachments.ts until this
+ * extension finishes migrating to core): user-attached composer images are
+ * saved under <workspace>/.ide-code/attachments/ when a workspace folder is
+ * open (so tools/subagents in the workspace can read them), otherwise
+ * ~/.ide-code/attachments/. Never base64 in the context — the <image_files>
+ * XML block lists the disk paths.
+ */
+export function userImageAttachmentsDir(workspaceFsPath?: string): string {
+  if (workspaceFsPath) {
+    return path.join(workspaceFsPath, ".ide-code", "attachments");
+  }
+  return path.join(os.homedir(), ".ide-code", "attachments");
+}
+
+const USER_IMAGE_MIME_TO_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+};
+
+/** Max bytes per user-attached image (mirrors the core 15MB cap). */
+export const USER_IMAGE_MAX_BYTES = 15 * 1024 * 1024;
+
+/**
+ * Saves a data-URL image attachment to the attachments dir. Returns the
+ * absolute file path. Throws when the payload is not a supported image data
+ * URL or exceeds the size cap — callers surface the failure to the user.
+ */
+export function saveUserImageDataUrl(dataUrl: string, workspaceFsPath?: string): string {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/.exec(
+    typeof dataUrl === "string" ? dataUrl : "",
+  );
+  if (!match) {
+    throw new Error("not a supported image attachment (expected data:image/png|jpeg|webp|gif;base64)");
+  }
+  const mimeType = match[1].toLowerCase();
+  const ext = USER_IMAGE_MIME_TO_EXT[mimeType];
+  if (!ext) {
+    throw new Error(`unsupported image type: ${mimeType}`);
+  }
+  if (Math.floor(match[2].length * 3 / 4) > USER_IMAGE_MAX_BYTES) {
+    throw new Error("image attachment exceeds the 15MB size cap");
+  }
+  const bytes = Buffer.from(match[2], "base64");
+  if (bytes.length === 0 || bytes.length > USER_IMAGE_MAX_BYTES) {
+    throw new Error("image attachment exceeds the 15MB size cap");
+  }
+  const dir = userImageAttachmentsDir(workspaceFsPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filePath = path.join(dir, `image-${stamp}-${randomBytes(4).toString("hex")}.${ext}`);
+  fs.writeFileSync(filePath, bytes);
+  return filePath;
+}
+
+/**
  * Unique screenshot filename: ISO timestamp + 8 random hex chars.
  * Two screenshots in the same millisecond must not share a filename
  * (QA-BROWSERTAB-01 P3 — the second would silently overwrite the first).

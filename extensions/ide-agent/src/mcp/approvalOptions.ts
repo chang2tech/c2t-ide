@@ -1,7 +1,10 @@
 /**
- * MCP-specific approval options (parity §B5): allow once / always allow /
- * deny / skip. "Always" choices persist per server+tool into
- * <project>/.cursor/mcp-approvals.json so the decision survives restarts.
+ * MCP-specific approval options (Cursor 3.25.9 parity, WORKER-GAPS-30D).
+ *
+ * Storage (audit item `mcp-approval-persistence`, binary-verified):
+ * "Always allow" → user-global `composerState.mcpAllowedTools`; one-shot
+ * approve → per-composer `mcpAllowedToolsForChat`; there is no
+ * `<project>/.cursor/mcp-approvals.json` in Cursor (0 hits in the bundles).
  */
 import type { ApprovalOption } from "../services/humanReviewService";
 

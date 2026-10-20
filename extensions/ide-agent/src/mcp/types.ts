@@ -15,14 +15,27 @@ export interface McpServerConfig {
   /** Extra dotenv file(s) merged into the server env. */
   envFile?: string | string[];
   cwd?: string;
-  /** streamable_http transport: endpoint URL. NOT SUPPORTED — labeled gap. */
+  /** streamableHttp transport: endpoint URL. NOT SUPPORTED — labeled gap. */
   url?: string;
   headers?: Record<string, string>;
-  /** "stdio" | "sse" | "streamable_http". sse/streamable_http are gaps. */
+  /**
+   * "stdio" | "sse" | "streamableHttp". sse/streamableHttp are gaps.
+   * Cursor's binary enum is camelCase `streamableHttp`
+   * (cursor-mcp/dist/main.js: `"streamableHttp"===n.type`); the legacy
+   * snake_case `streamable_http` is still accepted at the parse boundary
+   * (see detectTransport).
+   */
   transportType?: string;
   allowDeprecatedSseFallback?: boolean;
   /** If false, the server is configured but never started. */
   enabled?: boolean;
+  /**
+   * Static OAuth client credentials — Cursor parity (cursor-mcp/dist/main.js
+   * @1010800): `auth: { CLIENT_ID, CLIENT_SECRET }`. When CLIENT_ID is
+   * present it becomes `staticClientInformation` on the OAuth provider and
+   * dynamic client registration is skipped. See `mcp/oauthStaticCreds.ts`.
+   */
+  auth?: McpServerAuthConfig;
 }
 
 /** Raw mcp.json file shape. */
@@ -34,8 +47,24 @@ export interface McpConfigFile {
 /** Where a server was configured. Precedence: project > user > vscode. */
 export type McpServerScope = "project" | "user" | "vscode";
 
-/** Transport we will actually use. */
-export type McpTransport = "stdio" | "streamable_http" | "sse";
+/**
+ * `auth` block of an mcp.json server entry — Cursor's key names, verbatim
+ * (cursor-mcp/dist/main.js @1010800 reads `r.auth?.CLIENT_ID` /
+ * `r.auth?.CLIENT_SECRET`). Re-exported here so config authors import from
+ * one place; the logic lives in `mcp/oauthStaticCreds.ts`.
+ */
+export interface McpServerAuthConfig {
+  CLIENT_ID?: string;
+  CLIENT_SECRET?: string;
+  [key: string]: string | undefined;
+}
+
+/**
+ * Transport we will actually use. Canonical literal is the binary-verbatim
+ * camelCase `streamableHttp` (cursor-mcp/dist/main.js 3.25.9:
+ * `"streamableHttp"===n.type`, `function B(e,t){return"streamableHttp"===t&&...}`).
+ */
+export type McpTransport = "stdio" | "streamableHttp" | "sse";
 
 /** A configured server after discovery + variable expansion. */
 export interface ConfiguredServer {
@@ -50,6 +79,13 @@ export interface ConfiguredServer {
   config: Required<Pick<McpServerConfig, "args">> & McpServerConfig;
   /** Transport we will actually use. */
   transport: McpTransport;
+  /**
+   * Cursor's hosted-gateway server id, extracted from the URL path when it
+   * matches `^/rest-mcp/([^/]+)/mcp/?$` (cursor-mcp/dist/main.js 3.25.9:
+   * `const r=/^\/rest-mcp\/([^/]+)\/mcp\/?$/.exec(t.pathname);return r?.[1]`).
+   * Absent for non-gateway URLs. Used for gateway auth/routing.
+   */
+  gatewayServerId?: string;
 }
 
 /** Lifecycle states (parity §B8, adapted for extension-host stdio). */
@@ -61,6 +97,37 @@ export type McpServerState =
   | "backoff"
   | "failed"
   | "disabled";
+
+/**
+ * Wake / network-resume reconnect policy — Cursor parity (supervisor-level
+ * config, `mcp-reconnect-config.ts` in Cursor's mcpProcess).
+ *
+ * KEY NAMES ARE EVIDENCE-VERIFIED — Cursor 3.25.9 (see
+ * `docs/rea/dig-continuous-mcp-deep-2026-10-19.md` §2.5, auditor run 30):
+ * - `retryNonRetryableOnWake` — the ACTUAL key (2–3 hits in
+ *   mcpProcessMain.js, cursor-mcp/dist/main.js and the glass bundle).
+ * - `networkResumeReconnectEnabled`, `networkResumeReconnectDebounceMs`
+ *   — real keys in the same section (`networkResumeReconnectDebounceMs`
+ *   observed = 5000 ms in the 3.25.9 host bundle).
+ *
+ * FABRICATION WARNING (GAPS-22D): `connectOnWake` and `retryOnWake` have
+ * 0 hits in EVERY 3.25.9 bundle — they were invented and do not exist.
+ * Never re-introduce those names; use the keys below instead.
+ */
+export interface McpReconnectPolicy {
+  /**
+   * When true, the supervisor ALSO retries non-retryable operations on
+   * wake/network-resume (e.g. servers stuck in `failed` because of a 401/403
+   * auth failure). When false (default), wake only retries retryable
+   * failures — non-retryable ones stay `failed` until a manual restart,
+   * exactly like Cursor's semantics.
+   */
+  retryNonRetryableOnWake?: boolean;
+  /** Master switch for wake/network-resume reconnect. */
+  networkResumeReconnectEnabled?: boolean;
+  /** Debounce window for wake signals (ms); observed Cursor value: 5000. */
+  networkResumeReconnectDebounceMs?: number;
+}
 
 /** Runtime status snapshot for UI. */
 export interface McpServerStatus {
@@ -75,7 +142,7 @@ export interface McpServerStatus {
   toolCount: number;
   /** Server-reported info from initialize. */
   serverInfo?: { name: string; version?: string };
-  /** Transport in use: stdio | streamable_http | sse. */
+  /** Transport in use: stdio | streamableHttp | sse. */
   transport: McpTransport;
 }
 
@@ -99,6 +166,39 @@ export interface McpPrecheckResult {
   reason: string;
   /** Which rule produced the decision. */
   matchedRule?: string;
+}
+
+/**
+ * MCP approval grant storage — Cursor 3.25.9 parity (WORKER-GAPS-30D,
+ * audit item `mcp-approval-persistence`).
+ *
+ * Binary evidence (workbench.glass.main.js 3.25.9, self-verified 2026-10-20):
+ * - "Always allow" grants live in USER-GLOBAL reactive storage
+ *   `composerState.mcpAllowedTools` — 6
+ *   `setApplicationUserPersistentStorage("composerState","mcpAllowedTools",…)`
+ *   call sites; entries are normalized `server:tool` strings; NO timestamps
+ *   and NO TTL anywhere near them (see also P0 `mcp-approval-ttl-claim-debunked`).
+ * - One-shot RUN grants live in PER-COMPOSER memory `mcpAllowedToolsForChat`:
+ *   `case DJ.RUN: if(A&&!A.allowOnce){…updateComposerDataSetStore(handle,
+ *   z=>z("mcpAllowedToolsForChat",K=>K?.includes(W)?K:[...K??[],W]))}`.
+ * - Consult = `[...effectiveAllowlist, ...mcpAllowedToolsForChat??[]]`
+ *   compared case-insensitively.
+ * - `mcp-approvals.json` = 0 hits in the glass AND desktop bundles: Cursor
+ *   has NO project-level approvals file. The old `<project>/.cursor/
+ *   mcp-approvals.json` persistence was our invention and is removed.
+ * - There is NO client-side persistent-deny store (no `mcpDeniedTools`-like
+ *   key anywhere): a card "Deny" rejects the current call only; lasting
+ *   deny comes from `.cursor/permissions.json` blocklists (docs).
+ */
+export interface McpGrantStore {
+  /** User-global persistent "Always allow" grants (normalized `server:tool`). */
+  getGlobalGrants(): readonly string[];
+  /** Append one grant; dedupe; no TTL. */
+  addGlobalGrant(entry: string): void;
+  /** Per-composer in-memory one-shot RUN grants. */
+  getChatGrants(composerId: string): readonly string[];
+  /** Append one chat-scoped grant. */
+  addChatGrant(composerId: string, entry: string): void;
 }
 
 /** Minimal logger so core logic stays vscode-free (and unit-testable). */
