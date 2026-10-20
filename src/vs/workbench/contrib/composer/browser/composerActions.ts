@@ -114,6 +114,13 @@ import {
 
 /** Localized "Composer" category for the command palette. */
 export const ComposerActionCategory = localize2('composer.category', 'Composer');
+/**
+ * Localized "Cursor" category for the command palette. Binary-verbatim
+ * `Yn.Cursor` (workbench.desktop.main.js 3.25.9 @29915583) — commands like
+ * `composer.duplicateChat` show as "Cursor: ..." in the palette, NOT
+ * "Composer: ...".
+ */
+export const CursorActionCategory = localize2('composer.cursorCategory', 'Cursor');
 /** Localized "IDE Tab" category for the command palette (tab-completion commands). */
 export const ComposerTabCategory = localize2('composer.tabCategory', 'IDE Tab');
 /** Localized "AI Code Tracking" category for the command palette. */
@@ -189,7 +196,38 @@ const cancelComposerStepKeybindingWeight = 600 as KeybindingWeight;
  */
 const acceptComposerStepKeybindingWeight = 600 as KeybindingWeight;
 
+/**
+ * W69C (`changes-tab-base-branch-menu`): binary-verbatim keybinding
+ * weight 600 for `cursor.openBranchMenu` ("Open Branch Menu",
+ * workbench.glass.main.js 3.25.9 class JXl @27418580 —
+ * `keybinding:{primary:dt.CtrlCmd|Xe.Quote,weight:600,
+ * when:ft.has("composerFocused")}`). Same raw-600 cast pattern as the
+ * accept family above. NOTE: the audit queue's run-34 entry omitted this
+ * keybinding — the binary registration carries it verbatim (W69C
+ * re-verified the class literal directly in the 3.25.9 bundle).
+ */
+const openBranchMenuKeybindingWeight = 600 as KeybindingWeight;
 
+
+
+/**
+ * DEV-GAPS-81 (F3, QA GAPS-79C): binary-verbatim keybinding weight 410 for
+ * `composer.newFollowup` ("Focus Chat Followup", binary id
+ * `aichat.newfollowupaction`, workbench.glass.main.js 3.25.9 @39814626 —
+ * `keybinding:{primary:JiI,weight:410}` with NO when-clause, where
+ * `JiI = isMac ? CtrlCmd|Shift|KeyY : CtrlCmd|KeyY`). 410 sits just above
+ * this fork's `KeybindingWeight` enum max (400 = ExternalExtension), so the
+ * raw value is cast — the same pattern as `shellApprovalKeybindingWeight`
+ * (DEV-GAPS-12). With no when-clause the chord is a candidate everywhere,
+ * and 410 outranks the editor's Redo binding (CtrlCmd+KeyY at
+ * KeybindingWeight.EditorCore = 0, editor/browser/editorExtensions.ts) —
+ * so on win/linux Ctrl+Y focuses the chat follow-up instead of redoing,
+ * exactly Cursor's resolution; Redo stays reachable via its secondary
+ * chord CtrlCmd+Shift+KeyZ. On mac there is no collision at all (mac Redo
+ * primary is CtrlCmd+Shift+KeyZ; the binary's mac chord is
+ * CtrlCmd+Shift+KeyY).
+ */
+const newFollowupKeybindingWeight = 410 as KeybindingWeight;
 
 export class ComposerNewChatAction extends Action2 {
 	static readonly ID = 'composer.newChat';
@@ -226,10 +264,14 @@ export class ComposerNewFollowupAction extends Action2 {
 			title: localize2('composer.newFollowup', 'Focus Chat Followup'),
 			category: ComposerActionCategory,
 			f1: true,
+			// DEV-GAPS-81 (F3): binary-verbatim binding — weight 410, NO
+			// when-clause, mac primary CtrlCmd+Shift+KeyY (binary JiI is a
+			// platform ternary on the single primary; the `mac:` override
+			// is this fork's equivalent idiom, cf. line ~1001/1486).
 			keybinding: {
-				weight: KeybindingWeight.WorkbenchContrib,
+				weight: newFollowupKeybindingWeight,
 				primary: KeyMod.CtrlCmd | KeyCode.KeyY,
-				when: ComposerContextKeys.chatInputFocused
+				mac: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyY }
 			},
 		});
 	}
@@ -362,14 +404,17 @@ export class AipopupClosePromptBarAction extends Action2 {
 		super({
 			id: AipopupClosePromptBarAction.ID,
 			title: localize2('aipopup.action.closePromptBar', 'Close Prompt Bar'),
-			// Binary parity: NO category. Cursor 3.25.9/3.25.6 register
+			// Binary parity: NO category, NO `f1`. Cursor 3.25.9 registers
 			// `aipopup.action.closePromptBar` as {id, title, precondition,
 			// keybinding:{when:editorTextFocus, primary:Escape, weight:2105}}
-			// only — no `category`, no `f1` (glass class Qfy/Ify
-			// super @40742694/@40733079; desktop ktg/ntg super
-			// @32239203/@32232724). Fork previously invented
-			// ComposerActionCategory here; removed per W69B.
-			f1: true,
+			// only — the super call carries NO `f1` field at all (glass
+			// class Qfy super @40742729, desktop class ktg super
+			// @32239238, re-sliced by W73C; glass and desktop agree).
+			// `f1` is therefore OMITTED here (registerAction2 only adds a
+			// Command Palette entry `if (f1)`), so the action stays out of
+			// the palette exactly like the binary. Fork previously invented
+			// ComposerActionCategory here (removed per W69B) and wrongly
+			// set `f1: true` (removed per W73C).
 			keybinding: {
 				// Binary: Esc, weight 2105, when editorTextFocus with
 				// precondition editorHasPromptBar && editorPromptBarFocused
@@ -398,23 +443,26 @@ export class AipopupClosePromptBarAction extends Action2 {
 }
 
 export class AipopupCloseActiveEditorPromptBarsAction extends Action2 {
-	static readonly ID = 'aipopup.action.closeActiveEditorPromptBars';
+	static readonly ID = 'workbench.action.closeActiveEditorPromptBars';
 	constructor() {
 		super({
 			id: AipopupCloseActiveEditorPromptBarsAction.ID,
-			title: localize2('aipopup.action.closeActiveEditorPromptBars', 'Close Active Editor Prompt Bars'),
+			title: localize2('workbench.action.closeActiveEditorPromptBars', 'Close Active Editor Prompt Bars'),
 			// Binary parity: NO category. Cursor registers the tier-2 Esc as
 			// `workbench.action.closeActiveEditorPromptBars` (not
 			// `aipopup.action.*`) with {id, title, f1:!1,
 			// keybinding:[{primary:Escape, weight:100,
 			// when:editorHasPromptBar && !editorPromptBarFocused &&
 			// editorTextFocus}]} only — no `category` (3.25.9 glass super
-			// @40751517, desktop @32248026; 3.25.6 glass @40741902, desktop
-			// @32241547). Fork previously invented ComposerActionCategory
-			// here; removed per W69B. NOTE: the fork's `aipopup.action.*` id
-			// diverges from the binary's `workbench.action.*` id (renaming
-			// is out of scope for this palette-category fix).
-			f1: true,
+			// @40751517 with `.ID="workbench.action.closeActiveEditorPromptBars"`
+			// @40752018, desktop super @32248026 with `.ID` @32248527,
+			// re-sliced by W73C; glass and desktop agree on id and f1).
+			// Fork previously invented ComposerActionCategory here
+			// (removed per W69B), used the wrong `aipopup.action.*` id and
+			// wrongly set `f1: true` (both fixed per W73C: id renamed to
+			// the binary's `workbench.action.*`, f1:!1 = false — hidden
+			// from the Command Palette).
+			f1: false,
 			keybinding: {
 				// Binary: Esc, weight 100, when editorHasPromptBar &&
 				// !editorPromptBarFocused && editorTextFocus (tier-2 Esc).
@@ -1342,16 +1390,16 @@ export class ComposerCloseChatTabAction extends Action2 {
 }
 
 /**
- * DEV-GAPS-73 (`chat-tab-close-actions`): Cursor 3.25.6 parity —
+ * DEV-GAPS-73 (`chat-tab-close-actions`): Cursor 3.25.9 parity —
  * `composer.clearComposerTabs`, title **'Close All Tabs'**, menu
- * ViewTitle group **'0_chatManage'** (static grep, title recovery; matrix
- * + remeasure 2026-10-20 MISSING). Binary evidence does not say whether
- * it is in the command palette — it is kept f1:true (the only sibling
- * with explicit `f1:!0` is `closeOtherComposerTabs`). The run body
- * delegates to the extension-owned runtime (the established
- * `composer.*` → `ide.*` architecture): ChatTabService closes every
- * tab, reusing per-tab closeTab semantics (a running/draining turn
- * refuses; the last chat is cleared, never removed).
+ * ViewTitle group **'0_chatManage'** order **3**, `f1:!0` (glass
+ * @39825552; `!0` = true, palette-visible — the sibling
+ * `closeOtherComposerTabs` is likewise `f1:!0` with menu order 2).
+ * The run body delegates to the extension-owned runtime (the
+ * established `composer.*` → `ide.*` architecture): ChatTabService
+ * closes every tab, reusing per-tab closeTab semantics (a
+ * running/draining turn refuses; the last chat is cleared, never
+ * removed).
  */
 export class ComposerClearComposerTabsAction extends Action2 {
 	static readonly ID = 'composer.clearComposerTabs';
@@ -1373,9 +1421,11 @@ export class ComposerClearComposerTabsAction extends Action2 {
 /**
  * DEV-GAPS-73 (`chat-tab-close-actions`): Cursor 3.25.6 parity —
  * `composer.closeOtherComposerTabs`, title **'Close Other Tabs'**,
- * `f1:!0` (palette-hidden), ViewTitle menu (static grep, title recovery;
- * matrix + remeasure 2026-10-20 MISSING). Closes every chat tab except
- * the active one; same per-tab closeTab semantics as Close All Tabs.
+ * `f1:!0` (palette-VISIBLE — `!0` is `true` in minified JS; verified
+ * against the glass bundle @39862165), ViewTitle menu (static grep,
+ * title recovery; matrix + remeasure 2026-10-20 MISSING). Closes every
+ * chat tab except the active one; same per-tab closeTab semantics as
+ * Close All Tabs.
  */
 export class ComposerCloseOtherComposerTabsAction extends Action2 {
 	static readonly ID = 'composer.closeOtherComposerTabs';
@@ -1383,7 +1433,7 @@ export class ComposerCloseOtherComposerTabsAction extends Action2 {
 		super({
 			id: ComposerCloseOtherComposerTabsAction.ID,
 			title: localize2('composer.closeOtherComposerTabs', 'Close Other Tabs'),
-			f1: false,
+			f1: true,
 		});
 	}
 
@@ -1569,32 +1619,165 @@ export class ComposerAcceptComposerStepAction extends Action2 {
 
 // DEV-GAPS-56 (`agent-resume-chat`): binary-verbatim
 // `composer.resumeCurrentChat` ("Resume Current Chat",
-// workbench.glass.main.js 3.25.9, class CAb):
+// workbench.glass.main.js 3.25.9, class CAb @39846912 — REA spec
+// `rea-spec-accept-resume-2026-10-20.md`):
 //   super({id:p8a,title:{value:"Resume Current Chat",original:"Resume Current Chat"}})
-// — p8a="composer.resumeCurrentChat". The binary registration carries NO
-// f1 field, NO category and NO keybinding (an omitted f1 defaults to
-// palette-visible in both frameworks, so the command shows in the palette
-// exactly like Cursor's; the run-34 audit note's "f1:!0" was an extraction
-// normalization, not a shipped field). Run (binary):
-//   async run(t,e){const n=t.get(L0/*chatService*/),i=t.get(no/*composerDataService*/),
-//     r=t.get($r/*log*/),s=i.selectedComposerId;
+// — p8a="composer.resumeCurrentChat" @15886874. The binary registration carries NO
+// f1, NO keybinding, NO precondition, NO menu, NO category. The registration
+// helper Ht (@2274492) gates palette/menu registration on truthy f1
+// (`{f1:i,...}=n.desc; if(i&&(...))`), so this command is PALETTE-HIDDEN —
+// invocable programmatically only (executeCommand with args). CORRECTION vs
+// the run-34 audit entry: the audit's `f1:!0` claim is BÁC BỎ by binary
+// evidence (the class literal passes {id,title} ONLY; an omitted f1 is falsy,
+// it does NOT default to palette-visible). The fork mirrors this with an
+// explicit f1:false — the fork's registerAction2 also gates the
+// CommandPalette entry on truthy f1.
+// Run (binary, verbatim):
+//   async run(t,e){const n=t.get(L0/*composerChatService @19930603*/),
+//     i=t.get(no/*composerDataService @17974762*/),
+//     r=t.get($r/*notificationService @2462592*/),s=i.selectedComposerId;
 //     if(s){const o=i.getHandleIfLoaded(s);
 //       if(!o){r.warn("Cannot resume: composer not loaded");return}
 //       try{n.resumeChat(o,{isAutoResume:e?.isAutoResume===!0})}
 //       catch(a){r.warn(a instanceof Error?a.message:"Cannot resume")}}}
+// Fork mapping (binary services -> fork analogs):
+// - L0 (ComposerChatService.resumeChat) -> the ide-agent extension runtime
+//   `ide.resumeCurrentChat` (chat-data owner; its ComposerDataService.resumeChat
+//   is the chatService port — it throws verbatim "Cannot resume: chat not
+//   found" when the composer holds no conversation data, per the binary's
+//   resumeChat guard @20423725).
+// - no (global ComposerDataService: selectedComposerId/getHandleIfLoaded) ->
+//   the fork has no global composer registry in core: the SELECTED composer
+//   is the active composer chat editor (resolveRenameChatTabId — the same
+//   selection mapping as ComposerRenameChatAction), and a LOADED handle is an
+//   OPEN chat editor input (findOpenComposerChatInput — the same mapping the
+//   composer.acceptPlan resolver documents for getHandleIfLoaded).
+// - $r (notificationService) -> INotificationService.
+// - No selection -> SILENT return (no warning), exactly like the binary.
+// UNKNOWN (binary body truncated @20423725): the downstream effect of
+// isAutoResume inside resumeChat — the fork passes the flag through to the
+// runtime verbatim and invents no behavior for it.
 export class ComposerResumeCurrentChatAction extends Action2 {
 	static readonly ID = 'composer.resumeCurrentChat';
+	/** Runtime half (chat-data owner) in the ide-agent extension. */
+	static readonly RUNTIME_COMMAND = 'ide.resumeCurrentChat';
 	constructor() {
 		super({
 			id: ComposerResumeCurrentChatAction.ID,
 			title: localize2('composer.resumeCurrentChat', 'Resume Current Chat'),
-			// No f1 / category / keybinding — binary registers none of them.
+			// Palette-hidden like the binary: no f1, no keybinding (see the
+			// evidence note above).
+			f1: false,
 		});
 	}
 
 	async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
-		// IDE-CODE: delegate to the ide-agent extension runtime until the implementation migrates to core.
-		await accessor.get(ICommandService).executeCommand('ide.resumeCurrentChat', ...args);
+		const editorService = accessor.get(IEditorService);
+		const notificationService = accessor.get(INotificationService);
+		const commandService = accessor.get(ICommandService);
+
+		// Binary: `s = i.selectedComposerId; if (s) { ... }` — no selection
+		// returns SILENTLY (no warning).
+		const tabId = resolveRenameChatTabId(editorService, undefined);
+		if (!tabId) {
+			return;
+		}
+		// Binary: `o = i.getHandleIfLoaded(s); if (!o) { warn(...); return }`.
+		if (!findOpenComposerChatInput(editorService, tabId)) {
+			notificationService.warn('Cannot resume: composer not loaded');
+			return;
+		}
+		// Binary: `n.resumeChat(o, { isAutoResume: e?.isAutoResume === true })`
+		// with `catch(a){ r.warn(a instanceof Error ? a.message : "Cannot resume") }`.
+		const opts = args[0] as { isAutoResume?: unknown } | undefined;
+		try {
+			await commandService.executeCommand(
+				ComposerResumeCurrentChatAction.RUNTIME_COMMAND,
+				{ isAutoResume: opts?.isAutoResume === true });
+		} catch (err) {
+			notificationService.warn(err instanceof Error ? err.message : 'Cannot resume');
+		}
+	}
+}
+
+// W69C (`changes-tab-base-branch-menu`): binary-verbatim
+// `cursor.openBranchMenu` ("Open Branch Menu",
+// workbench.glass.main.js 3.25.9 — id ZXl="cursor.openBranchMenu"
+// @27418487, class JXl @27418580, Ht(Eyv) registered):
+//   super({id:gpy.ID,title:{value:"Open Branch Menu",
+//     original:"Open Branch Menu"},f1:!0,
+//     keybinding:{primary:dt.CtrlCmd|Xe.Quote,weight:600,
+//       when:ft.has("composerFocused")}})
+// — f1:!0 (palette-visible), NO category, NO menu, NO precondition.
+// Run (binary, verbatim):
+//   async run(e){const n=e.get(no/*composerDataService*/),
+//     i=e.get(ep/*composerService @4266368*/),
+//     r=e.get(Xb/*composerEventService @17600371*/),
+//     s=n.selectedComposerId;
+//     !s||!n.getComposerDataIfLoaded(s)||!i.isComposerConversationEmpty(s)
+//       ||r.fireDidRequestOpenBranchMenu({composerId:s})}
+// — the event fires ONLY for a loaded composer whose conversation is
+// still EMPTY (the base branch is a pre-chat choice); every guard failure
+// is a SILENT no-op (unlike resumeCurrentChat, this command never warns).
+// The handler lives in the branch-selector component (@27425412): on
+// `onDidRequestOpenBranchMenu` for the selected composer it opens the
+// selector popup, sets backgroundComposerDataService
+// "isBranchSelectorOpen", and labels the trigger
+// `Switch base branch (${base})` (template @27426629), backed by
+// gitContextService.getGitDiff()/getCurrentBranch()/getDefaultBranch()/
+// getAllBranchNames().
+// Fork mapping (binary services -> fork analogs), same split as
+// ComposerResumeCurrentChatAction:
+// - no (selectedComposerId / getComposerDataIfLoaded) -> the active
+//   composer chat editor (resolveRenameChatTabId /
+//   findOpenComposerChatInput), resolved HERE in core; both guards are
+//   silent, exactly like the binary's short-circuit.
+// - ep (isComposerConversationEmpty) + Xb (fireDidRequestOpenBranchMenu)
+//   + the selector handler -> the ide-agent extension runtime
+//   `ide.openBranchMenu` (chat-data owner; BranchMenuService is the
+//   composerEventService/backgroundComposerDataService port, and its
+//   picker is the fork's QuickPick analog of the binary's React popup —
+//   see branchMenuService.ts for the divergence notes).
+// - when: the binary's `composerFocused` has no fork writer; `chatSurface`
+//   is the established fork port (same as the accept family).
+export class CursorOpenBranchMenuAction extends Action2 {
+	static readonly ID = 'cursor.openBranchMenu';
+	/** Runtime half (chat-data owner) in the ide-agent extension. */
+	static readonly RUNTIME_COMMAND = 'ide.openBranchMenu';
+	constructor() {
+		super({
+			id: CursorOpenBranchMenuAction.ID,
+			title: localize2('cursor.openBranchMenu', 'Open Branch Menu'),
+			f1: true,
+			keybinding: {
+				weight: openBranchMenuKeybindingWeight,
+				primary: KeyMod.CtrlCmd | KeyCode.Quote,
+				when: chatSurface,
+			},
+		});
+	}
+
+	async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const commandService = accessor.get(ICommandService);
+
+		// Binary: `s = n.selectedComposerId; !s || ...` — no selection is a
+		// SILENT no-op (this command never warns).
+		const tabId = resolveRenameChatTabId(editorService, undefined);
+		if (!tabId) {
+			return;
+		}
+		// Binary: `!n.getComposerDataIfLoaded(s) || ...` — an unloaded
+		// composer is likewise a silent no-op.
+		if (!findOpenComposerChatInput(editorService, tabId)) {
+			return;
+		}
+		// Binary: `!i.isComposerConversationEmpty(s) ||
+		// r.fireDidRequestOpenBranchMenu({composerId:s})` — the
+		// conversation-empty guard and the event fire live in the runtime.
+		await commandService.executeCommand(
+			CursorOpenBranchMenuAction.RUNTIME_COMMAND,
+			{ composerId: tabId }, ...args);
 	}
 }
 
@@ -3082,8 +3265,8 @@ export class ComposerRenameChatAction extends Action2 {
  * (workbench.desktop.main.js @29915583: `var xgm=class extends vt{...id:CWt,
  * title:{value:"Fork Chat"},category:Yn.Cursor,f1:!0...}`, `CWt="composer.duplicateChat"`).
  * The old fork id `composer.forkChat` does NOT exist in the binary (0 hits in
- * both bundles). Binary extras carried over: palette-visible (f1:!0) with the
- * Composer category; the menu entry is `group:"1_chatTools",order:6,when:scheme==composer
+ * both bundles). Binary extras carried over: palette-visible (f1:!0) with the Cursor
+ * category (binary `category:Yn.Cursor`); the menu entry is `group:"1_chatTools",order:6,when:scheme==composer
  * && !composerEditorTabIsCloudAgent`. The run deep-forks the transcript —
  * still delegated to the ide-agent extension runtime (chat-data owner).
  */
@@ -3093,7 +3276,7 @@ export class ComposerForkChatAction extends Action2 {
 		super({
 			id: ComposerForkChatAction.ID,
 			title: localize2('composer.duplicateChat', 'Fork Chat'),
-			category: ComposerActionCategory,
+			category: CursorActionCategory,
 			f1: true,
 		});
 	}
@@ -4038,6 +4221,10 @@ export function registerComposerActions(): void {
 	// ("Accept pending agent pane action", 3.25.9 @39863346) — registered
 	// right after the cancel family (binary class order NAb/LAb region).
 	registerAction2(ComposerAcceptComposerStepAction);
+	// DEV-GAPS-56 (`agent-resume-chat`): `composer.resumeCurrentChat`.
+	registerAction2(ComposerResumeCurrentChatAction);
+	// W69C (`changes-tab-base-branch-menu`): `cursor.openBranchMenu`.
+	registerAction2(CursorOpenBranchMenuAction);
 	registerAction2(ComposerFindInChatAction);
 	registerAction2(ComposerHideFindInChatAction);
 	registerAction2(ComposerFindNextInChatAction);
@@ -4195,13 +4382,13 @@ export function registerComposerMenus(): void {
 		}
 	});
 
-	// DEV-GAPS-73 (`chat-tab-close-actions`): Cursor 3.25.6 verbatim menu
-	// wiring — both commands in the chat VIEW TITLE menu, group
-	// '0_chatManage' (binary grep + title recovery; this is the group the
-	// ViewTitle more-actions ("...") overflow renders before 'navigation').
+	// DEV-GAPS-73 (`chat-tab-close-actions`): Cursor 3.25.9 parity (glass
+	// @39825552 / @39862165): Close Other Tabs is menu order **2**, Close
+	// All Tabs order **3**, both in the chat VIEW TITLE menu group
+	// '0_chatManage'. ('f1:!0' in the bundle means palette-VISIBLE.)
 	const chatManageWhen = ContextKeyExpr.equals('view', COMPOSER_CHAT_VIEW_ID);
 	MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-		group: '0_chatManage@1',
+		group: '0_chatManage@3',
 		when: chatManageWhen,
 		command: {
 			id: ComposerClearComposerTabsAction.ID,
@@ -4244,7 +4431,7 @@ export function registerComposerMenus(): void {
 		'composer.duplicateChat': 'composer.menu.forkChat',
 		'workbench.action.moveEditorToNewWindow': 'composer.menu.moveEditorToNewWindow',
 	};
-	const titleMenuGateWhen = (gate: ChatTitleMenuGate): ContextKeyExpr => {
+	const titleMenuGateWhen = (gate: ChatTitleMenuGate): ContextKeyExpr | undefined => {
 		switch (gate) {
 			case 'schemeAndSharedChats':
 				return ContextKeyExpr.and(ideChatScheme, ComposerContextKeys.isSharedChatsEnabled);
@@ -4254,16 +4441,27 @@ export function registerComposerMenus(): void {
 				// Binary: `scheme == composer && (isDevelopment || isDevUser)`;
 				// `isDevUser` is Cursor-internal with no fork analog (documented).
 				return ContextKeyExpr.and(ideChatScheme, IsDevelopmentContext);
+			case 'preconditionOnly':
+				// Binary Rename Chat item (desktop @29968468):
+				// `{command:{id:aHi,...,precondition:VXi},group:"1_chatTools",order:5}` —
+				// NO `when`. The can-rename precondition sits on the command
+				// descriptor (appended below) and `composerEditorTabCanRename`
+				// is only true when the active editor is a chat tab, so the
+				// scheme conjunct the old `'scheme'` gate added was spurious.
+				return undefined;
 			default:
 				return ideChatScheme;
 		}
 	};
 	const appendChatTitleMenuItem = (item: ChatTitleMenuItem): void => {
+		// `'preconditionOnly'` (binary Rename Chat) maps to NO `when` —
+		// the gate lives on the command descriptor's precondition only.
+		const when = titleMenuGateWhen(item.gate);
 		for (const target of item.targets) {
 			MenuRegistry.appendMenuItem(target === 'EditorTitle' ? MenuId.EditorTitle : MenuId.EditorTitleContext, {
 				group: item.group,
 				order: item.order,
-				when: titleMenuGateWhen(item.gate),
+				...(when ? { when } : {}),
 				command: {
 					id: item.commandId,
 					title: localize(titleMenuLocKeys[item.commandId] ?? `composer.menu.${item.commandId}`, item.title),
