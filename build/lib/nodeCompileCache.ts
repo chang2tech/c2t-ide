@@ -82,8 +82,39 @@ export async function generateNodeCompileCache(platform: string, outputDirectory
 		const totalCacheEntryCount = await validateNodeCompileCache(paths.cacheDirectory, process.arch);
 		console.log(`Generated ${totalCacheEntryCount} total Node.js compile cache entries in ${paths.cacheDirectory}.`);
 	} finally {
-		await fs.promises.rm(portableDirectory, { recursive: true, force: true });
+		await removeDirectoryWithRetries(portableDirectory);
 	}
+}
+
+/**
+ * Removes a directory tree, retrying on Windows file-lock races.
+ *
+ * On CI (notably Windows), the launched application process may exit while a
+ * lingering sibling process (e.g. the shared process) still holds a lock on a
+ * file inside the temporary portable user-data directory (observed:
+ * `user-data/Shared Dictionary/db-journal`). A single `fs.promises.rm` then
+ * fails with EBUSY/EPERM/ENOTEMPTY even with `force: true` (force only ignores
+ * ENOENT). Retrying with a short backoff lets the lock release instead of
+ * failing the whole packaging step.
+ */
+async function removeDirectoryWithRetries(directory: string, attempts = 12, delayMs = 500): Promise<void> {
+	let lastError: unknown;
+	for (let i = 0; i < attempts; i++) {
+		try {
+			await fs.promises.rm(directory, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			lastError = error;
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY') {
+				throw error;
+			}
+			if (i < attempts - 1) {
+				await new Promise(resolve => setTimeout(resolve, delayMs));
+			}
+		}
+	}
+	throw lastError;
 }
 
 export async function validateNodeCompileCache(rootDirectory: string, architecture: string): Promise<number> {
