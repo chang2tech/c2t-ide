@@ -1,2 +1,12 @@
 @anthropic-ai/claude-agent-sdk/vendor/audio-capture/*-darwin/**
 @anthropic-ai/claude-agent-sdk/vendor/audio-capture/*-linux/**
+
+# node-pty ships prebuilds for all platforms in its npm tarball. Non-win32
+# prebuilds leak into the Windows package and break rcedit version-stamping
+# (rcedit fails on non-PE .node files). The win32 prebuilds must stay: the
+# Windows CI does not compile node-pty from source, so the packaged app loads
+# conpty.node / conpty_console_list.node from prebuilds/win32-<arch> at runtime.
+node-pty/prebuilds/darwin-arm64/**
+node-pty/prebuilds/darwin-x64/**
+node-pty/prebuilds/linux-arm64/**
+node-pty/prebuilds/linux-x64/**
