@@ -147,6 +147,20 @@ jobs:
           npm --prefix extensions/ide-agent run compile
           test -f extensions/ide-agent/out/extension.js
 
+      - name: Compile auxiliary ide-* extensions
+        run: |
+          set -e
+          # ide-checkout / ide-deeplink / ide-worktree-textmate are packaged
+          # as built-in extensions (main: ./out/extension.js) but nothing
+          # else compiles them, and out/ is gitignored -- without this step
+          # CI would package them with no entry point (found in build #11
+          # follow-up audit). They have no lockfile, so use npm install.
+          for ext in ide-checkout ide-deeplink ide-worktree-textmate; do
+            npm --prefix "extensions/$ext" install --ignore-scripts --no-audit --no-fund
+            npm --prefix "extensions/$ext" run compile
+            test -f "extensions/$ext/out/extension.js"
+          done
+
 
 
       - name: Package Electron app (VSCode-linux-x64)
@@ -325,7 +339,7 @@ jobs:
           TARGET="$(sed -n 's/^target="\(.*\)"$/\1/p' .npmrc)"
           # Scoped @vscode packages (13 native packages ship no prebuilds and
           # only get bindings from their install scripts -- forward audit R4).
-          for pkg in policy-watcher spdlog sqlite3 windows-mutex windows-registry deviceid native-watchdog windows-ca-certs fs-copyfile; do
+          for pkg in policy-watcher spdlog sqlite3 windows-mutex windows-registry windows-process-tree deviceid native-watchdog windows-ca-certs; do
             ( cd "node_modules/@vscode/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --dist-url=https://electronjs.org/headers )
           done
           # Unscoped packages. native-keymap goes LAST on purpose: it is the
@@ -338,16 +352,21 @@ jobs:
           done
           # Fail fast with a clear message if any binding is missing, instead of
           # a cryptic crash 45 minutes later in generateNodeCompileCache.
+          # NOTE: @vscode/fs-copyfile is deliberately NOT asserted here: its
+          # binding.gyp sets "type": "none" for every OS except macOS (the
+          # native CoW clone is APFS-only; win32/linux fall back to node's
+          # fs.copyFile in lib/native.js), so no .node is ever produced on
+          # Windows. Asserting it failed build #11.
           for f in \
             node_modules/@vscode/policy-watcher/build/Release/vscode-policy-watcher.node \
             node_modules/@vscode/spdlog/build/Release/spdlog.node \
             node_modules/@vscode/sqlite3/build/Release/vscode-sqlite3.node \
             node_modules/@vscode/windows-mutex/build/Release/CreateMutex.node \
             node_modules/@vscode/windows-registry/build/Release/winregistry.node \
+            node_modules/@vscode/windows-process-tree/build/Release/windows_process_tree.node \
             node_modules/@vscode/deviceid/build/Release/windows.node \
             node_modules/@vscode/native-watchdog/build/Release/watchdog.node \
             node_modules/@vscode/windows-ca-certs/build/Release/crypt32.node \
-            node_modules/@vscode/fs-copyfile/build/Release/vscode_fs.node \
             node_modules/native-is-elevated/build/Release/iselevated.node \
             node_modules/kerberos/build/Release/kerberos.node \
             node_modules/windows-foreground-love/build/Release/foreground_love.node \
@@ -376,6 +395,20 @@ jobs:
           npm --prefix extensions/ide-agent ci
           npm --prefix extensions/ide-agent run compile
           test -f extensions/ide-agent/out/extension.js
+
+      - name: Compile auxiliary ide-* extensions
+        shell: bash
+        run: |
+          set -e
+          # Same as the Linux job: these built-in extensions have
+          # main: ./out/extension.js, out/ is gitignored, and nothing else
+          # compiles them -- they must be built here or packaging ships
+          # them without an entry point.
+          for ext in ide-checkout ide-deeplink ide-worktree-textmate; do
+            npm --prefix "extensions/$ext" install --ignore-scripts --no-audit --no-fund
+            npm --prefix "extensions/$ext" run compile
+            test -f "extensions/$ext/out/extension.js"
+          done
 
 
 
