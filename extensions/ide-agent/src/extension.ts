@@ -2389,8 +2389,19 @@ export function activate(context: vscode.ExtensionContext): { cursor: CursorApi 
       // core `composer.resumeCurrentChat` Action2 owns that warn, so this
       // runtime lets errors PROPAGATE (it no longer logs them itself) and the
       // core maps them to notification warnings exactly like the binary's
-      // catch. The "Cannot resume: chat not found" throw stays verbatim in
-      // ComposerDataService.resumeChat.
+      // catch.
+      //
+      // Fork port of the binary's ComposerChatService.resumeChat (glass
+      // @20423725). Binary-verified guard: throw verbatim "Cannot resume:
+      // chat not found" when the composer holds no conversation data (the
+      // fork's bubble transcript is the conversation data). The post-guard
+      // body is NOT statically recoverable (truncated @20423725); the
+      // internal auto-resume call site @20410301 shows it continues an
+      // interrupted turn. The fork resumes by re-submitting the last human
+      // message so the engine continues the conversation; a turn already in
+      // flight (or draining its follow-ups) is a silent no-op. isAutoResume
+      // is accepted and passed through without downstream inference (spec:
+      // "chỉ pass-through, không suy diễn downstream").
       case "ide.resumeCurrentChat":
         context.subscriptions.push(
           vscode.commands.registerCommand(cmd.id, (arg?: { isAutoResume?: unknown }) => {
@@ -2398,7 +2409,17 @@ export function activate(context: vscode.ExtensionContext): { cursor: CursorApi 
             if (!composer) {
               throw new Error("Cannot resume: composer not loaded");
             }
-            return composer.resumeChat({ isAutoResume: arg?.isAutoResume === true });
+            const bubbles = composer.bubbles.getAllInOrder();
+            if (bubbles.length === 0) {
+              throw new Error("Cannot resume: chat not found");
+            }
+            if (composer.isRunning || composer.isDraining) {
+              return;
+            }
+            const lastHuman = [...bubbles].reverse().find((b) => b.role === "human");
+            if (lastHuman) {
+              composer.submit(lastHuman.text);
+            }
           }),
         );
         break;
