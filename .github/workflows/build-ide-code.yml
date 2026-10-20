@@ -2,8 +2,13 @@
 #
 # Strategy (VSCodium-style, adapted to this fork):
 #   1. npm ci (root + build/) with the exact Node version from .nvmrc
-#      (--ignore-scripts to skip native-keymap vs Node 24 build failure;
-#      @types/node restored explicitly afterwards)
+#      (--ignore-scripts to skip native-keymap vs Node 24 build failure),
+#      then an explicit run of build/npm/postinstall.ts with
+#      npm_command="ci --ignore-scripts" to install the per-directory
+#      dependencies (extensions/*, remote/, ...) that the script-free
+#      root install skipped — the packaging typecheck needs them
+#      (extension tsconfigs resolve @types/node from their OWN
+#      node_modules via "typeRoots", not from the root install).
 #   2. Compile our built-in extension extensions/ide-agent with its own tsc
 #      (the build's hardcoded extension-compilation list does NOT include it;
 #      packaging scans extensions/*/package.json via glob, so the compiled
@@ -87,18 +92,53 @@ jobs:
           set -e
           # --ignore-scripts: skip native module builds (e.g. native-keymap
           # fails against Node 24 headers); they are rebuilt for Electron
-          # during packaging. Then restore @types/node explicitly since the
-          # skipped postinstall would normally ensure types are set up.
+          # during packaging. NOTE: this also skips the root postinstall —
+          # it is re-run explicitly in the next step.
           for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
             [ "$i" -eq 5 ] && { echo "npm ci (root) failed 5 times" >&2; exit 1; }
             echo "npm ci (root) failed, retry $i/5"; sleep 10;
           }; done
-          npm install --no-save @types/node@24.x
         env:
           npm_config_arch: ${{ env.NPM_ARCH }}
           VSCODE_ARCH: ${{ env.VSCODE_ARCH }}
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install workspace dependencies (postinstall)
+        run: |
+          set -e
+          # The script-free root install above also skipped the root
+          # postinstall (build/npm/postinstall.ts), which is what installs
+          # node_modules into build/, remote/ and every extensions/* dir
+          # listed in build/npm/dirs.ts, and downloads
+          # .build/typings/electron.d.ts (needed by the src compile).
+          # Without it the packaging typecheck (tsgo) fails with TS2688:
+          # built-in extension tsconfigs pin
+          # "typeRoots": ["./node_modules/@types"] (extension-local), so
+          # the root @types/node cannot satisfy their "types": ["node"].
+          # Re-run postinstall manually. npm_command is the env var
+          # postinstall reads to pick its sub-install command (it is the
+          # var npm itself sets during a normal install), so every
+          # sub-install stays deterministic (ci) and script-free,
+          # matching the root install policy.
+          for i in 1 2 3; do node build/npm/postinstall.ts && break || {
+            [ "$i" -eq 3 ] && { echo "postinstall failed 3 times" >&2; exit 1; }
+            echo "postinstall failed, retry $i/3"; sleep 10;
+          }; done
+        env:
+          npm_command: 'ci --ignore-scripts'
+          VSCODE_FORCE_INSTALL: '1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run copilot extension postinstall
+        run: |
+          set -e
+          # extensions/copilot is the only built-in extension with an
+          # install script: a pure-TS asset step (compresses tiktoken
+          # tables, resolves/copies the @github/copilot SDK platform
+          # files into place) that the script-free installs above skip.
+          # Run it explicitly; it performs no native compilation.
+          npm --prefix extensions/copilot run postinstall
 
       - name: Compile ide-agent extension
         run: |
@@ -107,13 +147,18 @@ jobs:
           npm --prefix extensions/ide-agent run compile
           test -f extensions/ide-agent/out/extension.js
 
+
+
       - name: Package Electron app (VSCode-linux-x64)
         run: |
           set -e
           npm run gulp vscode-linux-x64
-          test -x .build/linux/VSCode-linux-x64/ide-code
+          # gulp packages to <repo>/../VSCode-linux-x64 (upstream layout:
+          # build/gulpfile.vscode.ts packageTask), not .build/linux.
+          test -x ../VSCode-linux-x64/ide-code
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Build .deb package
         run: |
@@ -129,7 +174,7 @@ jobs:
           set -e
           APPDIR="$PWD/dist/appimage/IDECode.AppDir"
           mkdir -p "$APPDIR/usr"
-          cp -a .build/linux/VSCode-linux-x64/. "$APPDIR/usr/"
+          cp -a "$PWD/../VSCode-linux-x64/." "$APPDIR/usr/"
 
           cat > "$APPDIR/ide-code.desktop" <<'EOF'
           [Desktop Entry]
@@ -219,16 +264,55 @@ jobs:
           set -e
           # --ignore-scripts: skip native module builds (native-keymap fails
           # against Node 24 headers); rebuilt for Electron during packaging.
+          # NOTE: this also skips the root postinstall — it is re-run
+          # explicitly in the next step.
           for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
             [ "$i" -eq 5 ] && { echo "npm ci (root) failed 5 times" >&2; exit 1; }
             echo "npm ci (root) failed, retry $i/5"; sleep 10;
           }; done
-          npm install --no-save @types/node@24.x
         env:
           npm_config_arch: x64
           VSCODE_ARCH: x64
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install workspace dependencies (postinstall)
+        shell: bash
+        run: |
+          set -e
+          # The script-free root install above also skipped the root
+          # postinstall (build/npm/postinstall.ts), which is what installs
+          # node_modules into build/, remote/ and every extensions/* dir
+          # listed in build/npm/dirs.ts, and downloads
+          # .build/typings/electron.d.ts (needed by the src compile).
+          # Without it the packaging typecheck (tsgo) fails with TS2688:
+          # built-in extension tsconfigs pin
+          # "typeRoots": ["./node_modules/@types"] (extension-local), so
+          # the root @types/node cannot satisfy their "types": ["node"].
+          # Re-run postinstall manually. npm_command is the env var
+          # postinstall reads to pick its sub-install command (it is the
+          # var npm itself sets during a normal install), so every
+          # sub-install stays deterministic (ci) and script-free,
+          # matching the root install policy.
+          for i in 1 2 3; do node build/npm/postinstall.ts && break || {
+            [ "$i" -eq 3 ] && { echo "postinstall failed 3 times" >&2; exit 1; }
+            echo "postinstall failed, retry $i/3"; sleep 10;
+          }; done
+        env:
+          npm_command: 'ci --ignore-scripts'
+          VSCODE_FORCE_INSTALL: '1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run copilot extension postinstall
+        shell: bash
+        run: |
+          set -e
+          # extensions/copilot is the only built-in extension with an
+          # install script: a pure-TS asset step (compresses tiktoken
+          # tables, resolves/copies the @github/copilot SDK platform
+          # files into place) that the script-free installs above skip.
+          # Run it explicitly; it performs no native compilation.
+          npm --prefix extensions/copilot run postinstall
 
       - name: Compile ide-agent extension
         shell: bash
@@ -238,21 +322,28 @@ jobs:
           npm --prefix extensions/ide-agent run compile
           test -f extensions/ide-agent/out/extension.js
 
+
+
       - name: Package Electron app (VSCode-win32-x64)
         shell: bash
         run: |
           set -e
           npm run gulp vscode-win32-x64
-          test -f .build/win32-x64/IDE\ Code.exe
+          # gulp packages to <repo>/../VSCode-win32-x64 (upstream layout:
+          # build/gulpfile.vscode.ts packageTask), not .build/win32-x64.
+          test -f ../VSCode-win32-x64/IDE\ Code.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
       - name: Build Windows installer
         shell: bash
         run: |
           set -e
-          npm run gulp vscode-win32-x64-inno-updates
-          ls -la .build/win32-x64/*.exe
+          # NB: the gulp task is vscode-win32-x64-<target>-setup
+          # (vscode-win32-x64-inno-updates does not exist).
+          npm run gulp vscode-win32-x64-system-setup
+          ls -la .build/win32-x64/system-setup/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
