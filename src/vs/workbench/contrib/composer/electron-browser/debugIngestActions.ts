@@ -34,7 +34,6 @@ import {
 	IDebugIngestCommandDeps,
 	IDebugIngestCommandUi,
 	NDJSON_INGEST_COMMAND_IDS,
-	NDJSON_INGEST_COMMAND_TITLES,
 	copyDebugIngestCurl,
 	reassignDebugIngestPort,
 	showDebugIngestStatus,
@@ -108,7 +107,7 @@ class StartDebugIngestServerAction extends Action2 {
 	constructor() {
 		super({
 			id: StartDebugIngestServerAction.ID,
-			title: localize2('composer.debugIngest.start', NDJSON_INGEST_COMMAND_TITLES.start),
+			title: localize2('composer.debugIngest.start', 'NDJSON Ingest: Start Server'),
 			f1: true,
 			metadata: {
 				description:
@@ -131,7 +130,7 @@ class StopDebugIngestServerAction extends Action2 {
 	constructor() {
 		super({
 			id: StopDebugIngestServerAction.ID,
-			title: localize2('composer.debugIngest.stop', NDJSON_INGEST_COMMAND_TITLES.stop),
+			title: localize2('composer.debugIngest.stop', 'NDJSON Ingest: Stop Server'),
 			f1: true,
 			metadata: {
 				description:
@@ -151,7 +150,7 @@ class CopyDebugIngestCurlAction extends Action2 {
 	constructor() {
 		super({
 			id: CopyDebugIngestCurlAction.ID,
-			title: localize2('composer.debugIngest.copyCurl', NDJSON_INGEST_COMMAND_TITLES.copyCurl),
+			title: localize2('composer.debugIngest.copyCurl', 'NDJSON Ingest: Copy curl command'),
 			f1: true,
 			metadata: {
 				description:
@@ -171,7 +170,7 @@ class ReassignDebugIngestPortAction extends Action2 {
 	constructor() {
 		super({
 			id: ReassignDebugIngestPortAction.ID,
-			title: localize2('composer.debugIngest.reassignPort', NDJSON_INGEST_COMMAND_TITLES.reassignPort),
+			title: localize2('composer.debugIngest.reassignPort', 'NDJSON Ingest: Reassign port and restart server'),
 			f1: true,
 			metadata: {
 				description:
@@ -191,7 +190,7 @@ class ShowDebugIngestStatusAction extends Action2 {
 	constructor() {
 		super({
 			id: ShowDebugIngestStatusAction.ID,
-			title: localize2('composer.debugIngest.showStatus', NDJSON_INGEST_COMMAND_TITLES.showStatus),
+			title: localize2('composer.debugIngest.showStatus', 'NDJSON Ingest: Show server info'),
 			f1: true,
 			metadata: {
 				description:

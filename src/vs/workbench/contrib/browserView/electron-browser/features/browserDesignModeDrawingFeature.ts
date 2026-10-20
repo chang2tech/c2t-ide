@@ -35,8 +35,6 @@ import {
 	NO_ANNOTATION_POINTS,
 	OPEN_ANNOTATION_TITLE,
 	SEND_ANNOTATIONS_GROUP_LABEL,
-	SEND_DESIGN_ANNOTATIONS_TO_AGENT_TITLE,
-	SHOW_PENDING_ANNOTATIONS_TITLE,
 	clampRectToFrame,
 	createDesignModeAnnotationsMessage,
 	describeRegionBody,
@@ -104,13 +102,13 @@ export class BrowserDesignModeDrawingContribution extends BrowserEditorContribut
 		// "Send design annotations to agent" tooltip and the label
 		// `Send ${count} annotation(s) to agent`.
 		this._sendButton = this._register(new Button($('.browser-design-mode-send-button'), {
-			title: localize('browser.designModeSend', SEND_DESIGN_ANNOTATIONS_TO_AGENT_TITLE),
+			title: localize('browser.designModeSend', 'Send design annotations to agent'),
 		}));
 		this._sendButton.element.classList.add('browser-design-mode-tool-button');
 		// Pending-annotations chevron — binary-verbatim: tooltip "Show pending
 		// annotations", aria-label `${count} annotation(s) pending; show
 		// details`. Toggles the pending-annotations list panel.
-		this._pendingButton = makeToolButton('$(chevron-down)', localize('browser.designModeShowPending', SHOW_PENDING_ANNOTATIONS_TITLE));
+		this._pendingButton = makeToolButton('$(chevron-down)', localize('browser.designModeShowPending', 'Show pending annotations'));
 		this._clearButton = makeToolButton('$(trash)', localize('browser.designModeClear', "Clear drawn regions"));
 
 		const designMode = editor.getContribution(BrowserDesignModeContribution);

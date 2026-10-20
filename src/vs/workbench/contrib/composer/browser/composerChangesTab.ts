@@ -91,10 +91,11 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { IModelService } from '../../../../editor/common/services/model.js';
 import { ITextModel } from '../../../../editor/common/model.js';
 import { ITextModelService, ITextModelContentProvider } from '../../../../editor/common/services/resolverService.js';
-import { EditorExtensions, IEditorOpenContext, IResourceDiffEditorInput } from '../../../common/editor.js';
-import { EditorInput, EditorInputCapabilities, IUntypedEditorInput } from '../../../common/editor/editorInput.js';
+import { EditorExtensions, EditorInputCapabilities, IEditorOpenContext, IResourceDiffEditorInput, IUntypedEditorInput } from '../../../common/editor.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IEditorGroup, IEditorOptions } from '../../../common/editor.js';
-import { EditorPane, EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
+import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../browser/editor.js';
+import { EditorPane } from '../../../browser/parts/editor/editorPane.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ComposerActionCategory } from './composerActions.js';
 import { ComposerContextKeys } from '../common/composerContextKeys.js';
@@ -203,17 +204,63 @@ export namespace ChangesTabAvailabilityPolicy {
 }
 
 /**
+ * A-07 (TEAM-FIX-CORE-1, 2026-10-21): why core checkpoint data is missing.
+ *
+ * `IComposerDataService` is DELIBERATELY not registered as a singleton:
+ * the implementation (`electron-browser/composerDataService.ts`) is a
+ * PER-TAB object — its constructor builds a dedicated engine adapter,
+ * starts project-rules watching and subscribes to the plan service, and
+ * the design contract (its file header + `common/chatTabService.ts`) is
+ * "constructed by the composer factory at the wiring site", one instance
+ * per chat tab. A global singleton would share one bubble/checkpoint store
+ * across every tab and start engine/watcher machinery outside any tab's
+ * lifetime; instantiating it per tab in core today would run a SECOND,
+ * parallel composer next to the extension's live per-tab one (see
+ * composerPlanBridge.ts header). So the hole is closed at the CONSUMER
+ * instead: resolution failure is recorded here, logged loudly once, and
+ * surfaced in the panes' empty states via
+ * {@link getComposerDataServiceMissingReason} — it is no longer swallowed
+ * silently by bare try/catch blocks that made "no service" indistinguishable
+ * from "no changes". The implementation file is kept (not dead weight to
+ * delete): it is the designated per-tab class for the future core wiring
+ * site and the type-only target of `electron-browser/slashCommandService.ts`
+ * and `electron-browser/mcp/service.ts`.
+ */
+let composerDataServiceMissingReason: string | undefined;
+let composerDataServiceMissingLogged = false;
+
+/** The recorded reason core composer data is unavailable, once a resolve has failed. */
+export function getComposerDataServiceMissingReason(): string | undefined {
+	return composerDataServiceMissingReason;
+}
+
+function resolveComposerDataService(accessor: ServicesAccessor, consumer: string): IComposerDataService | undefined {
+	try {
+		return accessor.get(IComposerDataService);
+	} catch (err) {
+		composerDataServiceMissingReason = localize(
+			'composer.dataServiceMissing',
+			"Core composer data is unavailable: IComposerDataService is not registered (the core implementation is per-tab and no core wiring site constructs per-tab instances yet). Turn/checkpoint data lives in the IDE Agent extension for now."
+		);
+		if (!composerDataServiceMissingLogged) {
+			composerDataServiceMissingLogged = true;
+			console.error(`[composer] ${consumer}: ${composerDataServiceMissingReason} Resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+		return undefined;
+	}
+}
+
+/**
  * Changed files of the agent's most recent turn, from the real
- * CheckpointService data. Returns [] when the composer data service is not
- * registered yet (per-tab composer not wired — see
- * electron-browser/composer.contribution.ts) or when no checkpoints exist;
- * the tab then shows an honest empty state. Never fakes data.
+ * CheckpointService data. Returns [] when the composer data service cannot
+ * be resolved (reason recorded + logged — see
+ * {@link getComposerDataServiceMissingReason}) or when no checkpoints
+ * exist; the tab then shows an honest empty state that includes the reason
+ * when there is one. Never fakes data.
  */
 export function getLastTurnChangedFiles(accessor: ServicesAccessor): ChangedFileEntry[] {
-	let dataService: IComposerDataService;
-	try {
-		dataService = accessor.get(IComposerDataService);
-	} catch {
+	const dataService = resolveComposerDataService(accessor, 'getLastTurnChangedFiles');
+	if (!dataService) {
 		return [];
 	}
 	const records = dataService.checkpoints.list();
@@ -244,16 +291,15 @@ export function getLastTurnChangedFiles(accessor: ServicesAccessor): ChangedFile
  * Pre-edit ("before") contents for the last turn's changed files, from the
  * real CheckpointService snapshots (FileSnapshot.contents — captured BEFORE
  * each mutating tool call ran). Used by the Review Changes editor as the
- * diff "original" side. Returns an empty map when the data service is not
- * registered or there are no snapshots — the review surface then shows an
- * honest empty state instead of fake diffs.
+ * diff "original" side. Returns an empty map when the data service cannot
+ * be resolved (reason recorded + logged — see
+ * {@link getComposerDataServiceMissingReason}) or there are no snapshots —
+ * the review surface then shows an honest empty state instead of fake diffs.
  */
 export function getReviewBeforeContents(accessor: ServicesAccessor): Map<string, string> {
 	const before = new Map<string, string>();
-	let dataService: IComposerDataService;
-	try {
-		dataService = accessor.get(IComposerDataService);
-	} catch {
+	const dataService = resolveComposerDataService(accessor, 'getReviewBeforeContents');
+	if (!dataService) {
 		return before;
 	}
 	const records = dataService.checkpoints.list();
@@ -625,6 +671,18 @@ export class ComposerChangesEditorPane extends EditorPane {
 			hint.style.fontSize = '12px';
 			hint.style.color = 'var(--vscode-descriptionForeground)';
 			container.appendChild(hint);
+
+			// A-07: when the emptiness is caused by the unregistered core
+			// data service, say exactly that instead of implying "no changes".
+			const missingReason = getComposerDataServiceMissingReason();
+			if (missingReason) {
+				const reason = document.createElement('div');
+				reason.textContent = missingReason;
+				reason.style.marginTop = '6px';
+				reason.style.fontSize = '12px';
+				reason.style.color = 'var(--vscode-errorForeground)';
+				container.appendChild(reason);
+			}
 			return;
 		}
 
@@ -703,14 +761,13 @@ export class ComposerReviewChangesEditorPane extends EditorPane {
 		await super.setInput(input, options, context, token);
 		if (input instanceof ComposerReviewChangesEditorInput) {
 			// Populate the "before" store from real checkpoint snapshots.
-			// IComposerDataService may not be registered yet — then the store
-			// stays empty and the pane shows the honest empty state.
-			try {
-				const before = this.instantiationService.invokeFunction(getReviewBeforeContents);
-				setReviewBeforeContents(before);
-			} catch {
-				setReviewBeforeContents(new Map());
-			}
+			// When IComposerDataService cannot be resolved, the resolver
+			// inside getReviewBeforeContents records + logs the reason
+			// (A-07) and returns an empty map — the pane then shows the
+			// honest empty state WITH that reason instead of silently
+			// pretending there was nothing to review.
+			const before = this.instantiationService.invokeFunction(getReviewBeforeContents);
+			setReviewBeforeContents(before);
 			this.render(input);
 		}
 	}
@@ -766,6 +823,18 @@ export class ComposerReviewChangesEditorPane extends EditorPane {
 			empty.style.marginTop = '24px';
 			empty.style.fontSize = '13px';
 			container.appendChild(empty);
+
+			// A-07: surface the recorded data-service reason when that —
+			// not a changeless turn — is why there is nothing to review.
+			const missingReason = getComposerDataServiceMissingReason();
+			if (missingReason) {
+				const reason = document.createElement('div');
+				reason.textContent = missingReason;
+				reason.style.marginTop = '6px';
+				reason.style.fontSize = '12px';
+				reason.style.color = 'var(--vscode-errorForeground)';
+				container.appendChild(reason);
+			}
 			return;
 		}
 

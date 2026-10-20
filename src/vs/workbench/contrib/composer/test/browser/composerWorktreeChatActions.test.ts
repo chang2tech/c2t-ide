@@ -26,8 +26,8 @@ import {
 	ComposerOpenTerminalInWorktreeAction,
 	resolveActiveChatWorktreePath,
 } from '../../browser/composerWorktreeActions.js';
-import type { IEditorService } from '../../../services/editor/common/editorService.js';
-import type { IWebviewService } from '../../webview/browser/webview.js';
+import type { IEditorService } from '../../../../services/editor/common/editorService.js';
+import type { IWebviewService } from '../../../webview/browser/webview.js';
 import type { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 
 const fakeWebviewService = {

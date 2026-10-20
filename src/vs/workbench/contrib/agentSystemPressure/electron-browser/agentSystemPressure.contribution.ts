@@ -99,7 +99,6 @@ import {
 	PROCESS_KILLED_MESSAGE,
 	PROCESS_KILLED_NOTIFICATION_ID,
 	RESET_IN_APP_AD_VIEWS_COMMAND_ID,
-	RESET_IN_APP_AD_VIEWS_TITLE,
 } from '../common/agentSystemPressure.js';
 import { AgentSystemPressureService, IAgentSystemPressureService } from './agentSystemPressureService.js';
 import { HeavyLoadModal } from './heavyLoadModal.js';
@@ -427,7 +426,7 @@ export class ResetInAppAdViewsAction extends Action2 {
 	constructor() {
 		super({
 			id: ResetInAppAdViewsAction.ID,
-			title: nls.localize2('cursor.resetInAppAdViews', RESET_IN_APP_AD_VIEWS_TITLE),
+			title: nls.localize2('cursor.resetInAppAdViews', 'Reset In-App Ad Views'),
 			category: Categories.Developer,
 			icon: Codicon.discard,
 			f1: true,

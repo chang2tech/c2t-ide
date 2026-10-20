@@ -70,7 +70,7 @@ export class ReportIssueAction extends Action2 {
 		super({
 			id: ReportIssueAction.ID,
 			title: {
-				...localize2('ideReportIssue', REPORT_ISSUE_TITLE),
+				...localize2('ideReportIssue', 'Report Issue'),
 				// Binary carries mnemonicTitle D(5306) alongside the title.
 				mnemonicTitle: localize({ key: 'miReportIssue', comment: ['&& denotes a mnemonic'] }, 'Report &&Issue'),
 			},

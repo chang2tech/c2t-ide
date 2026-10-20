@@ -67,9 +67,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IVoiceInputService, VoiceInputToggleKeybindingWhen } from './voice/voiceInputService.js';
 import {
 	TOGGLE_VOICE_DICTATION_COMMAND_ID,
-	TOGGLE_VOICE_DICTATION_TITLE,
 	CANCEL_VOICE_DICTATION_COMMAND_ID,
-	CANCEL_VOICE_DICTATION_TITLE,
 	VOICE_DICTATION_KEYBINDING_WEIGHT,
 	VOICE_DICTATION_COMPOSER_EDITOR_ID,
 	VOICE_DICTATION_COMPOSER_VIEW_ID,
@@ -105,7 +103,7 @@ class ToggleVoiceDictationAction extends Action2 {
 			id: TOGGLE_VOICE_DICTATION_COMMAND_ID,
 			// Binary verbatim title: "Toggle Voice Mode" (title says "Voice Mode"
 			// while the id says "VoiceDictation" — kept verbatim).
-			title: localize2('composer.toggleVoiceDictation', TOGGLE_VOICE_DICTATION_TITLE),
+			title: localize2('composer.toggleVoiceDictation', 'Toggle Voice Mode'),
 			category: ComposerActionCategory, // binary: Yn.Cursor; see header note
 			f1: true,
 			keybinding: {
@@ -141,7 +139,7 @@ class CancelVoiceDictationAction extends Action2 {
 	constructor() {
 		super({
 			id: CANCEL_VOICE_DICTATION_COMMAND_ID,
-			title: localize2('composer.cancelVoiceDictation', CANCEL_VOICE_DICTATION_TITLE),
+			title: localize2('composer.cancelVoiceDictation', 'Cancel Voice Mode'),
 			category: ComposerActionCategory, // binary: Yn.Cursor; see header note
 			f1: false,
 			keybinding: {

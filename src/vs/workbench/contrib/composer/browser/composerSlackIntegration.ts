@@ -18,7 +18,7 @@ import { Action2, registerAction2 } from '../../../../platform/actions/common/ac
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ComposerActionCategory } from './composerActions.js';
-import { CONNECT_SLACK_COMMAND_ID, CONNECT_SLACK_COMMAND_TITLE, CONNECT_SLACK_IN_COMMAND_PALETTE, openIntegrationsSettings } from '../common/slackIntegration.js';
+import { CONNECT_SLACK_COMMAND_ID, CONNECT_SLACK_IN_COMMAND_PALETTE, openIntegrationsSettings } from '../common/slackIntegration.js';
 
 export class ConnectSlackAction extends Action2 {
 
@@ -28,7 +28,7 @@ export class ConnectSlackAction extends Action2 {
 		super({
 			id: ConnectSlackAction.ID,
 			// Verbatim binary title.
-			title: localize2('cursor.connectSlack', CONNECT_SLACK_COMMAND_TITLE),
+			title: localize2('cursor.connectSlack', 'Connect Slack'),
 			category: ComposerActionCategory,
 			// Verbatim binary evidence: "not in command palette".
 			f1: CONNECT_SLACK_IN_COMMAND_PALETTE,

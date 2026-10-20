@@ -23,18 +23,18 @@
 // The full binary excerpts this file ports are quoted in the method comments
 // below. Divergences are marked HONEST-DIVERGENCE.
 
-import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { AppResourcePath, FileAccess } from '../../../../base/common/network.js';
-import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
-import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
-import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
-import { IOpenerService } from '../../../../platform/opener/common/opener.js';
-import { IProductService } from '../../../../platform/product/common/productService.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
-import { URI } from '../../../../base/common/uri.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { AppResourcePath, FileAccess } from '../../../../../base/common/network.js';
+import { isMacintosh, isWindows } from '../../../../../base/common/platform.js';
+import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../../platform/contextkey/common/contextkey.js';
+import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
+import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
+import { IProductService } from '../../../../../platform/product/common/productService.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
+import { URI } from '../../../../../base/common/uri.js';
 import {
 	VOICE_INPUT_SERVICE_ID,
 	VOICE_INPUT_RECORDING_CONTEXT_KEY,
@@ -58,7 +58,7 @@ import {
 	voiceInputKeywordArming,
 	voiceInputFinalCommit,
 	voiceInputMicDeniedMessage,
-} from '../common/voiceInput.js';
+} from '../../common/voiceInput.js';
 
 export const IVoiceInputService = createDecorator<IVoiceInputService>(VOICE_INPUT_SERVICE_ID);
 

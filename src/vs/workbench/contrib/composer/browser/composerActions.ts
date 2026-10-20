@@ -42,7 +42,7 @@
 // `composer.*` keys in ../common/composerContextKeys.ts (extension must set
 // the new keys — see that file's follow-up note).
 
-import { localize, localize2 } from '../../../../nls.js';
+import { ILocalizedString, localize, localize2 } from '../../../../nls.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { URI } from '../../../../base/common/uri.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -78,7 +78,7 @@ import {
 } from '../common/chatTitleMenu.js';
 import { InputFocusedContext, IsDevelopmentContext } from '../../../../platform/contextkey/common/contextkeys.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { COMPOSER_MODE_COMMANDS, buildComposerModeCommandTitle, composerModeCommandTitleKey } from '../common/composerModeCommands.js';
+import { COMPOSER_MODE_COMMANDS, buildComposerModeCommandTitle } from '../common/composerModeCommands.js';
 import { IInlineEditPromptBar, RESOLVE_CONFLICT_INIT_TEXT, createPromptBarDataSelection, resolveModalGenerateTarget, resolveSameUriOverrideTarget, selectNewestPromptBarIdForUri, selectNextPromptBarId, setPromptBarTextAndSubmit } from '../common/inlineEditPromptBar.js';
 import { Range } from '../../../../editor/common/core/range.js';
 import { IInlineEditService } from '../common/inlineEditService.js';
@@ -5121,12 +5121,32 @@ export class ComposerAddSelectionToInlinePromptAction extends Action2 {
 // add them (see common/composerModeCommands.ts for the adversarial evidence).
 // ---------------------------------------------------------------------------
 export function registerComposerModeActions(): void {
+	// BUILD-FIX-14 (F1): the NLS build plugin eval()s BOTH arguments of every
+	// localize/localize2 call (build/lib/nls-analysis.ts,
+	// parseLocalizeKeyOrValue), so a computed key or value throws
+	// ReferenceError and fails the bundle. The five mode titles are therefore
+	// spelled out as string literals here — one entry per
+	// COMPOSER_MODE_COMMANDS def, keyed by its verbatim actionId. Each key is
+	// exactly what composerModeCommandTitleKey(def) produced
+	// (`composerMode.command.<modeId>`) and each value is exactly what
+	// buildComposerModeCommandTitle(def.name) produced
+	// (`Open Chat in <name> Mode`), so the palette titles are unchanged. The
+	// loop below only looks the pre-localized title up; the `??` fallback
+	// (plain ILocalizedString built from the same template, no localize2
+	// call) only covers a hypothetical future def with no literal entry yet.
+	const modeCommandTitles: Record<string, ILocalizedString> = {
+		'composerMode.agent': localize2('composerMode.command.agent', 'Open Chat in Agent Mode'),
+		'composerMode.plan': localize2('composerMode.command.plan', 'Open Chat in Plan Mode'),
+		'composerMode.chat': localize2('composerMode.command.chat', 'Open Chat in Ask Mode'),
+		'composerMode.debug': localize2('composerMode.command.debug', 'Open Chat in Debug Mode'),
+		'composerMode.multitask': localize2('composerMode.command.multitask', 'Open Chat in Multitask Mode'),
+	};
 	for (const def of COMPOSER_MODE_COMMANDS) {
 		registerAction2(class extends Action2 {
 			constructor() {
 				super({
 					id: def.actionId,
-					title: localize2(composerModeCommandTitleKey(def), buildComposerModeCommandTitle(def.name)),
+					title: modeCommandTitles[def.actionId] ?? { value: buildComposerModeCommandTitle(def.name), original: buildComposerModeCommandTitle(def.name) },
 					f1: true,
 				});
 			}
@@ -5739,16 +5759,29 @@ export function registerComposerMenus(): void {
 		edit: Codicon.edit,
 		clone: Codicon.clone,
 	};
-	const titleMenuLocKeys: Record<string, string> = {
-		'composer.exportChatAsMd': 'composer.menu.exportTranscript',
-		'composer.shareChat': 'composer.menu.shareTranscript',
-		'composer.copyRequestIdFromEditor': 'composer.menu.copyRequestId',
-		'composer.reportFeedback': 'composer.menu.giveFeedback',
-		'chat.openCursorSettings': 'composer.menu.openAgentSettings',
-		'composer.openPromptQuality': 'composer.menu.openPromptQuality',
-		'composer.renameChat': 'composer.menu.renameChat',
-		'composer.duplicateChat': 'composer.menu.forkChat',
-		'workbench.action.moveEditorToNewWindow': 'composer.menu.moveEditorToNewWindow',
+	// BUILD-FIX-14 (F1): titles are pre-localized HERE, at the definition
+	// table, with literal key + value pairs — the NLS build plugin eval()s
+	// both arguments of every localize call, so the old computed-key call
+	// in appendChatTitleMenuItem threw ReferenceError and failed the
+	// bundle. Each entry below is
+	// exactly the call the old code computed for that commandId: the key is
+	// the old titleMenuLocKeys value and the value is the item's verbatim
+	// title in ../common/chatTitleMenu.ts, so the rendered menu titles are
+	// unchanged. Every CHAT_TAB_TITLE_MENU_ITEMS entry that reaches the
+	// append loop is listed here; the `?? item.title` fallback at the call
+	// site only covers a future unlisted item (the old generated-key call
+	// could never be extracted into an NLS bundle, so it always rendered
+	// item.title — identical to the fallback).
+	const titleMenuTitles: Record<string, string> = {
+		'composer.exportChatAsMd': localize('composer.menu.exportTranscript', 'Export Transcript'),
+		'composer.shareChat': localize('composer.menu.shareTranscript', 'Share Transcript'),
+		'composer.copyRequestIdFromEditor': localize('composer.menu.copyRequestId', 'Copy Request ID'),
+		'composer.reportFeedback': localize('composer.menu.giveFeedback', 'Give Feedback'),
+		'chat.openCursorSettings': localize('composer.menu.openAgentSettings', 'Agent Settings'),
+		'composer.openPromptQuality': localize('composer.menu.openPromptQuality', 'Open in Prompt Quality'),
+		'composer.renameChat': localize('composer.menu.renameChat', 'Rename Chat'),
+		'composer.duplicateChat': localize('composer.menu.forkChat', 'Fork Chat'),
+		'workbench.action.moveEditorToNewWindow': localize('composer.menu.moveEditorToNewWindow', 'Move into New Window'),
 	};
 	const titleMenuGateWhen = (gate: ChatTitleMenuGate): ContextKeyExpr | undefined => {
 		switch (gate) {
@@ -5783,7 +5816,7 @@ export function registerComposerMenus(): void {
 				...(when ? { when } : {}),
 				command: {
 					id: item.commandId,
-					title: localize(titleMenuLocKeys[item.commandId] ?? `composer.menu.${item.commandId}`, item.title),
+					title: titleMenuTitles[item.commandId] ?? item.title,
 					...(item.iconCodicon && titleMenuIcons[item.iconCodicon] ? { icon: titleMenuIcons[item.iconCodicon] } : {}),
 					// Binary puts the can-rename gate on the COMMAND descriptor
 					// (`{command:{id:aHi,...,precondition:VXi}}`), not the item.
@@ -5805,12 +5838,18 @@ export function registerComposerMenus(): void {
 	// in its chat-tab overflow builder `sSv`; the fork shows them here). Kept
 	// at trailing orders so the binary orders 1-6 stay verbatim.
 	const worktreeMenuWhen = ContextKeyExpr.and(ideChatScheme, ComposerContextKeys.chatHasWorktree);
-	const forkExtraMenuItems: Array<{ id: string; title: string; locKey: string; order: number; when?: ContextKeyExpr }> = [
-		{ id: ComposerPinChatAction.ID, title: 'Pin Chat', locKey: 'composer.menu.pinChat', order: 7 },
-		{ id: ComposerUnpinChatAction.ID, title: 'Unpin Chat', locKey: 'composer.menu.unpinChat', order: 8 },
-		{ id: ComposerCopyWorktreePathAction.ID, title: 'Copy worktree path', locKey: 'composer.menu.copyWorktreePath', order: 9, when: worktreeMenuWhen },
-		{ id: ComposerOpenTerminalInWorktreeAction.ID, title: 'Open terminal in worktree', locKey: 'composer.menu.openTerminalInWorktree', order: 10, when: worktreeMenuWhen },
-		{ id: ComposerOpenNewWindowInWorktreeAction.ID, title: 'Open new window in worktree', locKey: 'composer.menu.openNewWindowInWorktree', order: 11, when: worktreeMenuWhen },
+	// BUILD-FIX-14 (F1): each title is localized with a literal key + value
+	// right here in the definition table (the old loop-end call passed
+	// computed arguments — item.locKey / item.title — which the NLS build
+	// plugin's eval() rejects with ReferenceError). Keys and
+	// values are verbatim the old locKey/title pairs, so the rendered menu
+	// titles are unchanged; the loop below passes the string through.
+	const forkExtraMenuItems: Array<{ id: string; title: string; order: number; when?: ContextKeyExpr }> = [
+		{ id: ComposerPinChatAction.ID, title: localize('composer.menu.pinChat', 'Pin Chat'), order: 7 },
+		{ id: ComposerUnpinChatAction.ID, title: localize('composer.menu.unpinChat', 'Unpin Chat'), order: 8 },
+		{ id: ComposerCopyWorktreePathAction.ID, title: localize('composer.menu.copyWorktreePath', 'Copy worktree path'), order: 9, when: worktreeMenuWhen },
+		{ id: ComposerOpenTerminalInWorktreeAction.ID, title: localize('composer.menu.openTerminalInWorktree', 'Open terminal in worktree'), order: 10, when: worktreeMenuWhen },
+		{ id: ComposerOpenNewWindowInWorktreeAction.ID, title: localize('composer.menu.openNewWindowInWorktree', 'Open new window in worktree'), order: 11, when: worktreeMenuWhen },
 	];
 	for (const item of forkExtraMenuItems) {
 		MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
@@ -5819,7 +5858,7 @@ export function registerComposerMenus(): void {
 			when: item.when ?? ideChatScheme,
 			command: {
 				id: item.id,
-				title: localize(item.locKey, item.title),
+				title: item.title,
 			}
 		});
 	}

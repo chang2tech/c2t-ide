@@ -69,9 +69,7 @@ import { TerminalContextKeys } from '../../../contrib/terminal/common/terminalCo
 import {
 	CLOSE_TOOLTIP_COMMAND_ID,
 	CLOSE_TOOLTIP_CATEGORY,
-	CLOSE_TOOLTIP_TITLE,
 	SHOW_TOOLTIP_COMMAND_ID,
-	SHOW_TOOLTIP_TITLE,
 	TERMINAL_ADD_TOOLTIP_COMMAND_ID,
 	TOOLTIP_AUTO_DISMISS_MS,
 	TOOLTIP_CLOSE_DISPOSE_DELAY_MS,
@@ -313,7 +311,7 @@ export function registerTooltipActions(): void {
 	// `cursor.showTooltipActionId` — "Show Tooltip", f1:!1 (desk@24359337).
 	registerAction2(class extends Action2 {
 		constructor() {
-			super({ id: SHOW_TOOLTIP_COMMAND_ID, title: localize2('cursor.showTooltipActionId', SHOW_TOOLTIP_TITLE), f1: false });
+			super({ id: SHOW_TOOLTIP_COMMAND_ID, title: localize2('cursor.showTooltipActionId', 'Show Tooltip'), f1: false });
 		}
 		async run(accessor: ServicesAccessor, args?: { location: string; name: string; header: string; subheader: string }): Promise<void> {
 			if (!args) {
@@ -328,7 +326,7 @@ export function registerTooltipActions(): void {
 	// "Tooltip", f1:!1 (registered at the end of tooltipService.js).
 	registerAction2(class extends Action2 {
 		constructor() {
-			super({ id: CLOSE_TOOLTIP_COMMAND_ID, title: localize2('tooltip.close.register', CLOSE_TOOLTIP_TITLE), category: { value: CLOSE_TOOLTIP_CATEGORY, original: CLOSE_TOOLTIP_CATEGORY }, f1: false });
+			super({ id: CLOSE_TOOLTIP_COMMAND_ID, title: localize2('tooltip.close.register', 'Register Close Tooltip'), category: { value: CLOSE_TOOLTIP_CATEGORY, original: CLOSE_TOOLTIP_CATEGORY }, f1: false });
 		}
 		async run(accessor: ServicesAccessor, args?: { tooltipName: string }): Promise<void> {
 			if (args?.tooltipName) {

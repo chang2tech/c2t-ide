@@ -18,7 +18,7 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { IExtensionManagementService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { ExtensionType } from '../../../../platform/extensions/common/extensions.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { findVimEmulationExtensions, REMOVE_VIM_MODE_COMMAND_ID, REMOVE_VIM_MODE_COMMAND_TITLE, REMOVE_VIM_MODE_IN_COMMAND_PALETTE, VIM_MODE_CATEGORY } from '../common/vimMode.js';
+import { findVimEmulationExtensions, REMOVE_VIM_MODE_COMMAND_ID, REMOVE_VIM_MODE_IN_COMMAND_PALETTE } from '../common/vimMode.js';
 
 export class RemoveVimModeAction extends Action2 {
 
@@ -28,10 +28,10 @@ export class RemoveVimModeAction extends Action2 {
 		super({
 			id: RemoveVimModeAction.ID,
 			// Verbatim binary title.
-			title: localize2('cursor.removevim', REMOVE_VIM_MODE_COMMAND_TITLE),
+			title: localize2('cursor.removevim', 'Cursor Vim: Remove Vim Mode'),
 			// Implied by the title's "Cursor Vim:" prefix (UNKNOWN: the binary
 			// only shows the category key `vim_mode`).
-			category: localize2('cursor.vimModeCategory', VIM_MODE_CATEGORY),
+			category: localize2('cursor.vimModeCategory', 'Cursor Vim'),
 			// Verbatim binary evidence: palette command (f1:true).
 			f1: REMOVE_VIM_MODE_IN_COMMAND_PALETTE,
 		});

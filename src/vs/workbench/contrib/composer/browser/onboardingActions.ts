@@ -38,7 +38,6 @@ import { IOnboardingService } from './onboardingService.js';
 import {
 	IOnboardingStorage,
 	START_ONBOARDING_COMMAND_ID,
-	START_ONBOARDING_TITLE,
 	prepareOnboardingRestart,
 } from '../common/onboardingFlow.js';
 
@@ -50,7 +49,7 @@ export class StartOnboardingAction extends Action2 {
 		super({
 			id: StartOnboardingAction.ID,
 			// Binary: title {value: Sig.LABEL, original: "Start Onboarding"}.
-			title: localize2('cursor.startOnboarding', START_ONBOARDING_TITLE),
+			title: localize2('cursor.startOnboarding', 'Start Onboarding'),
 			// Binary: category Yn.Cursor ("Cursor").
 			category: CursorActionCategory,
 			// Binary: f1:!0 — visible in the Command Palette.
