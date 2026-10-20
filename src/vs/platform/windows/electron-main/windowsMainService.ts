@@ -27,7 +27,7 @@ import { IBackupMainService } from '../../backup/electron-main/backup.js';
 import { IEmptyWindowBackupInfo } from '../../backup/node/backup.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IDialogMainService } from '../../dialogs/electron-main/dialogMainService.js';
-import { NativeParsedArgs } from '../../environment/common/argv.js';
+import { isChatSubcommand, NativeParsedArgs } from '../../environment/common/argv.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { FileType, IFileService } from '../../files/common/files.js';
 import { IInstantiationService } from '../../instantiation/common/instantiation.js';
@@ -309,6 +309,42 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return windows;
 	}
 
+	/**
+	 * IDE-CODE: Cursor `cursor.openOrFocusGlassWindow` analog (binary:
+	 * out/main.js — `openOrFocusGlassWindowForMenu` /
+	 * `doOpenGlassWindowForMenu`). Finds the dedicated Agents ("glass")
+	 * window (a window whose config carries `glass: true`) and focuses it;
+	 * when none exists, opens a new dedicated window with `glass: true` in
+	 * its CLI args (mirroring Cursor's `cli: { ...args, glass: true,
+	 * 'new-window': true }`, `forceNewWindow: true`, `forceEmpty: true`).
+	 */
+	async openOrFocusGlassWindow(openConfig: IOpenConfiguration): Promise<ICodeWindow | undefined> {
+		this.logService.trace('windowsManager#openOrFocusGlassWindow');
+
+		// Focus the existing glass window, if any — Cursor's
+		// `getWindows().find(t => t.config?.glass === true)` followed by
+		// `openExistingWindow`.
+		const existingGlassWindow = this.getWindows().find(window => window.config?.glass === true);
+		if (existingGlassWindow) {
+			this.openExistingWindow(existingGlassWindow, openConfig);
+			return existingGlassWindow;
+		}
+
+		// Otherwise open a new dedicated glass window — Cursor's
+		// `doOpenGlassWindowForMenu`. The `glass: true` CLI arg lands in the
+		// window configuration (INativeWindowConfiguration extends
+		// NativeParsedArgs), so the new window is recognizable as glass.
+		const cli: NativeParsedArgs = { ...(openConfig.cli ?? this.environmentMainService.args), glass: true, 'new-window': true };
+		const windows = await this.open({
+			...openConfig,
+			cli,
+			forceNewWindow: true,
+			forceEmpty: true,
+		});
+
+		return windows.find(window => window.config?.glass === true) ?? windows.at(0);
+	}
+
 	private async ensureAgentsWindow(openConfig: IOpenConfiguration): Promise<IOpenConfiguration> {
 		const agentSessionsWorkspaceUri = this.environmentMainService.agentSessionsWorkspace;
 		if (!agentSessionsWorkspaceUri) {
@@ -518,7 +554,12 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 	}
 
 	private handleChatRequest(openConfig: IOpenConfiguration, usedWindows: ICodeWindow[]): void {
-		if (openConfig.context !== OpenContext.CLI || !openConfig.cli.chat || usedWindows.length === 0) {
+		// Only the positional `chat` subcommand (object form) carries a
+		// prompt. The bool `--chat` flag (standalone chat window,
+		// `chat === true`) is routed by openFirstWindow and must not be
+		// treated as a chat request here.
+		const chat = isChatSubcommand(openConfig.cli.chat) ? openConfig.cli.chat : undefined;
+		if (openConfig.context !== OpenContext.CLI || !chat || usedWindows.length === 0) {
 			return;
 		}
 
@@ -533,7 +574,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		}
 
 		if (windowHandlingChatRequest) {
-			windowHandlingChatRequest.sendWhenReady('vscode:handleChatRequest', CancellationToken.None, openConfig.cli.chat);
+			windowHandlingChatRequest.sendWhenReady('vscode:handleChatRequest', CancellationToken.None, chat);
 			windowHandlingChatRequest.focus();
 		}
 	}

@@ -14,10 +14,11 @@ import { randomPort } from '../../base/common/ports.js';
 import { whenDeleted, writeFileSync } from '../../base/node/pfs.js';
 import { findFreePort } from '../../base/node/ports.js';
 import { watchFileContents } from '../../platform/files/node/watcher/nodejs/nodejsWatcherLib.js';
-import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
+import { isChatSubcommand, NativeParsedArgs } from '../../platform/environment/common/argv.js';
 import { buildHelpMessage, buildStdinMessage, buildVersionMessage, NATIVE_CLI_COMMANDS, OPTIONS } from '../../platform/environment/node/argv.js';
 import { addArg, parseCLIProcessArgv } from '../../platform/environment/node/argvHelper.js';
 import { combineUriFlags } from './cliArgs.js';
+import { runDesktopSubcommand, shouldRouteToDesktopBridge } from './cliDesktopBridge.js';
 import { getStdinFilePath, hasStdinWithoutTty, readFromStdin, stdinDataListener } from '../../platform/environment/node/stdin.js';
 import { createWaitMarkerFileSync } from '../../platform/environment/node/wait.js';
 import product from '../../platform/product/common/product.js';
@@ -89,6 +90,14 @@ export async function main(argv: string[]): Promise<void> {
 		}
 	}
 
+	// Desktop bridge (matches Cursor: `desktop` is handled before help, and
+	// only routes when a live desktop instance exists or under VSCODE_DEV;
+	// otherwise the CLI silently falls through to the normal open path).
+	if (await shouldRouteToDesktopBridge(argv)) {
+		await runDesktopSubcommand(argv);
+		return;
+	}
+
 	// Help (general)
 	if (args.help) {
 		const executable = `${product.applicationName}${isWindows ? '.exe' : ''}`;
@@ -96,7 +105,7 @@ export async function main(argv: string[]): Promise<void> {
 	}
 
 	// Help (chat)
-	else if (args.chat?.help) {
+	else if (isChatSubcommand(args.chat) && args.chat.help) {
 		const executable = `${product.applicationName}${isWindows ? '.exe' : ''}`;
 		console.log(buildHelpMessage(product.nameLong, executable, product.version, OPTIONS.chat.options, { isChat: true }));
 	}
@@ -263,7 +272,7 @@ export async function main(argv: string[]): Promise<void> {
 			console.log(`State is temporarily stored. Relaunch this state with: ${product.applicationName} --user-data-dir "${tempUserDataDir}" --extensions-dir "${tempExtensionsDir}" --shared-data-dir "${tempSharedDataDir}" --agent-plugins-dir "${tempAgentPluginsDir}" --agents-user-data-dir "${tempAgentsUserDataDir}" --agents-extensions-dir "${tempAgentsExtensionsDir}"`);
 		}
 
-		const hasReadStdinArg = args._.some(arg => arg === '-') || args.chat?._.some(arg => arg === '-');
+		const hasReadStdinArg = args._.some(arg => arg === '-') || (isChatSubcommand(args.chat) && args.chat._.some(arg => arg === '-'));
 		if (hasReadStdinArg) {
 			// remove the "-" argument when we read from stdin
 			args._ = args._.filter(a => a !== '-');

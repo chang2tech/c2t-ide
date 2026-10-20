@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { formatOptions, Option, OptionDescriptions, Subcommand, parseArgs, ErrorReporter } from '../../node/argv.js';
+import { formatOptions, buildHelpMessage, Option, OptionDescriptions, Subcommand, parseArgs, ErrorReporter } from '../../node/argv.js';
 import { addArg } from '../../node/argvHelper.js';
 
 function o(description: string, type: 'boolean' | 'string' | 'string[]' = 'string'): Option<any> {
@@ -83,6 +83,36 @@ suite('formatOptions', () => {
 				'  --testcmd',
 				'      A test command'
 			]);
+	});
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+});
+
+suite('buildHelpMessage (IDE-CODE: subcommand flagForm)', () => {
+
+	test('a subcommand with flagForm is advertised as a --flag in its category AND as a subcommand', () => {
+		// Models Cursor's public `--chat` (NLS 1905): dash-flag form opens the
+		// standalone chat window, positional form is the `chat <prompt>` subcommand.
+		const options = {
+			'chat': {
+				...c('Pass in a prompt to run in a chat session.', { _: { type: 'string[]' as const } }),
+				flagForm: { cat: 'o' as const, description: 'Open a standalone chat window without the full IDE.' }
+			}
+		};
+		const help = buildHelpMessage('IDE Code', 'ide-code', '0.0.0', options as never).replace(/\n\s+/g, ' ');
+		// Flag form in the Options section (verbatim Cursor description)
+		assert.ok(help.includes('--chat'), '--chat missing from --help Options section');
+		assert.ok(help.includes('Open a standalone chat window without the full IDE.'), 'verbatim --chat description missing');
+		// Subcommand form still listed under Subcommands
+		assert.ok(help.includes('Subcommands'), 'Subcommands section missing');
+		assert.ok(help.includes('Pass in a prompt to run in a chat session.'), 'subcommand description missing');
+	});
+
+	test('a subcommand without flagForm renders no flag line', () => {
+		const options = { 'testcmd': c('A test command', { add: o('A test command option') }) };
+		const help = buildHelpMessage('IDE Code', 'ide-code', '0.0.0', options as never);
+		assert.ok(!/--testcmd/.test(help), '--testcmd flag line should not be rendered');
+		assert.ok(help.includes('testcmd'), 'subcommand itself should still be listed');
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -216,6 +246,39 @@ suite('parseArgs', () => {
 			{ testcmd: { testArg: 'foo', testX: true, '_': [] }, '_': [] },
 			[]
 		);
+	});
+
+	test('dash-form --chat on a subcommand-typed option is preserved as boolean true (IDE-CODE P0 cli-glass-classic-chat-flags)', () => {
+		// Cursor's public `--chat` flag ("Open a standalone chat window
+		// without the full IDE.") shares its registry key with the positional
+		// `chat <prompt>` subcommand. The dash form must survive parsing as
+		// `true` (not be dropped as unknown) so the main process can tell it
+		// apart from the subcommand object form.
+		interface TestArgs {
+			chat?: { _: string[]; mode?: string } | boolean;
+			_: string[];
+		}
+		const options = {
+			'chat': c('Pass in a prompt to run in a chat session.', {
+				_: { type: 'string[]' as const },
+				'mode': { type: 'string' as const }
+			}),
+			_: { type: 'string[]' as const }
+		} as unknown as OptionDescriptions<TestArgs>;
+
+		// Bool flag form: preserved, no unknown-option warning.
+		assertParse(options, ['--chat'], { chat: true, _: [] }, []);
+		// Positional subcommand form: unchanged (object shape).
+		assertParse(
+			options,
+			['chat', 'hello', '--mode', 'ask'],
+			{ chat: { _: ['hello'], mode: 'ask' }, _: [] },
+			[]
+		);
+		// Explicit --chat=false: not preserved as an intent (stays unset).
+		// `chat` is a known (subcommand-typed) option, so no unknown-option
+		// error is reported; the non-`true` dash value is simply dropped.
+		assertParse(options, ['--chat=false'], { _: [] }, []);
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();

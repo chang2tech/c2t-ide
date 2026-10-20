@@ -15,6 +15,8 @@ export enum BrowserOverlayType {
 	Hover = 'hover',
 	Dialog = 'dialog',
 	Notification = 'notification',
+	/** The Design Mode frozen-frame drawing overlay (design-mode-drawing). */
+	DesignMode = 'designMode',
 	Unknown = 'unknown'
 }
 
@@ -30,6 +32,10 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	{ className: 'notification-toast-container', type: BrowserOverlayType.Notification },
 	{ className: 'spotlight-overlay', type: BrowserOverlayType.Unknown },
+	// Design Mode drawing overlay: a full-container DOM layer over the frozen
+	// frame. Tracked so the native browser view hides while drawing (it would
+	// otherwise paint above the DOM overlay).
+	{ className: 'browser-design-mode-overlay', type: BrowserOverlayType.DesignMode },
 	// Context view is very generic, so treat the content as unknown
 	{ className: 'context-view', type: BrowserOverlayType.Unknown }
 ];

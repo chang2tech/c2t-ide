@@ -153,6 +153,9 @@ import { PlaywrightChannel } from '../../../platform/browserView/node/playwright
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
+import { IAgentProclistService, PROCLIST_CHANNEL_NAME } from '../../../platform/agentProclist/common/agentProclist.js';
+import { AgentProclistService } from '../../../platform/agentProclist/node/agentProclistService.js';
+import { AgentProclistChannel } from '../../../platform/agentProclist/node/agentProclistChannel.js';
 import { registerGitHubChannel } from '../../../platform/github/common/remote/ipcServer.js';
 
 class SharedProcessMain extends Disposable implements IClientConnectionFilter {
@@ -430,6 +433,11 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		// Local Git
 		services.set(ILocalGitService, new SyncDescriptor(LocalGitService, undefined, false /* proxied to other processes */));
 
+		// IDE-CODE: Agent process monitor ("cursorProclist" channel, Cursor parity
+		// r2m-001a/r2m-001b). Cursor hosts this in its main process; this fork hosts
+		// it in the shared process behind the identical channel contract.
+		services.set(IAgentProclistService, new SyncDescriptor(AgentProclistService));
+
 		// SSH Remote Agent Host
 		services.set(ISSHRemoteAgentHostMainService, new SyncDescriptor(SSHRemoteAgentHostMainService, undefined, true));
 
@@ -522,6 +530,12 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);
 		this.server.registerChannel('localGit', localGitChannel);
+
+		// IDE-CODE: Agent process monitor (Cursor parity r2m-001a/r2m-001b) —
+		// `cursorProclist` channel serving applyConfig / killAgentProcessTree /
+		// getProcessTreeSnapshot + the onAgentMemoryPressureReport event.
+		const agentProclistChannel = new AgentProclistChannel(accessor.get(IAgentProclistService));
+		this.server.registerChannel(PROCLIST_CHANNEL_NAME, agentProclistChannel);
 
 		// SSH Remote Agent Host
 		const sshRemoteAgentHostChannel = ProxyChannel.fromService(accessor.get(ISSHRemoteAgentHostMainService), this._store);

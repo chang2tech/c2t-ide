@@ -69,6 +69,13 @@ export interface ISCMResourceGroup {
 	readonly multiDiffEditorEnableViewChanges: boolean;
 }
 
+export interface ISCMRemote {
+	readonly name: string;
+	readonly fetchUrl?: string;
+	readonly pushUrl?: string;
+	readonly isReadOnly: boolean;
+}
+
 export interface ISCMProvider extends IDisposable {
 	readonly id: string;
 	readonly parentId?: string;
@@ -90,6 +97,8 @@ export interface ISCMProvider extends IDisposable {
 	readonly commitTemplate: IObservable<string>;
 	readonly artifactProvider: IObservable<ISCMArtifactProvider | undefined>;
 	readonly historyProvider: IObservable<ISCMHistoryProvider | undefined>;
+	readonly remotes?: readonly ISCMRemote[] | undefined;
+	readonly onDidChangeRemotes?: Event<readonly ISCMRemote[] | undefined>;
 	readonly acceptInputCommand?: Command;
 	readonly actionButton: IObservable<ISCMActionButtonDescriptor | undefined>;
 	readonly statusBarCommands: IObservable<readonly Command[] | undefined>;

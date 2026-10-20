@@ -78,6 +78,7 @@ import { IExtHostLocalizationService } from './extHostLocalizationService.js';
 import { IExtHostManagedSockets } from './extHostManagedSockets.js';
 import { IExtHostBrowserTunnelProxy } from './extHostBrowserTunnelProxy.js';
 import { IExtHostMpcService } from './extHostMcp.js';
+import { ExtHostCursor, ExtHostCursorPrivacyMode } from './extHostCursor.js';
 import { ExtHostMessageService } from './extHostMessageService.js';
 import { ExtHostNotebookController } from './extHostNotebook.js';
 import { ExtHostNotebookDocumentSaveParticipant } from './extHostNotebookDocumentSaveParticipant.js';
@@ -116,6 +117,7 @@ import * as extHostTypes from './extHostTypes.js';
 import { ExtHostUriOpeners } from './extHostUriOpener.js';
 import { IURITransformerService } from './extHostUriTransformerService.js';
 import { IExtHostUrlsService } from './extHostUrls.js';
+import { IExtHostCheckoutProviderService } from './extHostCheckoutProvider.js';
 import { ExtHostWebviews } from './extHostWebview.js';
 import { ExtHostWebviewPanels } from './extHostWebviewPanels.js';
 import { ExtHostWebviewViews } from './extHostWebviewView.js';
@@ -176,9 +178,11 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 	const extHostAuthentication = accessor.get(IExtHostAuthentication);
 	const extHostLanguageModels = accessor.get(IExtHostLanguageModels);
 	const extHostMcp = accessor.get(IExtHostMpcService);
+	const extHostCursor = new ExtHostCursor(extHostConfiguration, extHostMcp);
 	const extHostDataChannels = accessor.get(IExtHostDataChannels);
 	const extHostMeteredConnection = accessor.get(IExtHostMeteredConnection);
 	const extHostGitExtensionService = accessor.get(IExtHostGitExtensionService);
+	const extHostCheckoutProvider = accessor.get(IExtHostCheckoutProviderService);
 
 	// register addressable instances
 	rpcProtocol.set(ExtHostContext.ExtHostFileSystemInfo, extHostFileSystemInfo);
@@ -203,6 +207,7 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 	rpcProtocol.set(ExtHostContext.ExtHostDataChannels, extHostDataChannels);
 	rpcProtocol.set(ExtHostContext.ExtHostMeteredConnection, extHostMeteredConnection);
 	rpcProtocol.set(ExtHostContext.ExtHostGitExtension, extHostGitExtensionService);
+	rpcProtocol.set(ExtHostContext.ExtHostCheckoutProvider, extHostCheckoutProvider);
 
 	// automatically create and register addressable instances
 	const extHostDecorations = rpcProtocol.set(ExtHostContext.ExtHostDecorations, accessor.get(IExtHostDecorations));
@@ -1994,6 +1999,87 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 			}
 		};
 
+		// namespace: cursor (IDE Code agent-host API surface, proposed: 'cursor')
+		const cursor: typeof vscode.cursor = {
+			// eslint-disable-next-line local/code-no-dangerous-type-assertions
+			PrivacyMode: ExtHostCursorPrivacyMode as unknown as typeof vscode.cursor.PrivacyMode,
+			registerAgentHostProvider(provider: vscode.cursor.AgentHostProvider) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.registerAgentHostProvider(provider);
+			},
+			registerAgentHostRuntime(runtime: unknown) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.registerAgentHostRuntime(runtime);
+			},
+			acquireAgentHostRuntime() {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.acquireAgentHostRuntime();
+			},
+			checkFeatureGate(gateName: string, options?: vscode.cursor.FeatureGateOptions) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.checkFeatureGate(gateName, options);
+			},
+			onDidChangeGates: (listener, thisArgs?, disposables?) => {
+				checkProposedApiEnabled(extension, 'cursor');
+				return _asExtensionEvent(extHostCursor.onDidChangeGates)(listener, thisArgs, disposables);
+			},
+			onDidChangePrivacyModeEnum: (listener, thisArgs?, disposables?) => {
+				checkProposedApiEnabled(extension, 'cursor');
+				return _asExtensionEvent(extHostCursor.onDidChangePrivacyModeEnum)(listener, thisArgs, disposables);
+			},
+			getFeatureEgressDisclosures() {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.getFeatureEgressDisclosures();
+			},
+			hasFeatureEgressGate(featureKey: string) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.hasFeatureEgressGate(featureKey);
+			},
+			isFeatureEgressAllowed(featureKey: string) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.isFeatureEgressAllowed(featureKey);
+			},
+			getDynamicConfigValue(key: string) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.getDynamicConfigValue(key);
+			},
+			getMcpSnapshots(serializableContext?: unknown) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.getMcpSnapshots(serializableContext);
+			},
+			callMcpLeaseTool(serverIdentifier: string, toolName: string, args: unknown) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.callMcpLeaseTool(serverIdentifier, toolName, args);
+			},
+			getPrivacyModeEnum() {
+				checkProposedApiEnabled(extension, 'cursor');
+				// eslint-disable-next-line local/code-no-dangerous-type-assertions
+				return extHostCursor.getPrivacyModeEnum() as unknown as vscode.cursor.PrivacyMode;
+			},
+			get isLocalMode() {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCursor.isLocalMode;
+			},
+			registerCheckoutProvider(provider: vscode.cursor.CheckoutProvider) {
+				checkProposedApiEnabled(extension, 'cursor');
+				return extHostCheckoutProvider.registerCheckoutProvider(provider);
+			},
+			mcp: {
+				registerServer(server: vscode.cursor.mcp.McpServerRegistration) {
+					checkProposedApiEnabled(extension, 'cursor');
+					return extHostCursor.registerServer(server);
+				},
+				getRegisteredServers() {
+					checkProposedApiEnabled(extension, 'cursor');
+					return extHostCursor.getRegisteredServers();
+				},
+				onDidChangeRegisteredServers: (listener, thisArgs?, disposables?) => {
+					checkProposedApiEnabled(extension, 'cursor');
+					return _asExtensionEvent(extHostCursor.onDidChangeRegisteredServers)(listener, thisArgs, disposables);
+				},
+			},
+		};
+
 		// eslint-disable-next-line local/code-no-dangerous-type-assertions
 		return <typeof vscode>{
 			version: initData.version,
@@ -2003,6 +2089,7 @@ export function createApiFactoryAndRegisterActors(accessor: ServicesAccessor): I
 			commands,
 			comments,
 			chat,
+			cursor,
 			debug,
 			env,
 			extensions,

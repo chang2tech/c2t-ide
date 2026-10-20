@@ -1,0 +1,71 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* Host: the usage-limit policy tray, mounted directly above the chat input.
+   Hidden until the usage limit is reached (see usageLimitPolicy.ts). */
+.usage-limit-policy-tray {
+	display: none;
+	padding: 0 8px 4px;
+}
+
+.usage-limit-policy-tray.visible {
+	display: block;
+}
+
+/* Tray banner card. data-component="tray-banner" (Cursor parity). */
+.usage-limit-policy-tray .tray-banner {
+	box-sizing: border-box;
+	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background-color: color-mix(in srgb, var(--vscode-charts-orange) 8%, var(--vscode-editorWidget-background));
+	padding: 8px 10px;
+	font-family: var(--vscode-chat-font-family, inherit);
+}
+
+.usage-limit-policy-tray .tray-banner-layout {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.usage-limit-policy-tray .tray-banner-content {
+	flex: 1;
+	min-width: 0;
+}
+
+.usage-limit-policy-tray .tray-banner-title {
+	font-size: var(--vscode-chat-font-size-body-m);
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.usage-limit-policy-tray .tray-banner-description {
+	font-size: var(--vscode-chat-font-size-body-s);
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+.usage-limit-policy-tray .tray-banner-actions {
+	flex-shrink: 0;
+}
+
+.usage-limit-policy-tray .tray-banner-action {
+	font-size: var(--vscode-chat-font-size-body-s);
+	padding: 4px 12px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	border: 1px solid var(--vscode-button-border, transparent);
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	cursor: pointer;
+}
+
+.usage-limit-policy-tray .tray-banner-action:hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.usage-limit-policy-tray .tray-banner-action:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}

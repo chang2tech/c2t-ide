@@ -50,6 +50,8 @@ import { AgentHostChatOwnershipService, IAgentHostChatOwnershipService } from '.
 import { AgentHostDatabase, IAgentHostDatabase } from './agentHostDatabase.js';
 import { AgentSessionRegistry, IAgentSessionRegistry } from './agentSessionRegistry.js';
 import { AgentHostCheckpointService } from './agentHostCheckpointService.js';
+import { IAgentHostStorageCompareService } from '../common/agentHostStorageCompareService.js';
+import { AgentHostStorageCompareService } from './agentHostStorageCompareService.js';
 import { AgentHostCompletions, IAgentHostCompletions } from './agentHostCompletions.js';
 import { AgentHostResourceProviders, IAgentHostResourceProviders } from './agentHostResourceProviders.js';
 import { AgentHostCustomizationEnablementService, IAgentHostCustomizationEnablementService } from './agentHostCustomizationEnablementService.js';
@@ -113,6 +115,7 @@ export function registerAgentHostCoreServices(services: ServiceCollection, input
 	services.set(IAgentHostSessionStateStore, new SyncDescriptor(AgentHostSessionStateStore, [SESSION_STATE_MIRROR_FLUSH_DELAY]));
 	services.set(IAgentHostGitStateService, new SyncDescriptor(AgentHostGitStateService));
 	services.set(IAgentHostCheckpointService, new SyncDescriptor(AgentHostCheckpointService));
+	services.set(IAgentHostStorageCompareService, new SyncDescriptor(AgentHostStorageCompareService));
 	services.set(IAgentHostPromptCache, new SyncDescriptor(AgentHostPromptCache));
 	services.set(IAgentHostSessionTitleSignal, new SyncDescriptor(AgentHostSessionTitleSignal));
 	services.set(IAgentHostSessionOpenTelemetry, new SyncDescriptor(AgentHostSessionOpenTelemetry));

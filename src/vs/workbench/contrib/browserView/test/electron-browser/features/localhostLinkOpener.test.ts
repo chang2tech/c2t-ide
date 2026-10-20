@@ -12,43 +12,93 @@ import { IConfigurationService } from '../../../../../../platform/configuration/
 import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IResourceEditorInput, ViewColumn } from '../../../../../../platform/editor/common/editor.js';
 import { IOpenerService } from '../../../../../../platform/opener/common/opener.js';
-import { IEditorService, PreferredGroup, SIDE_GROUP } from '../../../../../services/editor/common/editorService.js';
+import { IEditorService, PreferredGroup } from '../../../../../services/editor/common/editorService.js';
 import { workbenchInstantiationService } from '../../../../../test/browser/workbenchTestServices.js';
-import { IBrowserViewWorkbenchService } from '../../../common/browserView.js';
+import { LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY, OPEN_LOCAL_LINKS_CONFIG_KEY } from '../../../common/openLocalLinks.js';
 import { LocalhostLinkOpenerContribution } from '../../../electron-browser/features/browserTabManagementFeatures.js';
 
-suite('Localhost Link Opener', () => {
+// DEV-GAPS-159 (QA-155 NF-1): the legacy upstream opener for
+// `workbench.browser.openLocalhostLinks` no longer opens links itself.
+// Contributed external openers run before the OpenerService `_openers`
+// loop, so opening here pre-empted the Cursor parity interceptor
+// (OpenLocalLinksOpenerContribution) with a narrower classifier, no
+// `pBn` rewrite and no ssh-remote exclusion — and it opened links even
+// when `ide.browser.openLocalhostLinks` (Cursor's
+// `autoOpenLocalhostUrls`) was false. The provider now always returns
+// false: with the ide setting ON the parity interceptor decides in the
+// `_openers` loop; with it OFF nothing auto-opens. These tests pin the
+// provider side of that gate (the interceptor side is covered by
+// openLocalLinksOpener.test.ts and the pure gate matrix by
+// openLocalLinks.test.ts).
+
+suite('Localhost Link Opener (legacy, gated by DEV-GAPS-159)', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
+	function createOpener(configuration: Record<string, unknown>): { opener: LocalhostLinkOpenerContribution; openedEditors: unknown[] } {
+		const instantiationService = workbenchInstantiationService(undefined, store);
+		const openedEditors: unknown[] = [];
+		instantiationService.stub(IOpenerService, { registerExternalOpener: () => Disposable.None });
+		instantiationService.stub(IConfigurationService, new TestConfigurationService(configuration));
+		instantiationService.stub(IEditorService, 'openEditor', async (input: IResourceEditorInput, group?: PreferredGroup) => {
+			openedEditors.push({ input, group });
+			return undefined;
+		});
+		const opener = store.add(instantiationService.createInstance(LocalhostLinkOpenerContribution));
+		return { opener, openedEditors };
+	}
+
+	const url = 'https://localhost:9448/review?pr=342081#changes';
+
 	for (const viewColumn of [undefined, ViewColumn.Beside]) {
-		test(`preserves browser default placement or explicit side placement: ${viewColumn}`, async () => {
-			const instantiationService = workbenchInstantiationService(undefined, store);
-			const placements: (PreferredGroup | undefined)[] = [];
-			const opened: (PreferredGroup | undefined)[] = [];
-			instantiationService.stub(IOpenerService, { registerExternalOpener: () => Disposable.None });
-			instantiationService.stub(IConfigurationService, new TestConfigurationService({
-				'workbench.browser.openLocalhostLinks': true
-			}));
-			instantiationService.stub(IBrowserViewWorkbenchService, {
-				willUseRemoteProxy: () => false,
-				getPreferredGroup: async group => {
-					placements.push(group);
-					return group;
-				}
+		test(`legacy ON + ide ON: does not open here (defers to the parity interceptor): ${viewColumn}`, async () => {
+			const { opener, openedEditors } = createOpener({
+				[LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY]: true,
+				[OPEN_LOCAL_LINKS_CONFIG_KEY]: true,
 			});
-			instantiationService.stub(IEditorService, 'openEditor', async (_input: IResourceEditorInput, group?: PreferredGroup) => {
-				opened.push(group);
-				return undefined;
-			});
-			const opener = store.add(instantiationService.createInstance(LocalhostLinkOpenerContribution));
-			const url = 'https://localhost:9448/review?pr=342081#changes';
 			const handled = await opener.openExternal(url, { sourceUri: URI.parse(url), viewColumn }, CancellationToken.None);
-			const expectedPlacement = viewColumn === ViewColumn.Beside ? SIDE_GROUP : undefined;
-			assert.deepStrictEqual({ handled, placements, opened }, {
-				handled: true,
-				placements: [expectedPlacement],
-				opened: [expectedPlacement]
-			});
+			assert.strictEqual(handled, false);
+			assert.deepStrictEqual(openedEditors, []);
 		});
 	}
+
+	test('legacy ON + ide OFF: does not open (the Cursor setting OFF wins)', async () => {
+		const { opener, openedEditors } = createOpener({
+			[LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY]: true,
+			[OPEN_LOCAL_LINKS_CONFIG_KEY]: false,
+		});
+		const handled = await opener.openExternal(url, { sourceUri: URI.parse(url) }, CancellationToken.None);
+		assert.strictEqual(handled, false);
+		assert.deepStrictEqual(openedEditors, []);
+	});
+
+	test('legacy ON + ide unset (binary default ON): still defers, does not open here', async () => {
+		const { opener, openedEditors } = createOpener({
+			[LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY]: true,
+		});
+		const handled = await opener.openExternal('http://127.0.0.1:5173/', { sourceUri: URI.parse('http://127.0.0.1:5173/') }, CancellationToken.None);
+		assert.strictEqual(handled, false);
+		assert.deepStrictEqual(openedEditors, []);
+	});
+
+	test('legacy OFF: does not open, regardless of the ide setting', async () => {
+		for (const ideValue of [true, false]) {
+			const { opener, openedEditors } = createOpener({
+				[LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY]: false,
+				[OPEN_LOCAL_LINKS_CONFIG_KEY]: ideValue,
+			});
+			const handled = await opener.openExternal(url, { sourceUri: URI.parse(url) }, CancellationToken.None);
+			assert.strictEqual(handled, false);
+			assert.deepStrictEqual(openedEditors, []);
+		}
+	});
+
+	test('non-localhost href: does not open even with both settings ON', async () => {
+		const { opener, openedEditors } = createOpener({
+			[LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY]: true,
+			[OPEN_LOCAL_LINKS_CONFIG_KEY]: true,
+		});
+		const handled = await opener.openExternal('https://example.com/', { sourceUri: URI.parse('https://example.com/') }, CancellationToken.None);
+		assert.strictEqual(handled, false);
+		assert.deepStrictEqual(openedEditors, []);
+	});
 });

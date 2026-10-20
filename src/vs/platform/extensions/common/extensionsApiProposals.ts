@@ -219,6 +219,9 @@ const _allApiProposals = {
 	css: {
 		proposal: 'https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.css.d.ts',
 	},
+	cursor: {
+		proposal: 'https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.cursor.d.ts',
+	},
 	customEditorDiffs: {
 		proposal: 'https://raw.githubusercontent.com/microsoft/vscode/main/src/vscode-dts/vscode.proposed.customEditorDiffs.d.ts',
 	},

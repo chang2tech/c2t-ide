@@ -25,6 +25,12 @@ export interface NativeParsedArgs {
 	};
 	'serve-web'?: INativeCliOptions;
 	'agent'?: INativeCliOptions;
+	// IDE-CODE: `chat` has TWO shapes. The positional form (`chat <prompt>`)
+	// is the stock subcommand (object with `_`, `mode`, ...). The dash-flag
+	// form (`--chat`, Cursor's public bool flag "Open a standalone chat
+	// window without the full IDE.", NLS 1905) is preserved as `true` by
+	// parseArgs (see node/argv.ts) and means "open the standalone chat
+	// window" — see openStandaloneChatWindow in electron-main/app.ts.
 	chat?: {
 		_: string[];
 		'add-file'?: string[];
@@ -34,7 +40,7 @@ export interface NativeParsedArgs {
 		'new-window'?: boolean;
 		profile?: string;
 		help?: boolean;
-	};
+	} | boolean;
 
 	// arguments
 	_: string[];
@@ -55,6 +61,17 @@ export interface NativeParsedArgs {
 	'new-window'?: boolean;
 	'reuse-window'?: boolean;
 	'agents'?: boolean;
+	// IDE-CODE: marks the window as a dedicated Agents ("glass") window, the
+	// analog of Cursor's `--glass` CLI flag (binary: out/main.js,
+	// `openGlassWindowAsNewUser` spawns with `--glass`; window config carries
+	// `glass: true` and is matched via `config?.glass === true`).
+	'glass'?: boolean;
+	// IDE-CODE: Cursor's `--classic` CLI flag ("Disable glass mode and force
+	// classic windows (dev-only).", NLS 1874, binary-verified in out/cli.js
+	// 3.25.6 + 3.25.9). Takes precedence over the agents/glass routing in
+	// openFirstWindow: forces a classic (normal) window even when glass mode
+	// would otherwise open (e.g. `ide.window.openAgentsWindowOnStartup`).
+	'classic'?: boolean;
 	'session-title-base64'?: string;
 	locale?: string;
 	'user-data-dir'?: string;
@@ -110,6 +127,11 @@ export interface NativeParsedArgs {
 	'open-url'?: boolean;
 	'skip-release-notes'?: boolean;
 	'skip-welcome'?: boolean;
+	// IDE-CODE (GAPS-148, onboarding-flow): Cursor 3.25.9's environment service
+	// exposes `skipOnboarding` from the `skip-onboarding` launch arg / payload
+	// (workbench.desktop.main.js @18758384 / @32547757); the onboarding
+	// service's maybeOnboard() consults it before auto-showing the flow.
+	'skip-onboarding'?: boolean;
 	'disable-telemetry'?: boolean;
 	'telemetry-level'?: string;
 	'export-default-configuration'?: string;
@@ -180,4 +202,14 @@ export interface NativeParsedArgs {
 	'trace-startup-file'?: string;
 	'trace-startup-duration'?: string;
 	'xdg-portal-required-version'?: string;
+}
+
+/**
+ * Narrows `NativeParsedArgs['chat']` to the positional-subcommand object
+ * form (`chat <prompt>`). The dash-flag form (`--chat`, Cursor's public
+ * "standalone chat window" flag) parses to boolean `true` and must NOT be
+ * treated as a chat request carrying a prompt.
+ */
+export function isChatSubcommand(chat: NativeParsedArgs['chat']): chat is Exclude<NativeParsedArgs['chat'], boolean | undefined> {
+	return typeof chat === 'object';
 }

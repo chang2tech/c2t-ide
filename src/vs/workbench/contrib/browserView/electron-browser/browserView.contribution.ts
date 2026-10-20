@@ -30,8 +30,15 @@ import './features/browserFavoritesFeature.js';
 import './features/browserHistoryFeature.js';
 import './features/browserPermissionsFeature.js';
 import './features/browserDataStorageFeatures.js';
+import './features/browserBookmarkBarFeature.js';
 import './features/browserDevToolsFeature.js';
+import './features/browserConsoleFeature.js';
 import './features/browserEditorChatFeatures.js';
+import './features/browserPickerFeature.js';
+import './features/browserDesignModeFeature.js';
+import './features/browserDesignModeVoiceFeature.js';
+import './features/browserDesignModeDrawingFeature.js';
+import './features/browserEditorNativeMenuFeatures.js';
 import './features/browserEditorErrorFeatures.js';
 import './features/browserEditorZoomFeature.js';
 import './features/browserEditorEmulationFeatures.js';
@@ -40,6 +47,21 @@ import './features/browserEditorFindFeature.js';
 import './features/browserSearchFeatures.js';
 import './features/browserTabManagementFeatures.js';
 import './features/browserRemoteFeatures.js';
+// DEV-GAPS-54 (2026-10-20): reimplemented Cursor-parity command surface.
+// The 4 command groups (tab/nav/capture/agent) are real now; binary evidence:
+// Cursor 3.25.9 registers 29 cursor.browserView.* + bare browserView.blur via
+// registerCommand (workbench.{glass,desktop}.main.js @40541183-40555886) and
+// the two cursor.browserView.debug.* actions via registerAction2
+// (glass @48337991/@48338882).
+import './features/browserViewCommandSurface.js';
+// DEV-GAPS-107 (2026-10-20): Cursor-parity palette commands for the browser
+// tab (workbench.action.newBrowserTab / reloadBrowserTab /
+// focusBrowserLocationBar; binary evidence in the feature file).
+import './features/browserTabPaletteCommands.js';
+// DEV-GAPS-147 (2026-10-20): Cursor-parity localhost link routing — the
+// OpenerService interceptor for "Open Local Links in Cursor Browser"
+// (binary evidence in the feature file and common/openLocalLinks.ts).
+import './features/openLocalLinksOpener.js';
 
 function getBrowserViewStateUrl(viewState: object | undefined): string | undefined {
 	const url = Object.entries(viewState ?? {}).find(([key]) => key === 'url')?.[1];

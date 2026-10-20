@@ -617,3 +617,29 @@
 .monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.last-in-row.drop-target-left:not(:last-child)::after {
 	right: 0;
 }
+
+/* IDE-CODE (orange-dot-native-tabs): orange dot on native editor tabs
+   awaiting the user's input (Cursor parity — cursor.com/changelog/0-48-x:
+   "When a tab is awaiting your input, you'll see an orange dot on that
+   tab"). The `.tab-badge-dot` element is created in
+   MultiEditorTabsControl.createTab; the `awaiting-input` class is toggled
+   by redrawTabBadge from the IEditorTabBadgeService state, which the
+   ide-agent extension feeds via the `ide.chat.setEditorTabBadge` bridge
+   command. The color comes from the `tab.awaitingInputDot` theme color —
+   the exact Cursor orange hex is UNKNOWN, so the fallback is the same
+   orange the ide-agent webview tab bar already uses (#e8a13c), not a
+   claimed Cursor value. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab > .tab-badge-dot {
+	display: none;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.awaiting-input > .tab-badge-dot {
+	display: block;
+	flex: none;
+	align-self: center;
+	width: 6px;
+	height: 6px;
+	margin: 0 6px 0 2px;
+	border-radius: 50%;
+	background-color: var(--tab-awaiting-input-dot-color, #e8a13c);
+}

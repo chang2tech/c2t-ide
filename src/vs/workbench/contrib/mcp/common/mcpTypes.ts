@@ -26,6 +26,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IMcpGalleryManifest, McpGalleryManifestStatus } from '../../../../platform/mcp/common/mcpGalleryManifest.js';
 import { IGalleryMcpServer, IGalleryMcpServerConfiguration, IInstallableMcpServer, IQueryOptions } from '../../../../platform/mcp/common/mcpManagement.js';
 import { IMcpDevModeConfig, IMcpSandboxConfiguration, IMcpServerConfiguration, McpServerType } from '../../../../platform/mcp/common/mcpPlatformTypes.js';
+import type { ICursorMcpNetworkPolicy } from './cursorMcpNetworkModes.js';
 import { McpResourceFormat } from '../../../../platform/mcp/common/mcpWorkspaceConfiguration.js';
 import { StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceFolder, IWorkspaceFolderData } from '../../../../platform/workspace/common/workspace.js';
@@ -226,6 +227,13 @@ export interface McpServerDefinition {
 	readonly staticMetadata?: McpServerStaticMetadata;
 	/** Indicates if the sandbox is enabled for this server. */
 	readonly sandboxEnabled?: boolean;
+	/**
+	 * Fork addition: per-server network policy in Cursor's network-mode model
+	 * (Allow all / Allowlist / Deny all / No sandbox), parsed from
+	 * Cursor-format `mcp.json` (`networkMode`). See
+	 * `cursorMcpNetworkModes.ts`.
+	 */
+	readonly cursorNetworkPolicy?: ICursorMcpNetworkPolicy;
 
 
 	readonly presentation?: {
@@ -310,6 +318,8 @@ export namespace McpServerDefinition {
 		readonly sandboxEnabled?: boolean;
 		readonly version?: string;
 		readonly gallery?: boolean | string;
+		/** Fork addition: per-server Cursor network-mode policy (see `McpServerDefinition.cursorNetworkPolicy`). */
+		readonly cursorNetworkPolicy?: ICursorMcpNetworkPolicy;
 	}
 
 	export function toSerialized(def: McpServerDefinition): McpServerDefinition.Serialized {
@@ -327,6 +337,7 @@ export namespace McpServerDefinition {
 			sandboxEnabled: def.sandboxEnabled,
 			version: def.version,
 			gallery: def.gallery,
+			cursorNetworkPolicy: def.cursorNetworkPolicy,
 			variableReplacement: def.variableReplacement ? McpServerDefinitionVariableReplacement.fromSerialized(def.variableReplacement) : undefined,
 			environmentVariableExpansion: def.environmentVariableExpansion,
 		};
@@ -345,7 +356,8 @@ export namespace McpServerDefinition {
 			&& objectsEqual(a.devMode, b.devMode)
 			&& a.version === b.version
 			&& a.gallery === b.gallery
-			&& a.sandboxEnabled === b.sandboxEnabled;
+			&& a.sandboxEnabled === b.sandboxEnabled
+			&& objectsEqual(a.cursorNetworkPolicy, b.cursorNetworkPolicy);
 
 	}
 }

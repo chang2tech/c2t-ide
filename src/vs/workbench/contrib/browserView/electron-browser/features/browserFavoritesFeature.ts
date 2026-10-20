@@ -226,6 +226,16 @@ export class BrowserFavoritesFeature extends BrowserEditorContribution {
 		return this._urls.has(url);
 	}
 
+	/** All favorite URLs (insertion order). Used by the bookmark bar. */
+	getFavorites(): string[] {
+		return [...this._urls];
+	}
+
+	/** Fires when the favorites set changes (toggle, remove, external storage update). */
+	get onDidChangeState() {
+		return this._onDidChangeState.event;
+	}
+
 	toggleCurrent(): void {
 		const url = this.editor.model?.url;
 		if (url) {

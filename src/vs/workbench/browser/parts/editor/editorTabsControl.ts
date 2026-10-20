@@ -48,6 +48,7 @@ import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { IManagedHoverTooltipMarkdownString } from '../../../../base/browser/ui/hover/hover.js';
 import { applyDragImage } from '../../../../base/browser/ui/dnd/dnd.js';
 import { EditorAddTabControl } from './editorAddTabControl.js';
+import { IEditorTabBadgeService } from './editorTabBadges.js';
 
 export class EditorCommandsContextActionRunner extends ActionRunner {
 
@@ -163,6 +164,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		@IEditorResolverService private readonly editorResolverService: IEditorResolverService,
 		@IHostService protected readonly hostService: IHostService,
 		@IMenuService protected readonly menuService: IMenuService,
+		@IEditorTabBadgeService protected readonly editorTabBadgeService: IEditorTabBadgeService,
 	) {
 		super(themeService);
 

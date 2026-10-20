@@ -109,9 +109,10 @@ export class MainThreadMcp extends Disposable implements MainThreadMcpShape {
 				return McpServerLaunch.fromSerialized(ser);
 			},
 			async expandEnvironmentVariables(serverDefinition, launch) {
-				if (!serverDefinition.environmentVariableExpansion) {
-					return launch;
-				}
+				// Cursor-style variables (${env:}, ${userHome}, ...) are
+				// resolved unconditionally in the extension host; the
+				// Copilot-runtime expansion additionally requires
+				// `environmentVariableExpansion` to be set (handled there).
 				const ser = await proxy.$expandEnvironmentVariables(McpServerLaunch.toSerialized(launch), serverDefinition.environmentVariableExpansion);
 				return McpServerLaunch.fromSerialized(ser);
 			},

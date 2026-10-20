@@ -54,6 +54,10 @@ export enum BrowserViewCommandId {
 
 	// Dev Tools
 	ToggleDevTools = `${commandPrefix}.toggleDevTools`,
+	// DEV-GAPS-73 (browser-tab-console-toggle): toolbar 'Show Console' ⇄
+	// 'Hide Console' (codicon-terminal) — live CDP + binary 3.25.9,
+	// detail-browser-2026-10-19.md:41.
+	ToggleConsole = `${commandPrefix}.toggleConsole`,
 
 	// Storage
 	ClearGlobalStorage = `${commandPrefix}.clearGlobalStorage`,

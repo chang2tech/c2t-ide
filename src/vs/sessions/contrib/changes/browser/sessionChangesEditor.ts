@@ -425,6 +425,21 @@ export class SessionChangesEditor extends AbstractEditorWithViewState<IMultiDiff
 		this.viewModel?.expandAll();
 	}
 
+	/**
+	 * DEV-GAPS-103 (collapse-all-files-shortcut): collapse state of this
+	 * editor's diff files, for the `glass.collapseOrExpandAllDiffFiles`
+	 * toggle in changesViewActions.ts. `allCollapsed` uses the same
+	 * computation as the multi-diff widget's `multiDiffEditorAllCollapsed`
+	 * context key (`items.every(item => item.collapsed)`).
+	 */
+	getDiffFilesCollapseState(): { readonly itemCount: number; readonly allCollapsed: boolean } {
+		const items = this.viewModel?.items.read(undefined) ?? [];
+		return {
+			itemCount: items.length,
+			allCollapsed: items.every(item => item.collapsed.read(undefined)),
+		};
+	}
+
 	public collapse(resource: URI): void {
 		const item = this.viewModel?.items.read(undefined)
 			.find(i => isEqual(i.modifiedUri, resource) || isEqual(i.originalUri, resource));

@@ -17,11 +17,12 @@ import { KeybindingsRegistry, KeybindingWeight } from '../../../../../platform/k
 import { INotificationService, Severity } from '../../../../../platform/notification/common/notification.js';
 import { ICodeEditor } from '../../../../browser/editorBrowser.js';
 import { EditorAction, ServicesAccessor } from '../../../../browser/editorExtensions.js';
+import { CommandsRegistry, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { EditorContextKeys } from '../../../../common/editorContextKeys.js';
 import { InlineCompletionsProvider } from '../../../../common/languages.js';
 import { ILanguageFeaturesService } from '../../../../common/services/languageFeatures.js';
 import { Context as SuggestContext } from '../../../suggest/browser/suggest.js';
-import { hideInlineCompletionId, inlineSuggestCommitAlternativeActionId, inlineSuggestCommitId, jumpToNextInlineEditId, showNextInlineSuggestionActionId, showPreviousInlineSuggestionActionId, toggleShowCollapsedId } from './commandIds.js';
+import { acceptCursorTabSuggestionId, hideInlineCompletionId, inlineSuggestCommitAlternativeActionId, inlineSuggestCommitId, jumpToNextInlineEditId, showNextInlineSuggestionActionId, showPreviousInlineSuggestionActionId, toggleShowCollapsedId } from './commandIds.js';
 import { InlineCompletionContextKeys } from './inlineCompletionContextKeys.js';
 import { InlineCompletionsController } from './inlineCompletionsController.js';
 
@@ -244,6 +245,74 @@ KeybindingsRegistry.registerKeybindingRule({
 	primary: KeyCode.Tab,
 	when: ContextKeyExpr.and(InlineCompletionContextKeys.inInlineEditsPreviewEditor)
 });
+
+/**
+ * GAPS-115 (tab-remap-accept) — port of Cursor 3.25.9's remappable
+ * Tab-accept editor action (workbench.desktop.main.js @39948136, verbatim):
+ *
+ *   super({ id: "editor.action.acceptCursorTabSuggestion",
+ *           label: "Accept Cursor Tab Suggestion",
+ *           alias: "Accept Cursor Tab Suggestion",
+ *           precondition: ContextKeyExpr.equals("cpp.shouldAcceptTab", true),
+ *           kbOpts: { primary: KeyCode.Tab, weight: 500 } })
+ *   run: if (tabPredictionGoToFileVisible && !tabPredictionCodePreviewVisible)
+ *          setPreviewVisible(true); else handleTabAction()
+ *
+ * Because this is a regular editor action with a default Tab keybinding
+ * (weight 500, above the stock inline-suggest commit's 200), users can find
+ * "Accept Cursor Tab Suggestion" in Keyboard Shortcuts and remap the
+ * Tab-accept key — exactly what https://cursor.com/docs/tab/overview
+ * documents ("Search for `Accept Cursor Tab Suggestions` in Keyboard
+ * Shortcuts settings to remap it"; the binary label is singular).
+ *
+ * Fork divergences (honest, by architecture):
+ *  - The `cpp.shouldAcceptTab` context key is maintained by the workbench
+ *    IdeTabContribution (the fork's cppService analog), not by an
+ *    editor-layer service.
+ *  - An extra kbExpr (editor text focus + an inline suggestion/edit is
+ *    visible) is ANDed with the precondition by the EditorAction machinery.
+ *    Cursor needs no such guard because its cppService recomputes the
+ *    context key synchronously; here the core visibility keys are the
+ *    authoritative signal and prevent a stale context key from ever
+ *    swallowing a plain Tab (indent / focus movement).
+ *  - Cursor's prediction-preview branch has no fork equivalent (no
+ *    tabPredictionGoToFileVisibleKey / tabPredictionCodePreviewVisibleKey
+ *    state exists in the fork), so run() goes straight to the accept path.
+ *  - run() delegates to the workbench command `ide.acceptTabSuggestionFull`
+ *    (the fork's handleTabAction equivalent: fate/telemetry tracking +
+ *    stock commit + next-edit effect). When that command is not registered
+ *    (e.g. standalone editor), it falls back to the stock controller accept.
+ */
+export class AcceptCursorTabSuggestion extends EditorAction {
+	constructor() {
+		super({
+			id: acceptCursorTabSuggestionId,
+			label: nls.localize2('action.inlineSuggest.acceptCursorTabSuggestion', "Accept Cursor Tab Suggestion"),
+			alias: 'Accept Cursor Tab Suggestion',
+			precondition: ContextKeyExpr.equals('cpp.shouldAcceptTab', true),
+			kbOpts: {
+				primary: KeyCode.Tab,
+				weight: 500,
+				kbExpr: ContextKeyExpr.and(
+					EditorContextKeys.editorTextFocus,
+					ContextKeyExpr.or(InlineCompletionContextKeys.inlineSuggestionVisible, InlineCompletionContextKeys.inlineEditVisible),
+				),
+			},
+		});
+	}
+
+	public async run(accessor: ServicesAccessor, editor: ICodeEditor): Promise<void> {
+		if (CommandsRegistry.getCommand('ide.acceptTabSuggestionFull')) {
+			await accessor.get(ICommandService).executeCommand('ide.acceptTabSuggestionFull');
+			return;
+		}
+		const controller = InlineCompletionsController.getInFocusedEditorOrParent(accessor);
+		if (controller) {
+			controller.model.get()?.accept(controller.editor);
+			controller.editor.focus();
+		}
+	}
+}
 
 export class AcceptInlineCompletionAlternativeAction extends EditorAction {
 	constructor() {

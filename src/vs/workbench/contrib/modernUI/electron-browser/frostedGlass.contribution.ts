@@ -9,11 +9,14 @@ import { IAccessibilityService } from '../../../../platform/accessibility/common
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { editorBackground } from '../../../../platform/theme/common/colors/editorColors.js';
 import { isHighContrast } from '../../../../platform/theme/common/theme.js';
-import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { getThemeTypeSelector, IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { IWorkbenchLayoutService, LayoutSettings, ModernUIFrostedGlassOpacity } from '../../../services/layout/browser/layoutService.js';
+import { persistGlassSplashForTheme } from '../../composer/common/glassSplashPersistence.js';
 import '../browser/media/frostedGlass.css';
 
 const FROSTED_GLASS_CLASS = 'modern-ui-frosted-glass';
@@ -35,6 +38,7 @@ export class FrostedGlassContribution extends Disposable implements IWorkbenchCo
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@ILogService private readonly logService: ILogService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
 
@@ -85,6 +89,43 @@ export class FrostedGlassContribution extends Disposable implements IWorkbenchCo
 			&& !isHighContrast(this.themeService.getColorTheme().type);
 
 		this.apply();
+		this.persistGlassSplash();
+	}
+
+	/**
+	 * Glass theme splash persistence — Cursor parity (`glass-theme-splash-persistence`:
+	 * `GlassThemeService._saveGlassSplash` persists `{splash:{baseTheme,background},
+	 * glassPreference:{detectColorScheme,settingsId}}` to its splash storage on
+	 * every theme change, so the next start can paint the window background
+	 * before the workbench loads).
+	 *
+	 * Called from update() — i.e. on every color theme change — never throws,
+	 * and no-ops for themes outside the two observed Cursor buckets
+	 * (persistGlassSplashForTheme documents the fork-safe behavior).
+	 */
+	private persistGlassSplash(): void {
+		try {
+			const colorTheme = this.themeService.getColorTheme();
+			const background = colorTheme.getColor(editorBackground)?.toString();
+			if (!background) {
+				return;
+			}
+			persistGlassSplashForTheme(
+				{
+					getItem: key => this.storageService.get(key, StorageScope.APPLICATION) ?? null,
+					setItem: (key, value) => this.storageService.store(key, value, StorageScope.APPLICATION, StorageTarget.USER),
+				},
+				{
+					baseTheme: getThemeTypeSelector(colorTheme.type),
+					editorBackground: background,
+					detectColorScheme: this.configurationService.getValue<boolean>('window.autoDetectColorScheme') === true,
+					settingsId: this.configurationService.getValue<string>('workbench.colorTheme') ?? colorTheme.label,
+				},
+			);
+		} catch (error) {
+			// Theme application must never break because of splash persistence.
+			this.logService.warn('Unable to persist glass splash snapshot.', error);
+		}
 	}
 
 	private async initializeGPUCompositing(): Promise<void> {

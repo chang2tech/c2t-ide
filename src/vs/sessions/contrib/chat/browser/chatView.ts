@@ -60,6 +60,8 @@ import { IChatViewFactory } from '../../../services/chatView/browser/chatViewFac
 import { isExperimentalSessionComposerLayoutEnabled, NewChatWidget } from './newChatWidget.js';
 import { NewChatInSessionWidget } from './newChatInSessionWidget.js';
 import { SessionInputBanners } from '../../sessionInputBanners/browser/sessionInputBanners.js';
+import { UsageLimitPolicy } from '../../sessionInputBanners/browser/usageLimitPolicy.js';
+import { UsageLimitPolicyTray } from '../../sessionInputBanners/browser/usageLimitPolicyTray.js';
 import { SESSION_CHAT_INPUT_TOOLBAR_HEIGHT, SessionChatInputToolbar } from './sessionChatInputToolbar.js';
 import { ResponseSelectionSideChatController } from './responseSelectionSideChatController.js';
 import { ISessionChatPillsDebugService } from './sessionChatInputToolbarDebug.js';
@@ -252,6 +254,13 @@ export class ChatView extends AbstractChatView {
 
 	/** Session banners (CI failures, created comments) shown above the chat input. */
 	private readonly _banners: SessionInputBanners;
+	/**
+	 * Usage-limit policy + tray banner shown directly above the chat input
+	 * when the usage limit is reached (Cursor parity: usage-limit-policy-tray).
+	 * The engine reports limit conditions via `usageLimitPolicy.notifyLimitReached()`.
+	 */
+	private readonly _usageLimitPolicy: UsageLimitPolicy;
+	private readonly _usageLimitTray: UsageLimitPolicyTray;
 	/** Judge-only comparison result shown above the chat input. */
 	private readonly _comparisonResult: SessionComparisonResult;
 	/** Floating status pills (changes, preview, background activity) above the input. */
@@ -460,6 +469,10 @@ export class ChatView extends AbstractChatView {
 		// Mount the session banners directly above the chat input.
 		this._banners = this._register(instantiationService.createInstance(SessionInputBanners));
 		this._banners.setActive(this._isActive);
+		// Usage-limit policy tray (Cursor parity: usage-limit-policy-tray above
+		// the prompt input; hidden until the limit is reached).
+		this._usageLimitPolicy = this._register(instantiationService.createInstance(UsageLimitPolicy));
+		this._usageLimitTray = this._register(instantiationService.createInstance(UsageLimitPolicyTray, this._usageLimitPolicy));
 		this._comparisonResult = this._register(scopedInstantiationService.createInstance(
 			SessionComparisonResult,
 			this._currentSessionObs,
@@ -1105,6 +1118,7 @@ export class ChatView extends AbstractChatView {
 		const persistentContentContainer = this._widget.inputPart.persistentContentContainerElement;
 		const pillsNode = this._chatPills.element;
 		const bannersNode = this._banners.domNode;
+		const trayNode = this._usageLimitTray.domNode;
 		const comparisonResultNode = this._comparisonResult.domNode;
 		if (persistentContentContainer.firstChild !== pillsNode) {
 			persistentContentContainer.insertBefore(pillsNode, persistentContentContainer.firstChild);
@@ -1112,8 +1126,14 @@ export class ChatView extends AbstractChatView {
 		if (persistentContentContainer.nextSibling !== bannersNode) {
 			inputPartElement.insertBefore(bannersNode, persistentContentContainer.nextSibling);
 		}
-		if (bannersNode.nextSibling !== comparisonResultNode) {
-			inputPartElement.insertBefore(comparisonResultNode, bannersNode.nextSibling);
+		// The usage-limit policy tray sits between the session banners and the
+		// prompt input (Cursor parity: usage-limit-policy-tray directly above
+		// the prompt input). It is hidden until the limit is reached.
+		if (bannersNode.nextSibling !== trayNode) {
+			inputPartElement.insertBefore(trayNode, bannersNode.nextSibling);
+		}
+		if (trayNode.nextSibling !== comparisonResultNode) {
+			inputPartElement.insertBefore(comparisonResultNode, trayNode.nextSibling);
 		}
 	}
 

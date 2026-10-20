@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { observableFromEvent } from '../../../../base/common/observable.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -17,6 +18,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { bindContextKey } from '../../../../platform/observable/common/platformObservableUtils.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { DIFF_VIEW_MODE_INLINE_TEMPORARY, SET_DIFF_VIEW_MODE_AUTOMATIC, SET_DIFF_VIEW_MODE_INLINE, SET_DIFF_VIEW_MODE_SIDE_BY_SIDE, TOGGLE_DIFF_SIDE_BY_SIDE } from '../../../../workbench/browser/parts/editor/diffEditorCommands.js';
@@ -38,6 +40,7 @@ import { ISessionsService } from '../../../services/sessions/browser/sessionsSer
 import { OPEN_PULL_REQUEST_ACTION_ID } from '../../github/common/types.js';
 import { ActiveSessionContextKeys, CHANGES_VIEW_ID, ChangesContextKeys, ChangesViewMode, SESSIONS_CHANGES_OPEN_SINGLE_FILE_DIFF_SETTING } from '../common/changes.js';
 import { IChangesViewService } from '../common/changesViewService.js';
+import { COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID, computeAllDiffFilesCollapsed, planCollapseOrExpandAllDiffFiles } from '../common/collapseAllDiffFiles.js';
 import { IDiffEditorOptionsService, SESSIONS_DIFF_EDITOR_WORD_WRAP_SETTING, SESSIONS_EDITOR_WORD_WRAP_SETTING, SessionsDiffViewModeContext, SessionsWordWrap } from '../../editor/common/diffEditorOptionsService.js';
 import { CHANGES_HEADER_ACTIONS_ID } from './changesView.js';
 import { SessionChangesEditor } from './sessionChangesEditor.js';
@@ -499,6 +502,94 @@ class ExpandAllSessionChangesDiffsAction extends Action2 {
 }
 
 registerAction2(ExpandAllSessionChangesDiffsAction);
+
+/**
+ * DEV-GAPS-103 (collapse-all-files-shortcut): Cursor's single toggle
+ * command for diff file cards — `glass.collapseOrExpandAllDiffFiles`,
+ * title "Collapse / Expand All Files" (workbench.glass.main.js @45494583;
+ * full evidence in ../common/collapseAllDiffFiles.ts). One command
+ * toggles: every file collapsed → expand all, otherwise collapse all
+ * (the binary's handlers for the Diff / Agent Changes / PR tabs). It sits
+ * next to the fork's existing Collapse/Expand All pair above, which it
+ * complements rather than replaces (the pair drives the header menu's
+ * state-specific entries; this command is the keyboard toggle).
+ *
+ * Registration deltas vs the binary, all deliberate:
+ * - `f1: false` is VERBATIM (the binary command is not in the palette).
+ * - Keybinding chords are the binary's resolved chords (see common
+ *   file): Alt+Shift+Semicolon, macOS WinCtrl+Shift+Semicolon, weight
+ *   `KeybindingWeight.SessionsContrib` = 250 = the binary's `gp`.
+ * - The binary `when` (active editor-panel tab kind diff/agentChanges/pr)
+ *   maps to the fork's diff-card surfaces: the session Changes editor
+ *   (Diff + Agent Changes, including the Review Changes editor used for
+ *   PR review) or the stock multi-diff editor, in the sessions window
+ *   (the binary's scope is AGENT_WORKSPACE). A standalone PR tab with
+ *   diff file cards does not exist in the fork — see the divergence note
+ *   in ../common/collapseAllDiffFiles.ts.
+ * - The binary dispatches a glass event (`collapseOrExpandAllDiffsRequested`);
+ *   the fork calls the panes' existing collapse/expand primitives.
+ * - Icon: the binary's "list-bullets" has no codicon equivalent, so the
+ *   closest codicon (`listTree`) is used (see common file).
+ * - Menu entry (FORK-ONLY, not in the binary): this Action2 registers a
+ *   `menu` entry (`Menus.SessionsEditorHeaderLayout`, group
+ *   'secondary/1_diff', order 11); the binary registration at glass
+ *   @45494583 has NO `menu` field (re-verified by GAPS-124). Kept as a
+ *   fork header-menu surface alongside the Collapse/Expand All pair —
+ *   disclosed here per QA round 5 (GAPS-116) so it is not claimed as
+ *   Cursor parity; see divergence (4) in ../common/collapseAllDiffFiles.ts.
+ */
+class CollapseOrExpandAllDiffFilesAction extends Action2 {
+	static readonly ID = COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID;
+
+	constructor() {
+		super({
+			id: CollapseOrExpandAllDiffFilesAction.ID,
+			title: localize2('glass.collapseOrExpandAllDiffFiles', "Collapse / Expand All Files"),
+			icon: Codicon.listTree,
+			f1: false,
+			menu: {
+				id: Menus.SessionsEditorHeaderLayout,
+				group: 'secondary/1_diff',
+				order: 11,
+				when: desktopChangesEditorTitleVisible
+			},
+			keybinding: {
+				weight: KeybindingWeight.SessionsContrib,
+				primary: KeyMod.Shift | KeyMod.Alt | KeyCode.Semicolon,
+				mac: { primary: KeyMod.WinCtrl | KeyMod.Shift | KeyCode.Semicolon },
+				when: agentsMultiDiffEditorsActive
+			}
+		});
+	}
+
+	run(accessor: ServicesAccessor): void {
+		const activeEditorPane = accessor.get(IEditorService).activeEditorPane;
+		if (activeEditorPane instanceof SessionChangesEditor) {
+			const { itemCount, allCollapsed } = activeEditorPane.getDiffFilesCollapseState();
+			switch (planCollapseOrExpandAllDiffFiles(itemCount, allCollapsed)) {
+				case 'expand':
+					activeEditorPane.expandAllDiffs();
+					break;
+				case 'collapse':
+					activeEditorPane.collapseAllDiffs();
+					break;
+			}
+		} else if (activeEditorPane instanceof MultiDiffEditor) {
+			const items = activeEditorPane.viewModel?.items.read(undefined) ?? [];
+			const allCollapsed = computeAllDiffFilesCollapsed(items.map(item => item.collapsed.read(undefined)));
+			switch (planCollapseOrExpandAllDiffFiles(items.length, allCollapsed)) {
+				case 'expand':
+					activeEditorPane.viewModel?.expandAll();
+					break;
+				case 'collapse':
+					activeEditorPane.viewModel?.collapseAll();
+					break;
+			}
+		}
+	}
+}
+
+registerAction2(CollapseOrExpandAllDiffFilesAction);
 
 // The Agents window reuses the workbench `toggle.diff.renderSideBySide` command so a
 // user's keybinding for it carries over here (issue #324765). The sessions override of

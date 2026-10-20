@@ -117,6 +117,11 @@ export class NativeWorkbenchEnvironmentService extends AbstractNativeEnvironment
 	@memoize
 	get skipWelcome(): boolean { return !!this.args['skip-welcome']; }
 
+	// IDE-CODE (GAPS-148): binary getter is `!!this.args["skip-onboarding"]`
+	// (Cursor 3.25.9 workbench.desktop.main.js @32547757).
+	@memoize
+	get skipOnboarding(): boolean { return !!this.args['skip-onboarding']; }
+
 	@memoize
 	get logExtensionHostCommunication(): boolean { return !!this.args.logExtensionHostCommunication; }
 

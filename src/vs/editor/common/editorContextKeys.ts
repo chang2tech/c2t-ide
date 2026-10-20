@@ -98,4 +98,5 @@ export namespace EditorContextKeys {
 	export const hasMultipleDocumentSelectionFormattingProvider = new RawContextKey<boolean>('editorHasMultipleDocumentSelectionFormattingProvider', false, nls.localize('editorHasMultipleDocumentSelectionFormattingProvider', "Whether the editor has multiple document selection formatting providers"));
 
 	export const selectionHasDiagnostics = new RawContextKey<boolean>('editorSelectionHasDiagnostics', false, nls.localize('editorSelectionHasDiagnostics', "Whether any diagnostic is present in the current editor selection"));
+
 }

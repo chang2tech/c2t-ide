@@ -27,7 +27,7 @@ import { ScrollableElement } from '../../../../base/browser/ui/scrollbar/scrolla
 import { ScrollbarVisibility } from '../../../../base/common/scrollable.js';
 import { getOrSet } from '../../../../base/common/map.js';
 import { IThemeService, registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
-import { TAB_INACTIVE_BACKGROUND, TAB_ACTIVE_BACKGROUND, TAB_BORDER, EDITOR_DRAG_AND_DROP_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BORDER, TAB_ACTIVE_BORDER, TAB_HOVER_BACKGROUND, TAB_HOVER_BORDER, TAB_UNFOCUSED_HOVER_BACKGROUND, TAB_UNFOCUSED_HOVER_BORDER, EDITOR_GROUP_HEADER_TABS_BACKGROUND, WORKBENCH_BACKGROUND, TAB_ACTIVE_BORDER_TOP, TAB_UNFOCUSED_ACTIVE_BORDER_TOP, TAB_ACTIVE_MODIFIED_BORDER, TAB_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_ACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_BACKGROUND, TAB_HOVER_FOREGROUND, TAB_UNFOCUSED_HOVER_FOREGROUND, EDITOR_GROUP_HEADER_TABS_BORDER, TAB_LAST_PINNED_BORDER, TAB_SELECTED_BORDER_TOP } from '../../../common/theme.js';
+import { TAB_INACTIVE_BACKGROUND, TAB_ACTIVE_BACKGROUND, TAB_BORDER, EDITOR_DRAG_AND_DROP_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BORDER, TAB_ACTIVE_BORDER, TAB_HOVER_BACKGROUND, TAB_HOVER_BORDER, TAB_UNFOCUSED_HOVER_BACKGROUND, TAB_UNFOCUSED_HOVER_BORDER, EDITOR_GROUP_HEADER_TABS_BACKGROUND, WORKBENCH_BACKGROUND, TAB_ACTIVE_BORDER_TOP, TAB_UNFOCUSED_ACTIVE_BORDER_TOP, TAB_ACTIVE_MODIFIED_BORDER, TAB_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_ACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_BACKGROUND, TAB_HOVER_FOREGROUND, TAB_UNFOCUSED_HOVER_FOREGROUND, EDITOR_GROUP_HEADER_TABS_BORDER, TAB_LAST_PINNED_BORDER, TAB_SELECTED_BORDER_TOP, TAB_AWAITING_INPUT_DOT } from '../../../common/theme.js';
 import { activeContrastBorder, contrastBorder, editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { ResourcesDropHandler, DraggedEditorIdentifier, DraggedEditorGroupIdentifier, extractTreeDropData, isWindowDraggedOver } from '../../dnd.js';
 import { Color } from '../../../../base/common/color.js';
@@ -59,6 +59,7 @@ import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupMod
 import { IHostService } from '../../../services/host/browser/host.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
 import { applyDragImage } from '../../../../base/browser/ui/dnd/dnd.js';
+import { IEditorTabBadgeService } from './editorTabBadges.js';
 
 interface IEditorInputLabel {
 	readonly editor: EditorInput;
@@ -170,8 +171,14 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		@IEditorResolverService editorResolverService: IEditorResolverService,
 		@IHostService hostService: IHostService,
 		@IMenuService menuService: IMenuService,
+		@IEditorTabBadgeService editorTabBadgeService: IEditorTabBadgeService,
 	) {
-		super(parent, editorPartsView, groupsView, groupView, tabsModel, menuIds, breadcrumbsInHeader, useModernUITabs, contextMenuService, instantiationService, contextKeyService, keybindingService, notificationService, quickInputService, themeService, editorResolverService, hostService, menuService);
+		super(parent, editorPartsView, groupsView, groupView, tabsModel, menuIds, breadcrumbsInHeader, useModernUITabs, contextMenuService, instantiationService, contextKeyService, keybindingService, notificationService, quickInputService, themeService, editorResolverService, hostService, menuService, editorTabBadgeService);
+
+		// IDE-CODE (DEV-GAPS-12): re-render the affected tab when its
+		// awaiting-input badge changes (e.g. a chat tab starts/stops
+		// awaiting the user's input).
+		this._register(this.editorTabBadgeService.onDidChangeTabBadge(editor => this.updateTabBadge(editor)));
 
 		// Resolve the correct path library for the OS we are on
 		// If we are connected to remote, this accounts for the
@@ -1030,6 +1037,14 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		// Tab Editor Label
 		const editorLabel = this.tabResourceLabels.create(tabContainer, { hoverTargetOverride: tabContainer });
 
+		// IDE-CODE (DEV-GAPS-12): awaiting-input badge dot. Hidden unless the
+		// tab carries the `awaiting-input` class (see redrawTabBadge).
+		// Positioned between the label and the tab actions, so it never
+		// collides with the close/pin action buttons. Real DOM (not ::after):
+		// the tab's pseudo-elements are reserved for drop-target indicators.
+		const tabBadgeDot = $('.tab-badge-dot', { 'aria-hidden': true });
+		tabContainer.appendChild(tabBadgeDot);
+
 		// Tab Actions
 		const tabActionsContainer = $('.tab-actions');
 		tabContainer.appendChild(tabActionsContainer);
@@ -1820,6 +1835,29 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 
 		// Selection / active / dirty state
 		this.redrawTabSelectedActiveAndDirty(this.groupsView.activeGroup === this.groupView, editor, tabContainer, tabActionBar);
+
+		// IDE-CODE (DEV-GAPS-12): awaiting-input badge dot
+		this.redrawTabBadge(editor, tabContainer);
+	}
+
+	/**
+	 * IDE-CODE (DEV-GAPS-12): native-editor-tab orange dot. Cursor shows an
+	 * orange dot on a chat tab "when a tab is awaiting your input"
+	 * (cursor.com/changelog/0-48-x); the badge state arrives from the
+	 * ide-agent extension via the `ide.chat.setEditorTabBadge` bridge
+	 * command (see editorTabBadges.ts).
+	 */
+	private redrawTabBadge(editor: EditorInput, tabContainer: HTMLElement): void {
+		const awaitingInput = this.editorTabBadgeService.getTabBadge(editor)?.kind === 'awaiting-input';
+		tabContainer.classList.toggle('awaiting-input', awaitingInput);
+		// Theme color (with the honest #e8a13c fallback when no theme defines
+		// `tab.awaitingInputDot` — see TAB_AWAITING_INPUT_DOT).
+		tabContainer.style.setProperty('--tab-awaiting-input-dot-color', this.getColor(TAB_AWAITING_INPUT_DOT) ?? '');
+	}
+
+	/** Re-render just the badge dot of one tab (badge service event). */
+	private updateTabBadge(editor: EditorInput): void {
+		this.withTab(editor, (editor, _tabIndex, tabContainer) => this.redrawTabBadge(editor, tabContainer));
 	}
 
 	private redrawTabLabel(editor: EditorInput, tabIndex: number, tabContainer: HTMLElement, tabLabelWidget: IResourceLabel, tabLabel: IEditorInputLabel): void {

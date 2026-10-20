@@ -14,6 +14,7 @@ import { RemoteAgentConnectionStatusListener, RemoteMarkers } from './remote.js'
 import { RemoteStatusIndicator } from './remoteIndicator.js';
 import { AutomaticPortForwarding, ForwardedPortsView, PortRestore, TOGGLE_VIEW_ACTION_ID } from './remoteExplorer.js';
 import { InitialRemoteConnectionHealthContribution } from './remoteConnectionHealth.js';
+import './airlock.js'; // IDE-CODE: airlock-container-attach (DEV-GAPS-105B/105C) — self-registering
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { TUNNEL_VIEW_ID } from '../../../services/remote/common/remoteExplorerService.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';

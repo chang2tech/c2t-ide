@@ -40,6 +40,45 @@
 		gap: 8px;
 	}
 
+	/* IDE-CODE (DEV-GAPS-74): bookmark bar (Cursor 'Show Bookmark Bar'
+	   switch). Toggled by the `ide.browser.showBookmarkBar` pref; hidden
+	   via inline `display: none` from BrowserBookmarkBarFeature. */
+	.browser-bookmark-bar {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		padding: 2px 8px;
+		overflow-x: auto;
+		flex-shrink: 0;
+		background-color: var(--vscode-editor-background);
+		border-bottom: 1px solid var(--vscode-sideBar-border, transparent);
+		scrollbar-width: none;
+
+		&::-webkit-scrollbar {
+			display: none;
+		}
+	}
+
+	.browser-bookmark-bar-item {
+		flex-shrink: 0;
+		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		padding: 2px 8px;
+		border: none;
+		border-radius: var(--vscode-cornerRadius-small);
+		background: transparent;
+		color: var(--vscode-foreground);
+		font-size: 12px;
+		line-height: 18px;
+		cursor: pointer;
+
+		&:hover {
+			background-color: var(--vscode-toolbar-hoverBackground);
+		}
+	}
+
 	.browser-nav-toolbar,
 	.browser-actions-toolbar {
 		display: flex;
@@ -833,5 +872,346 @@
 			outline: 1px solid var(--vscode-focusBorder);
 			outline-offset: 2px;
 		}
+	}
+}
+
+/* -- Design Mode enter/exit toggle UI (design-mode-enter-exit) -- */
+/* Inactive state: standalone enter button (aria-label "Enter design mode",
+   tooltip "Design Mode"). Shown only while Design Mode is off. */
+.browser-design-mode-enter-button {
+	display: flex;
+	align-items: center;
+	margin: 0;
+	padding: 2px 6px;
+	flex-shrink: 0;
+	border-radius: var(--vscode-cornerRadius-medium);
+	border: 1px solid var(--vscode-widget-border, transparent);
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+
+	&.hidden {
+		display: none;
+	}
+
+	&:hover {
+		background-color: var(--vscode-toolbar-hoverBackground);
+		color: var(--vscode-foreground);
+	}
+
+	&:focus-visible {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: 2px;
+	}
+}
+
+/* Active state: exit button at the end of the pill (aria-label
+   "Exit design mode", tooltip "Exit Design Mode"). */
+.browser-design-mode-exit-button {
+	display: flex;
+	align-items: center;
+	margin: 0;
+	padding: 2px;
+	flex-shrink: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+
+	&:hover {
+		background-color: var(--vscode-toolbar-hoverBackground);
+		color: var(--vscode-foreground);
+	}
+
+	&:focus-visible {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: 1px;
+	}
+}
+
+/* -- Design Mode pill + frozen-frame drawing overlay (design-mode-voice / design-mode-drawing) -- */
+.browser-design-mode-pill {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	padding: 2px 8px;
+	flex-shrink: 0;
+	border-radius: var(--vscode-cornerRadius-medium);
+	border: 1px solid var(--vscode-focusBorder);
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-editorWidget-foreground);
+	font-size: 12px;
+	line-height: 1;
+	white-space: nowrap;
+	cursor: pointer;
+
+	&.hidden {
+		display: none;
+	}
+
+	.browser-design-mode-pill-label {
+		font-weight: 600;
+	}
+
+	.browser-design-mode-pill-tools {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	/* Send group (design-mode-annotation-actions): the Send button and the
+	   pending-annotations chevron in one group, binary aria-label "Send
+	   annotations". */
+	.browser-design-mode-send-group {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+		padding: 0 2px;
+		border-radius: var(--vscode-cornerRadius-small);
+		border: 1px solid var(--vscode-focusBorder);
+	}
+
+	.browser-design-mode-mic-button.monaco-button,
+	.browser-design-mode-tool-button.monaco-button {
+		padding: 2px 4px;
+		border-radius: var(--vscode-cornerRadius-small);
+		border-width: 0;
+		color: var(--vscode-descriptionForeground);
+		background: transparent;
+		outline: none !important;
+
+		&:hover {
+			background-color: var(--vscode-toolbar-hoverBackground) !important;
+			color: var(--vscode-foreground);
+		}
+
+		&.active {
+			background-color: var(--vscode-toolbar-hoverBackground);
+			color: var(--vscode-foreground);
+			outline: 1px solid var(--vscode-focusBorder);
+		}
+
+		&.recording {
+			color: #e5484d;
+			animation: browser-design-mode-mic-pulse 1.2s ease-in-out infinite;
+		}
+
+		&.has-regions {
+			color: var(--vscode-foreground);
+		}
+	}
+
+	.browser-design-mode-send-button.monaco-button {
+		font-size: 12px;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+}
+
+/* -- Pending-annotations list panel (design-mode-annotation-actions) -- */
+.browser-design-mode-pending-panel {
+	position: absolute;
+	left: 12px;
+	bottom: 12px;
+	z-index: 60;
+	min-width: 280px;
+	max-width: 420px;
+	max-height: 320px;
+	overflow-y: auto;
+	padding: 8px;
+	border-radius: var(--vscode-cornerRadius-medium);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-focusBorder));
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-editorWidget-foreground);
+	box-shadow: var(--vscode-widget-shadow, 0 4px 16px rgba(0, 0, 0, 0.25));
+
+	.browser-design-mode-pending-empty {
+		padding: 12px;
+		text-align: center;
+		font-size: 12px;
+		color: var(--vscode-descriptionForeground);
+	}
+
+	.browser-design-mode-pending-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 0;
+	}
+
+	.browser-design-mode-pending-open {
+		flex: 1;
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		padding: 4px 8px;
+		border: none;
+		border-radius: var(--vscode-cornerRadius-small);
+		background: transparent;
+		color: inherit;
+		font-size: 12px;
+		text-align: left;
+		cursor: pointer;
+		min-width: 0;
+
+		&:hover {
+			background-color: var(--vscode-toolbar-hoverBackground);
+		}
+
+		&:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+
+		.browser-design-mode-pending-number {
+			font-weight: 700;
+			flex-shrink: 0;
+		}
+
+		.browser-design-mode-pending-label {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+	}
+
+	.browser-design-mode-pending-remove,
+	.browser-design-mode-pending-delete {
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 4px;
+		border: none;
+		border-radius: var(--vscode-cornerRadius-small);
+		background: transparent;
+		color: var(--vscode-descriptionForeground);
+		cursor: pointer;
+
+		&:hover {
+			background-color: var(--vscode-toolbar-hoverBackground);
+			color: var(--vscode-foreground);
+		}
+
+		&:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+	}
+
+	.browser-design-mode-pending-delete {
+		color: var(--vscode-errorForeground);
+	}
+
+	.browser-design-mode-pending-detail {
+		flex-basis: 100%;
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 8px 4px;
+	}
+
+@keyframes browser-design-mode-mic-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
+}
+
+.browser-design-mode-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 10;
+	overflow: hidden;
+	background-color: var(--vscode-editor-background);
+
+	.browser-design-mode-frame,
+	.browser-design-mode-canvas {
+		position: absolute;
+		top: 0;
+		left: 0;
+	}
+
+	.browser-design-mode-canvas {
+		cursor: crosshair;
+		touch-action: none;
+	}
+}
+
+/* DEV-GAPS-73 (browser-tab-console-toggle): the in-tab console panel
+   docked under the navbar, toggled by the 'Show Console' / 'Hide Console'
+   toolbar button. Follows the same Toolbar-widget styling language as the
+   find/emulation toolbars. */
+.browser-console-panel {
+	flex-shrink: 0;
+	position: relative;
+	z-index: 10;
+	max-height: 180px;
+	display: flex;
+	flex-direction: column;
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+	background-color: var(--vscode-editor-background);
+
+	.browser-console-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 2px 8px;
+		border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+		background-color: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+	}
+
+	.browser-console-title {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--vscode-descriptionForeground);
+	}
+
+	.browser-console-actions {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.browser-console-button {
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: var(--vscode-cornerRadius-small);
+		color: var(--vscode-descriptionForeground);
+		cursor: pointer;
+		padding: 3px;
+		line-height: 0;
+
+		&:hover {
+			color: var(--vscode-foreground);
+			border-color: var(--vscode-panel-border);
+			background-color: var(--vscode-toolbar-hoverBackground);
+		}
+
+		.codicon {
+			font-size: 14px;
+		}
+	}
+
+	.browser-console-log {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		margin: 0;
+		padding: 6px 10px;
+		font-family: var(--vscode-editor-font-family);
+		font-size: 11px;
+		line-height: 1.5;
+		white-space: pre-wrap;
+		word-break: break-word;
+		color: var(--vscode-foreground);
+		user-select: text;
+		cursor: text;
 	}
 }

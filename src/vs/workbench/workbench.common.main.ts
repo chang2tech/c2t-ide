@@ -240,6 +240,17 @@ import './contrib/chat/browser/chatSessions/chatSessions.contribution.js';
 import './contrib/chat/browser/contextContrib/chatContext.contribution.js';
 import './contrib/imageCarousel/browser/imageCarousel.contribution.js';
 
+// IDE-CODE: Composer (AI chat) workbench contribution skeleton (Cursor-style `contrib/composer`)
+import './contrib/composer/browser/composer.contribution.js';
+
+// IDE-CODE: agent sessions/modes workbench contribution skeleton (Cursor-style `contrib/agents`)
+import './contrib/agents/browser/agents.contribution.js';
+
+// IDE-CODE: checkout conflict UI (Cursor-style `contrib/checkout`) — the
+// dirty-working-tree stash/commit/discard/cancel QuickPick lives in core,
+// not in the ide-checkout extension.
+import './contrib/checkout/browser/checkout.contribution.js';
+
 // Interactive
 import './contrib/interactive/browser/interactive.contribution.js';
 
@@ -468,11 +479,19 @@ import './contrib/meteredConnection/browser/meteredConnection.contribution.js';
 // Share
 import './contrib/share/browser/share.contribution.js';
 
+// Permalink (Copy Remote URL)
+import './contrib/permalink/browser/permalink.contribution.js';
+
+// Cursor Blame (cursor.blame / cursor.fileblame editors, Cursor parity)
+import './contrib/cursorBlame/browser/cursorBlame.contribution.js';
+
 // Synchronized Scrolling
 import './contrib/scrollLocking/browser/scrollLocking.contribution.js';
 
 // Inline Completions
 import './contrib/inlineCompletions/browser/inlineCompletions.contribution.js';
+// IDE-CODE: IDE Tab completion (cppService analog) — workbench-core port of extensions/ide-agent/src/tab
+import './contrib/inlineCompletions/browser/ideTab/ideTab.contribution.js';
 
 // Drop or paste into
 import './contrib/dropOrPasteInto/browser/dropOrPasteInto.contribution.js';

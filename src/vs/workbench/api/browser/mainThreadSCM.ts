@@ -8,7 +8,7 @@ import { isUriComponents, URI, UriComponents } from '../../../base/common/uri.js
 import { Event, Emitter } from '../../../base/common/event.js';
 import { IObservable, observableValue, observableValueOpts, transaction } from '../../../base/common/observable.js';
 import { IDisposable, DisposableStore, combinedDisposable, dispose, Disposable } from '../../../base/common/lifecycle.js';
-import { ISCMService, ISCMRepository, ISCMProvider, ISCMResource, ISCMResourceGroup, ISCMResourceDecorations, IInputValidation, ISCMViewService, InputValidationType, ISCMActionButtonDescriptor } from '../../contrib/scm/common/scm.js';
+import { ISCMService, ISCMRepository, ISCMProvider, ISCMResource, ISCMResourceGroup, ISCMResourceDecorations, IInputValidation, ISCMViewService, InputValidationType, ISCMActionButtonDescriptor, ISCMRemote } from '../../contrib/scm/common/scm.js';
 import { ExtHostContext, MainThreadSCMShape, ExtHostSCMShape, SCMProviderFeatures, SCMRawResourceSplices, SCMGroupFeatures, MainContext, SCMHistoryItemDto, SCMHistoryItemRefsChangeEventDto, SCMHistoryItemRefDto } from '../common/extHost.protocol.js';
 import { Command } from '../../../editor/common/languages.js';
 import { extHostNamedCustomer, IExtHostContext } from '../../services/extensions/common/extHostCustomers.js';
@@ -295,6 +295,9 @@ class MainThreadSCMProvider implements ISCMProvider {
 	private readonly _onDidChangeResources = new Emitter<void>();
 	readonly onDidChangeResources = this._onDidChangeResources.event;
 
+	private readonly _onDidChangeRemotes = new Emitter<readonly ISCMRemote[] | undefined>();
+	readonly onDidChangeRemotes = this._onDidChangeRemotes.event;
+
 	private readonly _groupsByHandle: { [handle: number]: MainThreadSCMResourceGroup } = Object.create(null);
 
 	// get groups(): ISequence<ISCMResourceGroup> {
@@ -324,6 +327,8 @@ class MainThreadSCMProvider implements ISCMProvider {
 	get activeRepositoryName(): IObservable<string | undefined> { return this._activeRepositoryName; }
 
 	get acceptInputCommand(): Command | undefined { return this.features.acceptInputCommand; }
+
+	get remotes(): readonly ISCMRemote[] | undefined { return this.features.remotes ?? undefined; }
 
 	private readonly _count = observableValue<number | undefined>(this, undefined);
 	get count() { return this._count; }
@@ -398,6 +403,10 @@ class MainThreadSCMProvider implements ISCMProvider {
 
 		if (typeof features.statusBarCommands !== 'undefined') {
 			this._statusBarCommands.set(features.statusBarCommands, undefined);
+		}
+
+		if (typeof features.remotes !== 'undefined') {
+			this._onDidChangeRemotes.fire(this.remotes);
 		}
 
 		if (features.hasQuickDiffProvider && !this._quickDiff) {
@@ -605,6 +614,7 @@ class MainThreadSCMProvider implements ISCMProvider {
 	dispose(): void {
 		this._onDidChangeResourceGroups.dispose();
 		this._onDidChangeResources.dispose();
+		this._onDidChangeRemotes.dispose();
 		this._artifactProvider.get()?.dispose();
 		this._stagedQuickDiff?.dispose();
 		this._quickDiff?.dispose();

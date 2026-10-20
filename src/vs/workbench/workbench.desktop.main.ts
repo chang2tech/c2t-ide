@@ -127,6 +127,7 @@ import './contrib/localization/electron-browser/localization.contribution.js';
 
 // Explorer
 import './contrib/files/electron-browser/fileActions.contribution.js';
+import './contrib/scm/browser/codeLinks.contribution.js';
 
 // CodeEditor Contributions
 import './contrib/codeEditor/electron-browser/codeEditor.contribution.js';
@@ -152,6 +153,17 @@ import './contrib/remote/electron-browser/remote.contribution.js';
 
 // Terminal
 import './contrib/terminal/electron-browser/terminal.contribution.js';
+
+// IDE-CODE: Composer (AI chat) desktop-only services — node-dependent
+// implementations wired to their node-free contracts in common/ (P0
+// node-free common/ layer split). Browser-safe parts load from
+// workbench.common.main.ts; this file is desktop-only.
+import './contrib/composer/electron-browser/composer.contribution.js';
+
+// IDE-CODE: Agent system pressure (heavy-load warning + Manage Processes modal) —
+// Cursor glass-bundle surface; desktop-only because it is driven by the
+// shared-process `cursorProclist` channel (feature `glass-system-pressure-commands`).
+import './contrib/agentSystemPressure/electron-browser/agentSystemPressure.contribution.js';
 
 // Themes
 import './contrib/themes/browser/themes.test.contribution.js';

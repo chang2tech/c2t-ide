@@ -12,6 +12,7 @@ import { isMacintosh } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ipcRenderer } from '../../../../base/parts/sandbox/electron-browser/globals.js';
 import { localize } from '../../../../nls.js';
+import { isChatSubcommand } from '../../../../platform/environment/common/argv.js';
 import { registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
@@ -100,10 +101,34 @@ class ChatCommandLineHandler extends Disposable {
 		};
 		ipcRenderer.on('vscode:openChatSession', handleOpenChatSession);
 		this._register({ dispose: () => ipcRenderer.removeListener('vscode:openChatSession', handleOpenChatSession) });
+
+		// IDE-CODE: `--chat` standalone chat window. The main process opens a
+		// dedicated window (CLI config carries `chat: true`) and notifies us
+		// here once the window is ready. Surface the REAL chat surface — the
+		// ide-agent `ideAgent.chatView` webview, backed by the real sidecar
+		// engine — never a placeholder. Same sendWhenReady pattern as the two
+		// handlers above. (Cursor's exact standalone-chat window chrome is
+		// unobserved in REA data — only the flag registration + description
+		// are binary-verified — so this opens a dedicated window focused on
+		// the real chat view; documented as honest divergence.)
+		const handleOpenStandaloneChat = () => {
+			this.logService.trace('vscode:openStandaloneChat');
+
+			this.commandService.executeCommand('ideAgent.chatView.focus').then(
+				undefined,
+				err => this.logService.error('vscode:openStandaloneChat failed', err)
+			);
+		};
+		ipcRenderer.on('vscode:openStandaloneChat', handleOpenStandaloneChat);
+		this._register({ dispose: () => ipcRenderer.removeListener('vscode:openStandaloneChat', handleOpenStandaloneChat) });
 	}
 
 	private async prompt(args: typeof this.environmentService.args.chat): Promise<void> {
-		if (!Array.isArray(args?._)) {
+		// The main process only forwards the subcommand object form over the
+		// `vscode:handleChatRequest` channel; the bool `--chat` flag
+		// (standalone chat window) never arrives here — narrow defensively
+		// since the type is a union.
+		if (!isChatSubcommand(args) || !Array.isArray(args._)) {
 			return;
 		}
 

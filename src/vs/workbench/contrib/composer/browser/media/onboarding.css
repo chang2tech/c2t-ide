@@ -1,0 +1,317 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* IDE-CODE (GAPS-148, onboarding-flow): styles for the onboarding-v2 overlay.
+ * Class names are binary-verbatim (Cursor 3.25.9 templates, desk@39640515+:
+ * onboarding-v2-overlay / -container / -welcome-header / -welcome-title /
+ * -welcome-subtitle / -welcome-detail / -welcome-decoration /
+ * -welcome-button / -footer / -caption-container / -caption /
+ * -marketplace-grid / -marketplace-card + sub-classes).
+ * The binary styles these via Tailwind utilities + its own CSS; the fork
+ * expresses the same layout with plain CSS over VS Code theme variables.
+ * Exact Tailwind-derived metrics are NOT claimed 1:1 (see the
+ * HONEST-DIVERGENCE list in ../onboardingService.ts). */
+
+.onboarding-v2-overlay {
+	position: absolute;
+	inset: 0;
+	z-index: 1000;
+	background: var(--vscode-editor-background);
+	display: flex;
+	flex-direction: column;
+}
+
+.onboarding-v2-nav-bar {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	height: 35px;
+	flex: 0 0 35px;
+	padding: 0 8px;
+	-webkit-app-region: drag;
+}
+
+.onboarding-v2-nav-button {
+	-webkit-app-region: no-drag;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+}
+
+.onboarding-v2-nav-button:disabled {
+	opacity: 0.2;
+	cursor: default;
+}
+
+.onboarding-v2-scroll {
+	flex: 1;
+	display: flex;
+	overflow-y: auto;
+}
+
+.onboarding-v2-container {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 24px;
+	width: 100%;
+	max-width: 720px;
+	margin: auto;
+	padding: 32px 24px;
+	animation: onboarding-v2-fade-in 0.2s ease-out;
+}
+
+@keyframes onboarding-v2-fade-in {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+.onboarding-v2-welcome-header {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	text-align: center;
+	gap: 8px;
+}
+
+.onboarding-v2-welcome-header-content {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+.onboarding-v2-welcome-title {
+	font-size: 32px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+}
+
+.onboarding-v2-welcome-subtitle {
+	font-size: 15px;
+	color: var(--vscode-foreground);
+	opacity: 0.8;
+}
+
+.onboarding-v2-welcome-detail {
+	font-size: 13px;
+	color: var(--vscode-foreground);
+	opacity: 0.7;
+}
+
+.onboarding-v2-welcome-buttons {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	align-items: center;
+}
+
+.onboarding-v2-welcome-button {
+	min-width: 200px;
+	padding: 6px 14px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.onboarding-v2-welcome-button.secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.onboarding-v2-welcome-button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.onboarding-v2-welcome-button.text {
+	background: transparent;
+	border: none;
+	color: var(--vscode-foreground);
+	min-width: 0;
+}
+
+.onboarding-v2-footer {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	padding: 8px;
+}
+
+.onboarding-v2-caption-container {
+	display: flex;
+	justify-content: center;
+}
+
+.onboarding-v2-caption {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.7;
+}
+
+.onboarding-v2-marketplace-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: 12px;
+	width: 100%;
+}
+
+.onboarding-v2-marketplace-card {
+	display: flex;
+	gap: 10px;
+	align-items: flex-start;
+	padding: 12px;
+	border: 1px solid var(--vscode-menu-border);
+	border-radius: 6px;
+}
+
+.onboarding-v2-marketplace-card-info {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	flex: 1;
+}
+
+.onboarding-v2-marketplace-card-name {
+	font-size: 13px;
+	font-weight: 590;
+	color: var(--vscode-foreground);
+}
+
+.onboarding-v2-marketplace-card-desc {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.onboarding-v2-card-row {
+	display: flex;
+	gap: 20px;
+	flex: 1;
+	align-items: stretch;
+	justify-content: center;
+	flex-wrap: wrap;
+}
+
+.onboarding-v2-choice-card {
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	gap: 4px;
+	border: 1px solid var(--vscode-menu-border);
+	border-radius: 6px;
+	padding: 13px 3px;
+	text-align: center;
+	cursor: pointer;
+	box-sizing: border-box;
+	transition: outline 0.1s ease, box-shadow 0.1s ease, background 0.1s ease;
+	background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 30%, transparent);
+}
+
+.onboarding-v2-choice-card:hover {
+	background: color-mix(in srgb, var(--vscode-button-secondaryBackground) 40%, transparent);
+	box-shadow: 0px 8px 24px 0px rgba(0, 0, 0, 0.3);
+}
+
+.onboarding-v2-choice-card.selected {
+	outline: 3px solid var(--vscode-button-background);
+}
+
+.onboarding-v2-choice-card.disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.onboarding-v2-choice-card.legacy {
+	width: 200px;
+	height: 180px;
+}
+
+.onboarding-v2-choice-card.new2 {
+	width: 300px;
+	min-height: 180px;
+}
+
+.onboarding-v2-choice-card .card-title {
+	font-size: 14px;
+	font-weight: 590;
+	opacity: 0.8;
+	color: var(--vscode-breadcrumb-activeSelectionForeground);
+}
+
+.onboarding-v2-choice-card .card-subtitle {
+	font-size: 12px;
+	color: var(--vscode-foreground);
+}
+
+.onboarding-v2-choice-card .card-description {
+	font-size: 12px;
+	color: var(--vscode-foreground);
+	opacity: 0.7;
+	text-align: left;
+	padding: 0 9px;
+}
+
+.onboarding-v2-choice-card .card-recommended {
+	font-size: 12px;
+	color: var(--vscode-terminal-ansiCyan);
+	padding-top: 2px;
+}
+
+.onboarding-v2-spinner {
+	animation: onboarding-v2-spin 1s linear infinite;
+	border-radius: 9999px;
+	height: 24px;
+	width: 24px;
+	border-top: 2px solid var(--vscode-editor-foreground);
+	border-bottom: 2px solid var(--vscode-editor-foreground);
+}
+
+@keyframes onboarding-v2-spin {
+	to { transform: rotate(360deg); }
+}
+
+.onboarding-v2-privacy-box {
+	background: var(--cursor-bg-secondary, var(--vscode-sideBar-background));
+	border-radius: 6px;
+	padding: 16px;
+	max-width: 580px;
+	font-size: 13px;
+	line-height: 1.7;
+	color: var(--vscode-foreground);
+}
+
+.onboarding-v2-privacy-box ul {
+	list-style: outside;
+	padding-left: 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	margin-top: 8px;
+}
+
+.onboarding-v2-privacy-box li,
+.onboarding-v2-privacy-box .privacy-intro {
+	opacity: 0.85;
+}
+
+.onboarding-v2-checkbox-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 16px;
+	font-size: 13px;
+	color: var(--vscode-foreground);
+}

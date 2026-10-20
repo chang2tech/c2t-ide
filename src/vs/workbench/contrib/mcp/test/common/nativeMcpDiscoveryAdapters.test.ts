@@ -187,6 +187,39 @@ suite('MCP Discovery - nativeMcpDiscoveryAdapters', () => {
 		]);
 	});
 
+	test('claudeConfigToServerDefinition parses the per-server Cursor networkMode (mcp-network-modes)', async () => {
+		const servers = {
+			'allowlisted': { command: 'my-cmd', networkMode: 'allowlist', allowedDomains: ['example.com'] },
+			'denied': { command: 'my-cmd', networkMode: 'denyAll' },
+			'unsandboxed': { command: 'my-cmd', networkMode: 'noSandbox' },
+			'open': { command: 'my-cmd', networkMode: 'allowAll' },
+			'remote-allowlisted': { url: 'https://example.com/mcp', networkMode: 'allowlist', allowedDomains: ['example.com'] },
+			'plain': { command: 'my-cmd' },
+		};
+		const defs = await claudeConfigToServerDefinition('prefix', VSBuffer.fromString(JSON.stringify({ mcpServers: servers })));
+		assert.ok(defs);
+
+		const byLabel = new Map(defs.map(d => [d.label, d]));
+		const stdioSandbox = (label: string) => {
+			const def = byLabel.get(label)!;
+			assert.strictEqual(def.launch.type, McpServerTransportType.Stdio);
+			return def.launch.type === McpServerTransportType.Stdio ? def.launch.sandbox : undefined;
+		};
+
+		assert.deepStrictEqual(stdioSandbox('allowlisted'), { network: { allowedDomains: ['example.com'] } });
+		assert.deepStrictEqual(stdioSandbox('denied'), { network: { allowedDomains: [] } });
+		assert.strictEqual(stdioSandbox('unsandboxed'), undefined);
+		assert.deepStrictEqual(stdioSandbox('open'), {});
+		// not configured: behavior unchanged (no sandbox config injected)
+		assert.strictEqual(stdioSandbox('plain'), undefined);
+
+		assert.deepStrictEqual(byLabel.get('allowlisted')!.cursorNetworkPolicy, { mode: 'allowlist', allowedDomains: ['example.com'] });
+		assert.deepStrictEqual(byLabel.get('denied')!.cursorNetworkPolicy, { mode: 'denyAll', allowedDomains: undefined });
+		// HTTP servers carry the policy on the definition (no sandbox field on HTTP launches)
+		assert.deepStrictEqual(byLabel.get('remote-allowlisted')!.cursorNetworkPolicy, { mode: 'allowlist', allowedDomains: ['example.com'] });
+		assert.strictEqual(byLabel.get('plain')!.cursorNetworkPolicy, undefined);
+	});
+
 	test('claudeConfigToServerDefinition forwards HTTP headers', async () => {
 		const contents = VSBuffer.fromString(JSON.stringify({
 			mcpServers: {

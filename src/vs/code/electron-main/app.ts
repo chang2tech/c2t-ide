@@ -42,6 +42,7 @@ import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/commo
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
+import { resolveStartupWindowRouting } from './startupWindowIntent.js';
 import { IEnvironmentMainService } from '../../platform/environment/electron-main/environmentMainService.js';
 import { isLaunchedFromCli } from '../../platform/environment/node/argvHelper.js';
 import { getResolvedShellEnv } from '../../platform/shell/node/shellEnv.js';
@@ -1549,27 +1550,52 @@ export class CodeApplication extends Disposable {
 		const context = isLaunchedFromCli(process.env) ? OpenContext.CLI : OpenContext.DESKTOP;
 		const args = this.environmentMainService.args;
 
-		// Handle agents window first based on context
-		if (args['agents']) {
-			return windowsMainService.openAgentsWindow({
-				context,
-				cli: args,
-				initialStartup: true
-			});
+		// IDE-CODE: Cursor-parity CLI window intents `--classic` / `--agents` /
+		// `--chat` / `--glass` (P0 cli-glass-classic-chat-flags). Precedence is
+		// resolveStartupWindowRouting's contract (classic > agents > chat >
+		// glass); `--classic` also suppresses the glass-on-startup preference
+		// below, mirroring "Disable glass mode and force classic windows".
+		// No dev-gating: binary evidence (Cursor 3.25.9 out/main.js, QA
+		// W38E2) shows zero app-side suppression of --glass/--classic —
+		// "(dev-only)" is NLS help text only — so both are effective here.
+		const routing = resolveStartupWindowRouting(args);
+		if (!routing.forceClassic) {
+			if (routing.intent === 'agents') {
+				return windowsMainService.openAgentsWindow({
+					context,
+					cli: args,
+					initialStartup: true
+				});
+			}
+			if (routing.intent === 'chat') {
+				return this.openStandaloneChatWindow(accessor, context, args);
+			}
+			if (routing.intent === 'glass') {
+				await windowsMainService.openOrFocusGlassWindow({
+					context,
+					cli: args,
+					initialStartup: true
+				});
+				return [];
+			}
 		}
 
 		// Check the user's preferred window kind for startup. When the
 		// `ide.window.openAgentsWindowOnStartup` setting is enabled, open the
-		// agents window instead of the default window.
-		const openAgentsWindowOnStartup = accessor.get(IConfigurationService).getValue<boolean>(
+		// IDE's dedicated Agents ("glass") window instead of the default
+		// window (F7: the analog of Cursor's `cursor.openOrFocusGlassWindow`,
+		// NOT the stock VS Code agent-sessions window).
+		// IDE-CODE: `--classic` suppresses this too ("force classic windows").
+		const openAgentsWindowOnStartup = !routing.forceClassic && accessor.get(IConfigurationService).getValue<boolean>(
 			OPEN_AGENTS_WINDOW_ON_STARTUP_CONFIG_KEY
 		);
 		if (openAgentsWindowOnStartup === true) {
-			return windowsMainService.openAgentsWindow({
+			await windowsMainService.openOrFocusGlassWindow({
 				context,
 				cli: args,
 				initialStartup: true
 			});
+			return [];
 		}
 
 		// Then check for windows from protocol links to open
@@ -1696,6 +1722,46 @@ export class CodeApplication extends Disposable {
 			forceProfile,
 			forceTempProfile
 		});
+	}
+
+	/**
+	 * IDE-CODE: implements the `--chat` CLI flag ("Open a standalone chat
+	 * window without the full IDE." — Cursor NLS 1905, binary-verified in
+	 * out/cli.js 3.25.6 + 3.25.9; P0 cli-glass-classic-chat-flags).
+	 *
+	 * Opens a dedicated new empty window whose CLI config carries
+	 * `chat: true` (mirroring the glass window's `glass: true` marker), then
+	 * asks the workbench to surface the REAL chat surface — the ide-agent
+	 * `ideAgent.chatView` webview, backed by the real sidecar engine — via
+	 * `vscode:openStandaloneChat` (same sendWhenReady pattern as
+	 * `vscode:openChatSession`). Never a stub: if the chat view cannot be
+	 * opened, the renderer logs the error instead of faking UI.
+	 *
+	 * HONEST DIVERGENCE: the flag's consumer IS observable in REA data:
+	 * in Cursor 3.25.9's glass bundle
+	 * (out/vs/workbench/workbench.glass.main.js @46995357,
+	 * `this.configuration.chat===!0`) `openSingleWorkspace` constructs
+	 * the workbench over a freshly created `div` instead of
+	 * `document.body` when `chat` is true. Only that container branch is
+	 * binary-verified here; this fork does not replicate the glass
+	 * workbench, so it opens a dedicated window focused on the real chat
+	 * view rather than a bespoke slim shell.
+	 */
+	private async openStandaloneChatWindow(accessor: ServicesAccessor, context: OpenContext, args: NativeParsedArgs): Promise<ICodeWindow[]> {
+		const windowsMainService = accessor.get(IWindowsMainService);
+
+		const cli: NativeParsedArgs = { ...args, chat: true, 'new-window': true };
+		const windows = await windowsMainService.open({
+			context,
+			cli,
+			forceNewWindow: true,
+			forceEmpty: true,
+			initialStartup: true
+		});
+
+		windows.at(0)?.sendWhenReady('vscode:openStandaloneChat', CancellationToken.None);
+
+		return windows;
 	}
 
 	private afterWindowOpen(instantiationService: IInstantiationService): void {

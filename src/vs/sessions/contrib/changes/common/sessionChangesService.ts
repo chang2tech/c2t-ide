@@ -20,6 +20,27 @@ export interface ISessionChangesEditorOptions extends IMultiDiffEditorOptions {
 	| { readonly kind: 'transient'; readonly changeset: ISessionChangeset };
 }
 
+/**
+ * Verbatim binary `workbench.editor.reviewchanges` input props (Cursor
+ * `workbench-open-changes-tab`; audit-fix-queue "Deepening closed"):
+ * {composerId, parentComposerId, initialMode, fromBugbot, scrollToFile,
+ * scrollToLine, scrollToReviewFile, fromBackgroundAgent, gitMode, gitModeLabel}.
+ * Cursor's reviewChangesEditor.js renderer internals are UNKNOWN; these props
+ * are the observed identity surface only.
+ */
+export interface IReviewChangesProps {
+	readonly composerId?: string;
+	readonly parentComposerId?: string;
+	readonly initialMode?: string;
+	readonly fromBugbot?: boolean;
+	readonly scrollToFile?: string;
+	readonly scrollToLine?: number;
+	readonly scrollToReviewFile?: string;
+	readonly fromBackgroundAgent?: boolean;
+	readonly gitMode?: boolean;
+	readonly gitModeLabel?: string;
+}
+
 /** Owns the identity and presentation state of a session's Changes editor. */
 export interface ISessionChangesService {
 	readonly _serviceBrand: undefined;
@@ -33,4 +54,14 @@ export interface ISessionChangesService {
 
 	/** Opens the Changes editor for a session. */
 	openChangesEditor(sessionResource: URI, options?: ISessionChangesEditorOptions, group?: PreferredGroup): Promise<IEditorGroup | undefined>;
+
+	/**
+	 * Opens the Review Changes editor for a session (Cursor
+	 * `workbench.editor.reviewchanges` analog; identity via
+	 * `reviewChangesTabIdentity.js`). [fork-local] rendered by the session
+	 * Changes editor infrastructure (which already carries changeset-review
+	 * affordances); Cursor's reviewChangesEditor.js internals are UNKNOWN and
+	 * are NOT reimplemented.
+	 */
+	openReviewChangesEditor(sessionResource: URI, reviewProps: IReviewChangesProps, options?: ISessionChangesEditorOptions, group?: PreferredGroup): Promise<IEditorGroup | undefined>;
 }

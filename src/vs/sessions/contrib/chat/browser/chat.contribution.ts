@@ -79,6 +79,7 @@ import { AGENT_SESSIONS_RESPONSE_SELECTION_MENU_SETTING } from './responseSelect
 import { AGENT_SESSIONS_CHAT_BACKGROUND_IMAGE_TINT_SETTING, SessionsChatBackgroundTint, ToggleChatBackgroundTintAction } from './chatBackgroundTint.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { sessionStorageCleanupSuggestionConfigurationMigration } from '../../sessionInputBanners/browser/sessionStorageCleanupConfiguration.js';
+import { USAGE_LIMIT_POLICY_SETTING } from '../../sessionInputBanners/browser/usageLimitPolicy.js';
 import { AGENT_SESSIONS_STORAGE_CLEANUP_SUGGESTION_SETTING, ISessionWorktreeCleanupService, MANAGE_AGENT_SESSION_WORKTREES_COMMAND_ID, SessionWorktreeCleanupService } from '../../sessionInputBanners/browser/sessionWorktreeCleanupService.js';
 import { SessionWorktreeCleanupEditorInput } from '../../sessionInputBanners/browser/sessionWorktreeCleanupEditorInput.js';
 import { SessionWorktreeCleanupEditor } from '../../sessionInputBanners/browser/sessionWorktreeCleanupEditor.js';
@@ -595,6 +596,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			tags: ['experimental'],
 			experiment: { mode: 'auto' },
 			description: localize('chat.agentSessions.sessionStorageCleanupSuggestion', "Controls whether the Agents Window suggests cleaning up session storage when inactive worktrees reach the count or reclaimable-storage threshold."),
+		},
+		[USAGE_LIMIT_POLICY_SETTING]: {
+			type: 'number',
+			default: 0,
+			minimum: 0,
+			scope: ConfigurationScope.APPLICATION,
+			description: localize('chat.agentSessions.usageLimitPolicy.limit', "Usage limit (in credits) for the Agents Window. When reported usage reaches this limit, a usage-limit tray banner is shown directly above the chat input. 0 means no limit is set."),
 		},
 		[LEGACY_UNIFIED_WORKSPACE_PICKER_SETTING]: {
 			type: 'boolean',

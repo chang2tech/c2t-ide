@@ -10,6 +10,7 @@ import { ResourceMap, ResourceSet } from '../../../base/common/map.js';
 import { URI } from '../../../base/common/uri.js';
 import { ILogService } from '../../log/common/log.js';
 import { IAgentHostCheckpointService, buildChatCheckpointRefName, buildCheckpointRefName } from '../common/agentHostCheckpointService.js';
+import { IAgentHostStorageCompareService } from '../common/agentHostStorageCompareService.js';
 import { AgentSession } from '../common/agent.js';
 import { ISessionDatabase, ISessionDataService, SESSION_CHECKPOINT_REPOSITORIES_METADATA_KEY } from '../common/sessionDataService.js';
 import { IAgentHostGitService } from '../common/agentHostGitService.js';
@@ -58,6 +59,9 @@ export class AgentHostCheckpointService extends Disposable implements IAgentHost
 		@IAgentHostGitService private readonly _gitService: IAgentHostGitService,
 		@ILogService private readonly _logService: ILogService,
 		@IAgentHostSessionStateStore private readonly _stateStore: IAgentHostSessionStateStore,
+		// Optional so direct constructions in unit tests keep working without
+		// a compare service; the DI container injects the real singleton.
+		@IAgentHostStorageCompareService private readonly _compareService?: IAgentHostStorageCompareService,
 	) {
 		super();
 		// Cleanup hook: when a session's or chat's data directory is about
@@ -125,6 +129,9 @@ export class AgentHostCheckpointService extends Disposable implements IAgentHost
 				// Update the baseline ref to point to the new commit
 				await this._gitService.updateRef(repositoryRootUri, baselineRefName, commit);
 				completedRepositories.add(repositoryRootUri);
+				// A committed checkpoint root is host-owned storage: schedule a
+				// debounced durability compare (Cursor class `pw` noteCheckpoint).
+				this._compareService?.noteCheckpoint(sessionUri);
 				this._logService.trace(`[AgentHostCheckpoint] Captured baseline for ${sessionUri.toString()} at ${baselineRefName} in working directory ${workingDirectoryUri.toString()}`);
 			} catch (err) {
 				this._logService.warn(`[AgentHostCheckpoint] Failed to capture baseline for ${sessionUri.toString()} in working directory ${workingDirectoryUri.toString()}`, err);
@@ -427,6 +434,9 @@ export class AgentHostCheckpointService extends Disposable implements IAgentHost
 				// Repositories first: a crash in between leaves a repository without a row, never a row without its repository.
 				await this._recordCheckpointRepositories(ref.object, capturedRepositories);
 				await ref.object.setTurnCheckpointRef(turnId, refName);
+				// A committed checkpoint root is host-owned storage: schedule a
+				// debounced durability compare (Cursor class `pw` noteCheckpoint).
+				this._compareService?.noteCheckpoint(sessionUri);
 			}
 		} catch (err) {
 			this._logService.warn(`[AgentHostCheckpoint] Failed to capture turn checkpoint for ${sessionUri.toString()}/${turnId}`, err);

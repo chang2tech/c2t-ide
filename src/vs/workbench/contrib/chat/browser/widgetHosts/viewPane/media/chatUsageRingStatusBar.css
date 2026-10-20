@@ -1,0 +1,144 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* Chat status bar: thin strip at the bottom of the chat surface holding the
+ * monthly usage ring on its trailing edge. Keep the height in sync with
+ * ChatUsageRingStatusBar.STRIP_HEIGHT (28px). */
+.chat-usage-ring-status-bar {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	height: 28px;
+	flex-shrink: 0;
+	padding: 0 10px;
+	box-sizing: border-box;
+	border-top: 1px solid var(--vscode-sideBarSectionHeader-border);
+}
+
+.chat-usage-ring-slot {
+	display: flex;
+	align-items: center;
+}
+
+.chat-usage-ring-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 5px;
+	cursor: pointer;
+	box-sizing: border-box;
+}
+
+.chat-usage-ring-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.chat-usage-ring-button:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.chat-usage-ring-button:active {
+	background-color: var(--vscode-toolbar-activeBackground);
+}
+
+.chat-usage-ring-button .usage-ring {
+	display: block;
+}
+
+.chat-usage-ring-button .usage-ring .usage-ring-bg {
+	stroke: var(--vscode-foreground);
+}
+
+.chat-usage-ring-button .usage-ring .usage-ring-arc {
+	stroke: var(--vscode-foreground);
+}
+
+/* Floating usage details panel, anchored over the conversation. */
+.chat-usage-details-panel {
+	position: absolute;
+	right: 12px;
+	bottom: 36px;
+	width: 280px;
+	z-index: 50;
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow);
+	box-sizing: border-box;
+	outline: none;
+}
+
+.chat-usage-details-panel:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.chat-usage-details-header {
+	padding: 10px 12px 4px;
+}
+
+.chat-usage-details-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chat-usage-details-body {
+	padding: 4px 12px 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.chat-usage-details-plan {
+	font-size: 12px;
+	color: var(--vscode-foreground);
+}
+
+.chat-usage-details-bar {
+	height: 6px;
+	border-radius: 3px;
+	background-color: color-mix(in srgb, var(--vscode-progressBar-background) 25%, transparent);
+	overflow: hidden;
+}
+
+.chat-usage-details-bar-fill {
+	height: 100%;
+	border-radius: 3px;
+	background-color: var(--vscode-progressBar-background);
+}
+
+.chat-usage-details-readout {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.chat-usage-details-footer {
+	padding: 4px 12px 12px;
+	display: flex;
+	justify-content: flex-end;
+}
+
+.chat-usage-details-footer-button {
+	background: transparent;
+	border: none;
+	color: var(--vscode-textLink-foreground);
+	font-size: 12px;
+	cursor: pointer;
+	padding: 4px 6px;
+	border-radius: 4px;
+}
+
+.chat-usage-details-footer-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	text-decoration: underline;
+}
+
+.chat-usage-details-footer-button:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}

@@ -18,6 +18,7 @@ import { CHANGES_VIEW_CONTAINER_ID, CHANGES_VIEW_ID, SESSIONS_CHANGES_OPEN_SINGL
 import { ChangesViewPane, DesktopChangesViewPane, ChangesViewPaneContainer } from './changesView.js';
 import { SessionChangesEditor } from './sessionChangesEditor.js';
 import { SessionChangesEditorInput, SessionChangesEditorSerializer } from './sessionChangesEditorInput.js';
+import { SessionReviewChangesEditorInput, SessionReviewChangesEditorSerializer } from './sessionReviewChangesEditor.js';
 import { IsPhoneLayoutContext, SessionHasWorkspaceContext } from '../../../common/contextkeys.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { ISessionChangesService, SessionChangesService } from './sessionChangesService.js';
@@ -25,11 +26,13 @@ import './changesActions.js';
 import './changesViewActions.js';
 import './changesetReviewActions.js';
 import './checksActions.js';
+import './openChangesTabCommand.js';
 import './sessionSyncChanges.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ChangesViewService } from './changesViewService.js';
 import { IChangesViewService } from '../common/changesViewService.js';
+import { PREFER_CHANGES_AS_DEFAULT_SETTING } from './openChangesTabCommand.js';
 import { AccessibleViewRegistry } from '../../../../platform/accessibility/browser/accessibleViewRegistry.js';
 import { SessionsChangesAccessibilityHelp } from './sessionsChangesAccessibilityHelp.js';
 import { AgentWorkbenchLayout, IAgentWorkbenchLayoutService } from '../../../browser/workbench.js';
@@ -58,9 +61,19 @@ class DesktopChangesEditorContribution extends Disposable implements IWorkbenchC
 			[new SyncDescriptor(SessionChangesEditorInput)]
 		));
 
+		this._register(Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+			EditorPaneDescriptor.create(SessionChangesEditor, SessionReviewChangesEditorInput.EDITOR_ID, localize('sessionReviewChangesEditor.label', "Review Changes")),
+			[new SyncDescriptor(SessionReviewChangesEditorInput)]
+		));
+
 		this._register(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
 			SessionChangesEditorInput.ID,
 			SessionChangesEditorSerializer
+		));
+
+		this._register(Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
+			SessionReviewChangesEditorInput.ID,
+			SessionReviewChangesEditorSerializer
 		));
 	}
 }
@@ -140,6 +153,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			tags: ['preview'],
 			description: localize('sessions.changes.openSingleFileDiff', "Controls whether clicking a file in the Changes view opens a single file diff editor instead of the multi file diff editor."),
 			default: false,
+		},
+		[PREFER_CHANGES_AS_DEFAULT_SETTING]: {
+			type: 'boolean',
+			description: localize('ide.changes.preferChangesAsDefault', "Prefer the Changes tab as the default action when opening a new tab (Cursor parity: preferChangesAsDefault)."),
+			default: true,
 		},
 	},
 });

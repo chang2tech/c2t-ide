@@ -13,7 +13,7 @@ import { ChatModeKind } from '../../constants.js';
 import { ILanguageModelChatMetadata, ILanguageModelsService } from '../../languageModels.js';
 import { ILanguageModelToolsService, SpecedToolAliases } from '../../tools/languageModelToolsService.js';
 import { PromptsType, Target } from '../promptTypes.js';
-import { ISequenceValue, IHeaderAttribute, IScalarValue, isPromptFileTildePath, parseCommaSeparatedList, ParsedPromptFile, PromptHeader, IValue, PromptHeaderAttributes } from '../promptFileParser.js';
+import { ISequenceValue, IHeaderAttribute, IScalarValue, isPromptFileTildePath, parseCommaSeparatedList, ParsedPromptFile, PromptHeader, IValue, PromptHeaderAttributes, SKILL_BADGE_COLORS, isValidSkillBadgeColor } from '../promptFileParser.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { IPromptsService } from '../service/promptsService.js';
@@ -288,6 +288,8 @@ export class PromptValidator {
 			case PromptsType.skill:
 				this.validateUserInvocable(attributes, report);
 				this.validateDisableModelInvocation(attributes, report);
+				this.validatePaths(attributes, report);
+				this.validateSkillBadgeAttributes(attributes, report);
 				break;
 		}
 	}
@@ -966,6 +968,19 @@ export class PromptValidator {
 		}
 	}
 
+	private validateSkillBadgeAttributes(attributes: IHeaderAttribute[], report: (markers: IMarkerData) => void): undefined {
+		const colorAttribute = attributes.find(attr => attr.key === PromptHeaderAttributes.color);
+		if (colorAttribute) {
+			if (colorAttribute.value.type !== 'scalar' || !isValidSkillBadgeColor(colorAttribute.value.value.trim())) {
+				report(toMarker(localize('promptValidator.skillColorMustBeValid', "The 'color' attribute must be one of: {0}.", SKILL_BADGE_COLORS.join(', ')), colorAttribute.value.range, MarkerSeverity.Error));
+			}
+		}
+		const iconAttribute = attributes.find(attr => attr.key === PromptHeaderAttributes.icon);
+		if (iconAttribute && iconAttribute.value.type !== 'scalar') {
+			report(toMarker(localize('promptValidator.skillIconMustBeScalar', "The 'icon' attribute must be a string."), iconAttribute.value.range, MarkerSeverity.Error));
+		}
+	}
+
 	private async validateAgentsAttribute(attributes: IHeaderAttribute[], header: PromptHeader, report: (markers: IMarkerData) => void): Promise<undefined> {
 		const attribute = attributes.find(attr => attr.key === PromptHeaderAttributes.agents);
 		if (!attribute) {
@@ -1065,7 +1080,7 @@ const allAttributeNames: Record<PromptsType, string[]> = {
 	[PromptsType.prompt]: [PromptHeaderAttributes.name, PromptHeaderAttributes.description, PromptHeaderAttributes.model, PromptHeaderAttributes.tools, PromptHeaderAttributes.mode, PromptHeaderAttributes.agent, PromptHeaderAttributes.argumentHint],
 	[PromptsType.instructions]: [PromptHeaderAttributes.name, PromptHeaderAttributes.description, PromptHeaderAttributes.applyTo, PromptHeaderAttributes.excludeAgent],
 	[PromptsType.agent]: [PromptHeaderAttributes.name, PromptHeaderAttributes.description, PromptHeaderAttributes.model, PromptHeaderAttributes.reasoningEffort, PromptHeaderAttributes.tools, PromptHeaderAttributes.advancedOptions, PromptHeaderAttributes.handOffs, PromptHeaderAttributes.argumentHint, PromptHeaderAttributes.target, PromptHeaderAttributes.infer, PromptHeaderAttributes.agents, PromptHeaderAttributes.hooks, PromptHeaderAttributes.userInvocable, PromptHeaderAttributes.disableModelInvocation, GithubPromptHeaderAttributes.github],
-	[PromptsType.skill]: [PromptHeaderAttributes.name, PromptHeaderAttributes.description, PromptHeaderAttributes.license, PromptHeaderAttributes.compatibility, PromptHeaderAttributes.metadata, PromptHeaderAttributes.argumentHint, PromptHeaderAttributes.userInvocable, PromptHeaderAttributes.disableModelInvocation, PromptHeaderAttributes.context],
+	[PromptsType.skill]: [PromptHeaderAttributes.name, PromptHeaderAttributes.description, PromptHeaderAttributes.paths, PromptHeaderAttributes.icon, PromptHeaderAttributes.color, PromptHeaderAttributes.license, PromptHeaderAttributes.compatibility, PromptHeaderAttributes.metadata, PromptHeaderAttributes.argumentHint, PromptHeaderAttributes.userInvocable, PromptHeaderAttributes.disableModelInvocation, PromptHeaderAttributes.context],
 	[PromptsType.hook]: [], // hooks are JSON files, not markdown with YAML frontmatter
 };
 const githubCopilotAgentAttributeNames = [PromptHeaderAttributes.name, PromptHeaderAttributes.description, PromptHeaderAttributes.tools, PromptHeaderAttributes.target, PromptHeaderAttributes.model, PromptHeaderAttributes.reasoningEffort, GithubPromptHeaderAttributes.mcpServers, GithubPromptHeaderAttributes.github, PromptHeaderAttributes.infer];
@@ -1127,6 +1142,12 @@ export function getAttributeDescription(attributeName: string, promptType: Promp
 					return localize('promptHeader.skill.userInvocable', 'Set to false to hide from the / menu. Use for background knowledge users should not invoke directly. Default: true.');
 				case PromptHeaderAttributes.disableModelInvocation:
 					return localize('promptHeader.skill.disableModelInvocation', 'Set to true to prevent the agent from automatically loading this skill. Use for workflows you want to trigger manually with /name. Default: false.');
+				case PromptHeaderAttributes.paths:
+					return localize('promptHeader.skill.paths', 'Array of glob patterns that scope the skill to specific files. The skill is considered when the context contains a matching file.');
+				case PromptHeaderAttributes.icon:
+					return localize('promptHeader.skill.icon', 'Badge icon for the skill.');
+				case PromptHeaderAttributes.color:
+					return localize('promptHeader.skill.color', 'Badge color for the skill.');
 			}
 			break;
 		case PromptsType.agent:

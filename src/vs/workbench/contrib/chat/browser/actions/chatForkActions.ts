@@ -9,7 +9,7 @@ import { revive } from '../../../../../base/common/marshalling.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { localize, localize2 } from '../../../../../nls.js';
-import { Action2, MenuId } from '../../../../../platform/actions/common/actions.js';
+import { Action2, IAction2Options, MenuId } from '../../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr } from '../../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ChatContextKeyExprs, ChatContextKeys } from '../../common/actions/chatContextKeys.js';
@@ -28,7 +28,7 @@ export interface IForkConversationOptions {
 }
 
 export class ForkConversationAction extends Action2 {
-	constructor() {
+	constructor(actionOverrides?: IAction2Options) {
 		super({
 			id: ForkConversationActionId,
 			title: localize2('chat.forkConversation.label', "Fork Conversation"),
@@ -52,8 +52,20 @@ export class ForkConversationAction extends Action2 {
 						ChatContextKeys.readOnly.negate()
 					)
 				}
-			]
+			],
+			...actionOverrides
 		});
+	}
+
+	/**
+	 * Maps a message to the last request index (inclusive) copied into the forked
+	 * session. The checkpoint fork branches from the checkpoint BEFORE the selected
+	 * request, so a selected request is excluded (`requestIndex - 1`); responses are
+	 * included. Subclasses (e.g. Duplicate Chat) can override this to change the
+	 * truncation semantics.
+	 */
+	protected _getForkTargetRequestIndex(isRequestItem: boolean, requestIndex: number): number {
+		return isRequestItem ? Math.max(0, requestIndex - 1) : requestIndex;
 	}
 
 	async run(accessor: ServicesAccessor, ...args: unknown[]) {
@@ -196,14 +208,14 @@ export class ForkConversationAction extends Action2 {
 					requestIndex += 1;
 				}
 				if (entry.id === item?.id) {
-					targetIndex = isRequestVM(entry) ? Math.max(0, requestIndex - 1) : requestIndex;
+					targetIndex = this._getForkTargetRequestIndex(isRequestVM(entry), requestIndex);
 					break;
 				}
 			}
 		}
 		if (targetIndex < 0) {
 			const requestIndex = chatModel.getRequests().findIndex(r => r.id === targetRequestId);
-			targetIndex = isRequestItem ? Math.max(0, requestIndex - 1) : requestIndex;
+			targetIndex = this._getForkTargetRequestIndex(isRequestItem, requestIndex);
 		}
 		if (targetIndex < 0) {
 			return;

@@ -88,8 +88,25 @@ export namespace PromptHeaderAttributes {
 	export const agents = 'agents';
 	export const userInvocable = 'user-invocable';
 	export const disableModelInvocation = 'disable-model-invocation';
+	export const icon = 'icon';
+	export const color = 'color';
 	export const hooks = 'hooks';
 	export const context = 'context';
+}
+
+/**
+ * Badge color palette for skills (`color` frontmatter attribute).
+ * Verbatim from the Cursor skills documentation.
+ */
+export const SKILL_BADGE_COLORS = ['default', 'green', 'cyan', 'blue', 'purple', 'magenta', 'orange', 'yellow', 'red', 'brand'] as const;
+
+export type SkillBadgeColor = (typeof SKILL_BADGE_COLORS)[number];
+
+/**
+ * Checks whether a value is a valid skill badge color.
+ */
+export function isValidSkillBadgeColor(value: string): value is SkillBadgeColor {
+	return (SKILL_BADGE_COLORS as readonly string[]).includes(value);
 }
 
 export class PromptHeader {
@@ -320,6 +337,53 @@ export class PromptHeader {
 
 	public get disableModelInvocation(): boolean | undefined {
 		return this.getBooleanAttribute(PromptHeaderAttributes.disableModelInvocation);
+	}
+
+	/**
+	 * Gets the 'icon' attribute from the header: the badge icon for the skill.
+	 */
+	public get icon(): string | undefined {
+		return this.getStringAttribute(PromptHeaderAttributes.icon);
+	}
+
+	/**
+	 * Gets the 'color' attribute from the header: the badge color for the skill.
+	 * Must be one of {@link SKILL_BADGE_COLORS}; invalid values return undefined.
+	 */
+	public get color(): SkillBadgeColor | undefined {
+		const color = this.getStringAttribute(PromptHeaderAttributes.color);
+		return color !== undefined && isValidSkillBadgeColor(color) ? color : undefined;
+	}
+
+	/**
+	 * Gets the 'metadata' attribute from the header as an arbitrary key/value
+	 * map. Scalar values are returned as strings, with 'true'/'false'
+	 * coerced to booleans and numeric strings coerced to numbers.
+	 */
+	public get metadata(): Record<string, string | boolean | number> | undefined {
+		const attribute = this._parsedHeader.attributes.find(attr => attr.key === PromptHeaderAttributes.metadata);
+		if (attribute?.value.type !== 'map') {
+			return undefined;
+		}
+		const result: Record<string, string | boolean | number> = {};
+		for (const property of attribute.value.properties) {
+			if (property.key.type === 'scalar' && property.value.type === 'scalar') {
+				const key = property.key.value;
+				const rawValue = property.value.value;
+				if (key === undefined || rawValue === undefined) {
+					continue;
+				}
+				const lowered = rawValue.toLowerCase();
+				if (lowered === 'true' || lowered === 'false') {
+					result[key] = lowered === 'true';
+				} else if (rawValue !== '' && !isNaN(Number(rawValue))) {
+					result[key] = Number(rawValue);
+				} else {
+					result[key] = rawValue;
+				}
+			}
+		}
+		return result;
 	}
 
 	public get context(): string | undefined {

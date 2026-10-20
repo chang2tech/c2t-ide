@@ -35,6 +35,15 @@ export interface Subcommand<T> {
 	description?: string;
 	deprecationMessage?: string;
 	options: OptionDescriptions<Required<T>>;
+	/**
+	 * IDE-CODE: documents a dash-flag form of this subcommand (e.g. `--chat`
+	 * alongside the positional `chat <prompt>` subcommand — Cursor's public
+	 * bool flag "Open a standalone chat window without the full IDE.", NLS
+	 * 1905, binary-verified in out/cli.js 3.25.6 + 3.25.9). buildHelpMessage
+	 * renders it as a `--<id>` boolean flag in the given help category, so
+	 * `ide-code --help` advertises the same public flags as Cursor's --help.
+	 */
+	flagForm?: { cat: keyof typeof helpCategories; description: string };
 }
 
 export type OptionDescriptions<T> = {
@@ -51,6 +60,13 @@ export const OPTIONS: OptionDescriptions<Required<NativeParsedArgs>> = {
 	'chat': {
 		type: 'subcommand',
 		description: 'Pass in a prompt to run in a chat session in the current working directory.',
+		// IDE-CODE: Cursor's public `--chat` bool flag ("Open a standalone chat
+		// window without the full IDE.", NLS 1905, binary-verified in out/cli.js
+		// 3.25.6 + 3.25.9). The dash form is preserved as `chat: true` by
+		// parseArgs (see below) and opens the standalone chat window (see
+		// openStandaloneChatWindow in electron-main/app.ts). Advertised here so
+		// `ide-code --help` shows the same public flags as Cursor's --help.
+		flagForm: { cat: 'o', description: localize('standaloneChat', "Open a standalone chat window without the full IDE.") },
 		options: {
 			'_': { type: 'string[]', description: localize('prompt', "The prompt to use as chat.") },
 			'mode': { type: 'string', cat: 'o', alias: 'm', args: 'mode', description: localize('chatMode', "The mode to use for the chat session. Available options: 'ask', 'edit', 'agent', or the identifier of a custom mode. Defaults to 'agent'.") },
@@ -109,6 +125,16 @@ export const OPTIONS: OptionDescriptions<Required<NativeParsedArgs>> = {
 	'new-window': { type: 'boolean', cat: 'o', alias: 'n', description: localize('newWindow', "Force to open a new window.") },
 	'reuse-window': { type: 'boolean', cat: 'o', alias: 'r', description: localize('reuseWindow', "Force to open a file or folder in an already opened window.") },
 	'agents': { type: 'boolean', cat: 'o', deprecates: ['sessions'], description: localize('agents', "Opens the agents window. If a folder is provided, opens a new session with that folder selected.") },
+	// IDE-CODE: Cursor's `--glass` (binary out/cli.js 3.25.6 + 3.25.9, NLS
+	// 1873). Description kept VERBATIM from Cursor's NLS — including the
+	// "(dev-only)" marker, which is Cursor's entire observable gating for
+	// this flag (it stays public, cat "o", in both binaries). Behaviorally it
+	// opens the dedicated Agents ("glass") window (see openFirstWindow).
+	'glass': { type: 'boolean', cat: 'o', description: localize('glass', "Enable the multi-workbench architecture (dev-only).") },
+	// IDE-CODE: Cursor's `--classic` (binary out/cli.js 3.25.6 + 3.25.9, NLS
+	// 1874). Verbatim description, same "(dev-only)" marker as Cursor.
+	// Forces a classic window, suppressing glass/agents routing.
+	'classic': { type: 'boolean', cat: 'o', description: localize('classic', "Disable glass mode and force classic windows (dev-only).") },
 	'session-title-base64': { type: 'string' },
 	'wait': { type: 'boolean', cat: 'o', alias: 'w', description: localize('wait', "Wait for the files to be closed before returning.") },
 	'waitMarkerFilePath': { type: 'string' },
@@ -185,6 +211,8 @@ export const OPTIONS: OptionDescriptions<Required<NativeParsedArgs>> = {
 	'logExtensionHostCommunication': { type: 'boolean' },
 	'skip-release-notes': { type: 'boolean' },
 	'skip-welcome': { type: 'boolean' },
+	// IDE-CODE (GAPS-148): see common/argv.ts — Cursor's --skip-onboarding.
+	'skip-onboarding': { type: 'boolean' },
 	'disable-telemetry': { type: 'boolean' },
 	'telemetry-level': { type: 'string' },
 	'disable-updates': { type: 'boolean' },
@@ -362,6 +390,17 @@ export function parseArgs<T>(args: string[], options: OptionDescriptions<T>, err
 	for (const optionId in options) {
 		const o = options[optionId];
 		if (o.type === 'subcommand') {
+			// IDE-CODE: a subcommand-typed option given in DASH form
+			// (`--chat`) is not the positional subcommand (`chat <prompt>`);
+			// minimist parses it as boolean `true`. Preserve it (Cursor's
+			// public `--chat` flag: "Open a standalone chat window without
+			// the full IDE.") instead of dropping it as unknown, so the
+			// main process can tell the flag form (`chat === true`) apart
+			// from the subcommand form (`chat` = options object).
+			if (remainingArgs[optionId] === true) {
+				cleanedArgs[optionId] = true;
+			}
+			delete remainingArgs[optionId];
 			continue;
 		}
 		if (o.alias) {
@@ -505,6 +544,17 @@ export function buildHelpMessage(productName: string, executableName: string, ve
 		if (o.type === 'subcommand') {
 			if (o.description) {
 				subcommands.push({ command: optionId, description: o.description });
+			}
+			// IDE-CODE: a subcommand with a dash-flag form (see Subcommand.flagForm,
+			// e.g. Cursor's public `--chat`) is also advertised as a `--<id>`
+			// boolean flag in its help category, mirroring Cursor's --help.
+			if (o.flagForm?.description) {
+				const cat = o.flagForm.cat;
+				let optionsByCat = optionsByCategory[cat];
+				if (!optionsByCat) {
+					optionsByCategory[cat] = optionsByCat = {};
+				}
+				optionsByCat[optionId] = { type: 'boolean', description: o.flagForm.description };
 			}
 		} else if (o.description && o.cat) {
 			const cat = o.cat;

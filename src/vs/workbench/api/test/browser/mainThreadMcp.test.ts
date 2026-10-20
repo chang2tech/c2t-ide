@@ -193,7 +193,7 @@ suite('MainThreadMcp - launch', () => {
 		assert.strictEqual(URI.revive(startOptions.defaultCwd).toString(), defaultCwd.toString());
 	});
 
-	test('expands environment variables in the extension host only for flagged definitions', async () => {
+	test('forwards launches to the extension host for expansion; cursor variables do not require the expansion flag', async () => {
 		const requests: Parameters<ExtHostMcpShape['$expandEnvironmentVariables']>[] = [];
 		const proxy: Partial<ExtHostMcpShape> = {
 			async $expandEnvironmentVariables(launch, expansion) {
@@ -221,12 +221,16 @@ suite('MainThreadMcp - launch', () => {
 		const expanded = await capturedDelegate.expandEnvironmentVariables({ ...definition, environmentVariableExpansion: { url } }, launch);
 
 		assert.deepStrictEqual({
-			unflaggedIsSame: unflagged === launch,
+			// The proxy is now always consulted so Cursor-style variables
+			// (${env:}, ${userHome}, ...) resolve even when the definition
+			// does not opt into the Copilot-runtime expansion; the expansion
+			// argument is undefined in that case.
 			requests: requests.map(([, expansion]) => expansion),
+			unflagged: unflagged.type === McpServerTransportType.HTTP ? { isUri: URI.isUri(unflagged.uri), url: unflagged.uri.toString(true), headers: unflagged.headers } : undefined,
 			expanded: expanded.type === McpServerTransportType.HTTP ? { isUri: URI.isUri(expanded.uri), url: expanded.uri.toString(true), headers: expanded.headers } : undefined,
 		}, {
-			unflaggedIsSame: true,
-			requests: [{ url }],
+			requests: [undefined, { url }],
+			unflagged: { isUri: true, url: 'https://expanded.example/mcp', headers: [['Authorization', 'Bearer expanded']] },
 			expanded: { isUri: true, url: 'https://expanded.example/mcp', headers: [['Authorization', 'Bearer expanded']] },
 		});
 	});

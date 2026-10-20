@@ -18,6 +18,7 @@ import { StreamSplitter } from '../../../base/node/nodeStreams.js';
 import { findExecutable } from '../../../base/node/processes.js';
 import { LogLevel } from '../../../platform/log/common/log.js';
 import { expandEnvironmentVariablesInLaunch } from '../../contrib/mcp/common/mcpEnvironmentVariableExpansion.js';
+import { resolveCursorMcpVariablesInLaunch } from '../../contrib/mcp/common/cursorMcpVariables.js';
 import { McpConnectionState, McpServerEnvironmentVariableExpansion, McpServerLaunch, McpServerTransportStdio, McpServerTransportType } from '../../contrib/mcp/common/mcpTypes.js';
 import { McpStdioStateHandler } from '../../contrib/mcp/node/mcpStdioStateHandler.js';
 import { CommonRequestInit, CommonResponse, ExtHostMcpService, McpHTTPHandle } from '../common/extHostMcp.js';
@@ -35,8 +36,21 @@ export class NodeExtHostMpcService extends ExtHostMcpService {
 		}
 	}
 
-	override async $expandEnvironmentVariables(launch: McpServerLaunch.Serialized, expansion: McpServerEnvironmentVariableExpansion): Promise<McpServerLaunch.Serialized> {
-		return McpServerLaunch.toSerialized(expandEnvironmentVariablesInLaunch(McpServerLaunch.fromSerialized(launch), expansion, {
+	override async $expandEnvironmentVariables(launch: McpServerLaunch.Serialized, expansion: McpServerEnvironmentVariableExpansion | undefined): Promise<McpServerLaunch.Serialized> {
+		// Cursor-style variables (${env:}, ${userHome}, ${workspaceFolder}, ...)
+		// resolve unconditionally; the Copilot-runtime expansion additionally
+		// requires the definition to opt in via `environmentVariableExpansion`.
+		const cursorResolved = resolveCursorMcpVariablesInLaunch(McpServerLaunch.fromSerialized(launch), {
+			env: process.env,
+			userHome: homedir(),
+			workspaceFolder: this._workspaceService.getWorkspaceFolders()?.[0]?.uri.fsPath,
+			pathSeparator: path.sep,
+			caseInsensitive: isWindows,
+		});
+		if (!expansion) {
+			return McpServerLaunch.toSerialized(cursorResolved);
+		}
+		return McpServerLaunch.toSerialized(expandEnvironmentVariablesInLaunch(cursorResolved, expansion, {
 			env: process.env,
 			caseInsensitive: isWindows,
 		}));

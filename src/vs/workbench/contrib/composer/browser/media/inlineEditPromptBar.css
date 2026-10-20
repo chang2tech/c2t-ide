@@ -1,0 +1,250 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* IDE-CODE: styles for the Cmd+K prompt bar view zone (PromptBarViewZone).
+ * The zone itself is full-width; the bar floats inside it with side margins,
+ * like Cursor's prompt bar. The `inline-diff-pending` classes carry the
+ * binary-verified diff colors (docs/rea/dig-continuous-inline-edit-2026-10-19.md §5). */
+
+.ide-prompt-bar {
+	margin: 6px 16px 2px 16px;
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 8px;
+	box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25));
+	padding: 6px 8px;
+	box-sizing: border-box;
+}
+
+.ide-prompt-bar-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+}
+
+.ide-prompt-bar-mode {
+	flex: 0 0 auto;
+	background: var(--vscode-button-secondaryBackground, transparent);
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 6px;
+	padding: 3px 8px;
+	font-size: 12px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.ide-prompt-bar-mode:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.ide-prompt-bar-input {
+	flex: 1 1 auto;
+	min-width: 0;
+	resize: none;
+	overflow: hidden;
+	background: transparent;
+	color: var(--vscode-input-foreground, var(--vscode-foreground));
+	border: none;
+	outline: none;
+	font-family: var(--vscode-editor-font-family);
+	font-size: var(--vscode-editor-font-size, 13px);
+	line-height: 1.5;
+	padding: 3px 2px;
+}
+
+.ide-prompt-bar-input::placeholder {
+	color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
+}
+
+.ide-prompt-bar-model,
+.ide-prompt-bar-submit {
+	flex: 0 0 auto;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	border: 1px solid transparent;
+	border-radius: 6px;
+	padding: 3px 8px;
+	font-size: 12px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.ide-prompt-bar-model:hover,
+.ide-prompt-bar-submit:hover {
+	color: var(--vscode-foreground);
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.ide-prompt-bar-menu {
+	margin-top: 4px;
+	background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+	border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border));
+	border-radius: 6px;
+	padding: 4px;
+	box-shadow: 0 4px 12px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25));
+}
+
+.ide-prompt-bar-menu-item {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	width: 100%;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	padding: 5px 8px;
+	font-size: 12.5px;
+	color: var(--vscode-menu-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	text-align: left;
+}
+
+.ide-prompt-bar-menu-item:hover {
+	background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground));
+	color: var(--vscode-menu-selectionForeground, var(--vscode-list-activeSelectionForeground));
+}
+
+.ide-prompt-bar-menu-item.checked .ide-prompt-bar-menu-label {
+	font-weight: 600;
+}
+
+.ide-prompt-bar-menu-shortcut {
+	margin-left: 24px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11.5px;
+}
+
+/* ---- diff decorations (binary-verified colors, glass workbench.desktop.main.css) ---- */
+
+/* Pending region while the prompt bar is open. */
+.inline-diff-pending {
+	background-color: var(--vscode-diffEditor-unchangedCodeBackground, hsla(0, 0%, 71%, 0.4));
+}
+
+.inline-diff-pending-unthemed {
+	background-color: hsla(0, 0%, 71%, 0.4);
+}
+
+/* Added lines of the applied preview (themed/plain via ide.cmdk.useThemedDiffBackground). */
+.composer-inline-edit-added {
+	background: var(--vscode-diffEditor-insertedTextBackground);
+}
+
+.composer-inline-edit-added-plain {
+	background: rgba(120, 180, 90, 0.25);
+}
+
+/* ---- inline-diff deleted-code margin (DEV-GAPS-53, Cursor inlineDiffDeletedCodeMargin.js) ---- */
+
+.inline-diff-deleted-code-margin {
+	position: absolute;
+	right: 12px;
+	width: 320px;
+	max-width: 40%;
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+	z-index: 30;
+	font-family: var(--vscode-editor-font-family);
+	font-size: calc(var(--vscode-editor-font-size) * 0.92);
+	overflow: hidden;
+}
+
+.inline-diff-deleted-code-margin-header {
+	padding: 6px 10px;
+	font-weight: 600;
+	color: var(--vscode-diffEditor-removedTextForeground, var(--vscode-errorForeground));
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.inline-diff-deleted-code-margin-body {
+	max-height: 240px;
+	overflow-y: auto;
+	padding: 4px 0;
+}
+
+.inline-diff-deleted-code-margin-hunk {
+	padding: 4px 10px 2px;
+	font-size: 0.85em;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+}
+
+.inline-diff-deleted-code-margin-row {
+	display: flex;
+	padding: 1px 10px;
+	color: var(--vscode-diffEditor-removedTextForeground, inherit);
+}
+
+.inline-diff-deleted-code-margin-row .inline-diff-deleted-code-margin-code {
+	text-decoration: line-through;
+	opacity: 0.85;
+	white-space: pre;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.inline-diff-deleted-code-margin-lineno {
+	min-width: 2.5em;
+	text-align: right;
+	margin-right: 8px;
+	color: var(--vscode-editorLineNumber-foreground);
+	user-select: none;
+}
+
+.inline-diff-deleted-code-margin-more {
+	padding: 3px 10px;
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+}
+
+/* ---- inline-diff partial widget (DEV-GAPS-53, Cursor inlineDiffPartialWidget) ---- */
+
+.inline-diff-partial-widget {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 8px;
+	height: 30px;
+	box-sizing: border-box;
+}
+
+.inline-diff-partial-widget-label {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	user-select: none;
+}
+
+.inline-diff-partial-widget-button {
+	font-size: 12px;
+	padding: 2px 10px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	cursor: pointer;
+}
+
+.inline-diff-partial-widget-accept {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.inline-diff-partial-widget-accept:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.inline-diff-partial-widget-reject {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.inline-diff-partial-widget-reject:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}

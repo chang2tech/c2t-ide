@@ -270,6 +270,12 @@ export class BrowserWorkbenchEnvironmentService implements IBrowserWorkbenchEnvi
 	@memoize
 	get skipWelcome(): boolean { return this.payload?.get('skipWelcome') === 'true'; }
 
+	// IDE-CODE (GAPS-148): binary getter is
+	// `this.payload?.get("skipOnboarding")==="true"` (Cursor 3.25.9
+	// workbench.desktop.main.js @18758384).
+	@memoize
+	get skipOnboarding(): boolean { return this.payload?.get('skipOnboarding') === 'true'; }
+
 	@memoize
 	get disableWorkspaceTrust(): boolean { return !this.options.enableWorkspaceTrust; }
 

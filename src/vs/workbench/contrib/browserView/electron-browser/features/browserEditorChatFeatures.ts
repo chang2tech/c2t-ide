@@ -24,7 +24,7 @@ import { ITelemetryService } from '../../../../../platform/telemetry/common/tele
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IChatWidget, IChatWidgetService } from '../../../chat/browser/chat.js';
-import { IChatService } from '../../../chat/common/chatService/chatService.js';
+import { IChatService, ChatRequestQueueKind } from '../../../chat/common/chatService/chatService.js';
 import { IChatRequestVariableEntry } from '../../../chat/common/attachments/chatVariableEntries.js';
 import { ChatContextKeys } from '../../../chat/common/actions/chatContextKeys.js';
 import { BrowserElementSelectionMode, IBrowserElementSelectionOptions, IElementData, IElementAncestor, BrowserViewCommandId } from '../../../../../platform/browserView/common/browserView.js';
@@ -77,12 +77,45 @@ const IdeBrowserChatTargetSettingId = 'ide.browser.chatTarget';
 const IdeBrowserAttachToChatCommandId = 'ide.browserAttachToChat';
 
 /**
+ * IDE-CODE: Convert a workbench chat entry to the plain JSON payload the
+ * `ide-agent` extension understands. Exported for unit testing.
+ */
+export function toIdeBrowserChatAttachment(entry: IChatRequestVariableEntry): IIdeBrowserChatAttachment {
+	// Image bytes arrive either as `imageData`/`imageMimeType` (element
+	// entries) or as `value`/`mimeType` (image entries, e.g. screenshots).
+	const imageData = 'imageData' in entry
+		? entry.imageData
+		: (entry.kind === 'image' && entry.value instanceof Uint8Array ? entry.value : undefined);
+	const imageBase64 = imageData instanceof Uint8Array
+		? encodeBase64(VSBuffer.wrap(imageData))
+		: undefined;
+	const imageMimeType = 'imageMimeType' in entry
+		? entry.imageMimeType
+		: (entry.kind === 'image' ? entry.mimeType : undefined);
+	const kind: IIdeBrowserChatAttachment['kind'] = entry.kind === 'image'
+		? (entry.id.startsWith('browser-area-screenshot') ? 'areaScreenshot'
+			: entry.id.startsWith('browser-fullpage-screenshot') ? 'fullPageScreenshot'
+			: entry.id.startsWith('browser-design-annotation') ? 'designAnnotation'
+			: 'screenshot')
+		: entry.id.startsWith('browser-voice-input') ? 'voiceInput'
+		: entry.id.startsWith('console-logs') ? 'consoleLogs' : 'element';
+	return {
+		kind,
+		name: entry.name,
+		text: typeof entry.value === 'string' ? entry.value : '',
+		imageBase64,
+		imageMimeType,
+		url: undefined,
+	};
+}
+
+/**
  * IDE-CODE: JSON-serializable payload sent to the IDE Agent chat. Image bytes
  * are base64-encoded because command arguments cross the extension-host RPC
  * boundary.
  */
 interface IIdeBrowserChatAttachment {
-	kind: 'element' | 'screenshot' | 'areaScreenshot' | 'fullPageScreenshot' | 'consoleLogs';
+	kind: 'element' | 'screenshot' | 'areaScreenshot' | 'fullPageScreenshot' | 'consoleLogs' | 'voiceInput' | 'designAnnotation';
 	name: string;
 	text: string;
 	imageBase64?: string;
@@ -139,7 +172,9 @@ function createElementContextValue(elementData: IElementData, displayName: strin
 const BROWSER_EDITOR_ACTIVE = ContextKeyExpr.equals('activeEditor', BrowserEditorInput.EDITOR_ID);
 const BrowserCategory = localize2('browserCategory', "Browser");
 
-const CONTEXT_BROWSER_ELEMENT_SELECTION_MODE = new RawContextKey<BrowserElementSelectionMode | undefined>('browserElementSelectionMode', undefined, localize('browser.elementSelectionMode', "The active element selection mode"));
+// Exported for browserPickerFeature.ts (DEV-GAPS-94B): the 'Select element'
+// toolbar toggle shares this exact toggled condition with AddElementToChatAction.
+export const CONTEXT_BROWSER_ELEMENT_SELECTION_MODE = new RawContextKey<BrowserElementSelectionMode | undefined>('browserElementSelectionMode', undefined, localize('browser.elementSelectionMode', "The active element selection mode"));
 const CONTEXT_BROWSER_AREA_SELECTION_ACTIVE = new RawContextKey<boolean>('browserAreaSelectionActive', false, localize('browser.areaSelectionActive', "Whether area selection is currently active"));
 
 class BrowserElementCommentingAccessibilityHelp implements IAccessibleViewImplementation {
@@ -473,6 +508,43 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 	}
 
 	/**
+	 * Public: attach entries to chat (used by the Design Mode drawing feature).
+	 */
+	async attachToChat(entries: readonly IChatRequestVariableEntry[]): Promise<boolean> {
+		return this._attachToChat(entries);
+	}
+
+	/**
+	 * Public: queue a voice-dictated change into chat (design-mode-voice).
+	 *
+	 * REA spec: "Mic stays available during agent runs; queue changes by voice".
+	 * The transcript is queued behind any in-flight request
+	 * (`ChatRequestQueueKind.Queued`) so the mic stays usable while the agent
+	 * runs; when the chat is idle the queued message is sent immediately.
+	 * IDE-CODE: when the product routes browser chat to the `ide-agent`
+	 * extension, the transcript is forwarded as a `voiceInput` attachment.
+	 */
+	async queueVoiceTranscript(text: string): Promise<boolean> {
+		if (this._shouldRouteToIdeAgent()) {
+			const entries: IChatRequestVariableEntry[] = [{
+				id: 'browser-voice-input-' + Date.now(),
+				name: localize('browserVoiceInput', "Voice input"),
+				fullName: localize('browserVoiceInput', "Voice input"),
+				kind: 'generic',
+				value: text,
+				modelDescription: 'Voice-dictated change from the browser Design Mode mic.',
+			}];
+			return this._attachEntriesToIdeAgent(entries);
+		}
+		const widget = await this._revealChatWidgetForAttachment(true);
+		if (!widget) {
+			return false;
+		}
+		await widget.acceptInput(text, { isVoiceInput: true, queue: ChatRequestQueueKind.Queued, preserveFocus: true });
+		return true;
+	}
+
+	/**
 	 * IDE-CODE: Whether browser chat attachments should go to the IDE Agent
 	 * chat instead of the workbench chat widget.
 	 */
@@ -487,26 +559,7 @@ export class BrowserEditorChatIntegration extends BrowserEditorContribution {
 	 */
 	private async _attachEntriesToIdeAgent(entries: readonly IChatRequestVariableEntry[]): Promise<boolean> {
 		try {
-			const payloads: IIdeBrowserChatAttachment[] = entries.map(entry => {
-				const imageData = 'imageData' in entry ? entry.imageData : undefined;
-				const imageBase64 = imageData instanceof Uint8Array
-					? encodeBase64(VSBuffer.wrap(imageData))
-					: undefined;
-				const imageMimeType = 'imageMimeType' in entry ? entry.imageMimeType : undefined;
-				const kind = entry.kind === 'image'
-					? (entry.id.startsWith('browser-area-screenshot') ? 'areaScreenshot'
-						: entry.id.startsWith('browser-fullpage-screenshot') ? 'fullPageScreenshot'
-						: 'screenshot')
-					: entry.id.startsWith('console-logs') ? 'consoleLogs' : 'element';
-				return {
-					kind,
-					name: entry.name,
-					text: typeof entry.value === 'string' ? entry.value : '',
-					imageBase64,
-					imageMimeType,
-					url: undefined,
-				};
-			});
+			const payloads = entries.map(toIdeBrowserChatAttachment);
 			await this.commandService.executeCommand(IdeBrowserAttachToChatCommandId, payloads);
 			return true;
 		} catch (error) {

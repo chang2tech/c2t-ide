@@ -1126,6 +1126,28 @@ function registerSplitEditorInGroupCommands(): void {
 			return;
 		}
 
+		// IDE-CODE (Cursor parity, binary 3.25.9 @29933821 — W-REA CONFIRMED):
+		// when the editor being split is a composer chat, Cursor does NOT
+		// duplicate it — it executes `composer.splitEditorWithNewComposer`,
+		// which replaces the editor with a side-by-side pair (existing
+		// composer | fresh composer). The binary's caller checks the composer
+		// resource scheme (`cursor.composer`); the fork's composer scheme is
+		// `ide-chat` (COMPOSER_CHAT_EDITOR_SCHEME in
+		// contrib/composer/browser/composerEditorInput.ts — referenced by
+		// literal here to avoid a workbench/browser -> contrib import, which
+		// has no precedent in this layer). Falls back to the stock
+		// duplicate-split when the command throws.
+		if (editor.resource?.scheme === 'ide-chat') {
+			try {
+				await accessor.get(ICommandService).executeCommand('composer.splitEditorWithNewComposer', editor, group);
+				return;
+			} catch (e) {
+				// Cursor parity: warns with this exact message, then falls back
+				// to the stock duplicate-split below.
+				console.warn('Failed to split composer editor with new composer, falling back to default behavior:', e);
+			}
+		}
+
 		await group.replaceEditors([{
 			editor,
 			replacement: instantiationService.createInstance(SideBySideEditorInput, undefined, undefined, editor, editor),

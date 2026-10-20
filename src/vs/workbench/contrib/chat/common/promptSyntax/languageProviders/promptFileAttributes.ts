@@ -8,7 +8,7 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { localize } from '../../../../../../nls.js';
 import { SpecedToolAliases } from '../../tools/languageModelToolsService.js';
 import { CLAUDE_AGENTS_SOURCE_FOLDER, isInClaudeRulesFolder } from '../config/promptFileLocations.js';
-import { PromptHeader, PromptHeaderAttributes } from '../promptFileParser.js';
+import { PromptHeader, PromptHeaderAttributes, SKILL_BADGE_COLORS } from '../promptFileParser.js';
 import { PromptsType, Target } from '../promptTypes.js';
 
 export namespace GithubPromptHeaderAttributes {
@@ -188,6 +188,19 @@ export const skillAttributes: Record<string, IAttributeDefinition> = {
 	[PromptHeaderAttributes.description]: {
 		type: 'scalar',
 		description: localize('promptHeader.skill.description', 'The description of the skill. The description is added to every request and will be used by the agent to decide when to load the skill.'),
+	},
+	[PromptHeaderAttributes.paths]: {
+		type: 'sequence',
+		description: localize('promptHeader.skill.paths', 'Array of glob patterns that scope the skill to specific files. Based on these patterns, the skill is considered when the context contains a matching file. Example: [\'src/**/*.ts\', \'test/**\']'),
+	},
+	[PromptHeaderAttributes.icon]: {
+		type: 'scalar',
+		description: localize('promptHeader.skill.icon', 'Badge icon for the skill.'),
+	},
+	[PromptHeaderAttributes.color]: {
+		type: 'scalar',
+		description: localize('promptHeader.skill.color', 'Badge color for the skill.'),
+		enums: SKILL_BADGE_COLORS.map(name => ({ name })),
 	},
 	[PromptHeaderAttributes.argumentHint]: {
 		type: 'scalar',

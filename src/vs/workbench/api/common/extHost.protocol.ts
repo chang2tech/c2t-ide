@@ -1919,6 +1919,48 @@ export interface MainThreadUrlsShape extends IDisposable {
 	$createAppUri(uri: UriComponents): Promise<UriComponents>;
 }
 
+/**
+ * Main-thread side of the checkout provider RPC (`MainThreadCheckoutProvider`,
+ * Cursor 3.25.9 — verbatim shape from
+ * `resources/app/out/vs/workbench/workbench.desktop.main.js`).
+ *
+ * The workbench registers a handler with the `checkoutProviderService` whose
+ * `checkoutBranch` receives the core-side conflict delegate as its first
+ * argument; the delegate is stashed in `_checkoutConflictDelegates` under a
+ * fresh id and the call is forwarded to the extension host as
+ * `$checkoutBranch(branchName, delegateId, options, token)`. When the
+ * extension's provider calls `delegate.resolveConflict()`, the extHost RPCs
+ * back into `$resolveCheckoutConflict(delegateId)`, which runs the delegate's
+ * `resolveConflict()` — the conflict QuickPick UI that lives in workbench
+ * core.
+ */
+export interface MainThreadCheckoutProviderShape extends IDisposable {
+	$registerCheckoutProvider(): Promise<void>;
+	$unregisterCheckoutProvider(): Promise<void>;
+	$resolveCheckoutConflict(delegateId: string): Promise<'stash' | 'commit' | 'discard' | 'abort' | undefined>;
+	$notifyCheckoutNoConflict(delegateId: string): Promise<void>;
+}
+
+/**
+ * Extension-host side of the checkout provider RPC (`ExtHostCheckoutProvider`,
+ * Cursor 3.25.9 — verbatim shape from
+ * `resources/app/out/vs/workbench/api/node/extensionHostProcess.js`).
+ *
+ * `$checkoutBranch` builds the delegate
+ * `{ resolveConflict: () => $resolveCheckoutConflict(delegateId),
+ *    onNoConflictDetected: () => $notifyCheckoutNoConflict(delegateId) }`
+ * and invokes the registered provider as
+ * `provider.checkoutBranch(delegate, branchName, options, token)` — provider
+ * first, verbatim.
+ */
+export interface ExtHostCheckoutProviderShape {
+	$warmCheckoutBranch(branchName: string, token: CancellationToken): Promise<void>;
+	$checkoutBranch(branchName: string, delegateId: string, options: { readonly commitSha?: string; readonly localOnly?: boolean }, token: CancellationToken): Promise<void>;
+	$ensureCurrentBranchPushed(options: { readonly cwd?: string; readonly remoteName?: string; readonly branchName?: string; readonly forcePush?: boolean }, token: CancellationToken): Promise<void>;
+	$snapshotAndPushCurrentBranch(options: { readonly cwd?: string; readonly remoteName?: string; readonly commitMessage?: string; readonly branchPrefix?: string; readonly stashLocalChangesAfterPush?: boolean; readonly stashMessage?: string }, token: CancellationToken): Promise<string>;
+	$hasDirtyWorkingTree(token: CancellationToken): Promise<boolean>;
+}
+
 export interface IChatResponseProgressFileTreeData {
 	label: string;
 	uri: URI;
@@ -2099,6 +2141,14 @@ export interface SCMProviderFeatures {
 	statusBarCommands?: ICommandDto[];
 	contextValue?: string;
 	activeRepositoryName?: string | null;
+	remotes?: SCMRemoteDto[] | null;
+}
+
+export interface SCMRemoteDto {
+	readonly name: string;
+	readonly fetchUrl?: string;
+	readonly pushUrl?: string;
+	readonly isReadOnly: boolean;
 }
 
 export interface SCMActionButtonDto {
@@ -3710,7 +3760,7 @@ export interface IStartMcpOptions {
 
 export interface ExtHostMcpShape {
 	$substituteVariables(workspaceFolder: UriComponents | undefined, value: McpServerLaunch.Serialized): Promise<McpServerLaunch.Serialized>;
-	$expandEnvironmentVariables(launch: McpServerLaunch.Serialized, expansion: McpServerEnvironmentVariableExpansion): Promise<McpServerLaunch.Serialized>;
+	$expandEnvironmentVariables(launch: McpServerLaunch.Serialized, expansion: McpServerEnvironmentVariableExpansion | undefined): Promise<McpServerLaunch.Serialized>;
 	$resolveMcpLaunch(collectionId: string, label: string): Promise<McpServerLaunch.Serialized | undefined>;
 	$startMcp(id: number, opts: IStartMcpOptions): void;
 	$stopMcp(id: number): void;
@@ -4127,6 +4177,7 @@ export const MainContext = {
 	MainThreadWebviewViews: createProxyIdentifier<MainThreadWebviewViewsShape>('MainThreadWebviewViews'),
 	MainThreadCustomEditors: createProxyIdentifier<MainThreadCustomEditorsShape>('MainThreadCustomEditors'),
 	MainThreadUrls: createProxyIdentifier<MainThreadUrlsShape>('MainThreadUrls'),
+	MainThreadCheckoutProvider: createProxyIdentifier<MainThreadCheckoutProviderShape>('MainThreadCheckoutProvider'),
 	MainThreadUriOpeners: createProxyIdentifier<MainThreadUriOpenersShape>('MainThreadUriOpeners'),
 	MainThreadProfileContentHandlers: createProxyIdentifier<MainThreadProfileContentHandlersShape>('MainThreadProfileContentHandlers'),
 	MainThreadWorkspace: createProxyIdentifier<MainThreadWorkspaceShape>('MainThreadWorkspace'),
@@ -4250,4 +4301,5 @@ export const ExtHostContext = {
 	ExtHostChatQuota: createProxyIdentifier<ExtHostChatQuotaShape>('ExtHostChatQuota'),
 	ExtHostGitExtension: createProxyIdentifier<ExtHostGitExtensionShape>('ExtHostGitExtension'),
 	ExtHostBrowsers: createProxyIdentifier<ExtHostBrowsersShape>('ExtHostBrowsers'),
+	ExtHostCheckoutProvider: createProxyIdentifier<ExtHostCheckoutProviderShape>('ExtHostCheckoutProvider'),
 };

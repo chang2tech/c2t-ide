@@ -43,6 +43,21 @@ export interface IWindowsMainService {
 
 	openAgentsWindow(openConfig: IOpenConfiguration, folderUri?: URI, reveal?: URI | 'new', source?: AgentsWindowOpenSource, folderUriIsDefault?: boolean, draft?: IAgentsWindowDraft, onboardingSessionResource?: URI): Promise<ICodeWindow[]>;
 
+	/**
+	 * IDE-CODE: opens or focuses the dedicated Agents ("glass") window, the
+	 * analog of Cursor's `cursor.openOrFocusGlassWindow` main-process path
+	 * (binary: out/main.js, `openOrFocusGlassWindowForMenu` /
+	 * `doOpenGlassWindowForMenu` — finds a window with `config.glass === true`
+	 * and focuses it via `openExistingWindow`, otherwise opens a new window
+	 * with `cli: { ..., glass: true, 'new-window': true }`, `forceNewWindow`
+	 * and `forceEmpty`).
+	 *
+	 * Unlike {@link openAgentsWindow} (the stock VS Code agent-sessions
+	 * workspace window), the glass window is the IDE's own dedicated Agents
+	 * window. Returns the focused or newly opened window, if any.
+	 */
+	openOrFocusGlassWindow(openConfig: IOpenConfiguration): Promise<ICodeWindow | undefined>;
+
 	sendToFocused(channel: string, ...args: unknown[]): void;
 	sendToOpeningWindow(channel: string, ...args: unknown[]): void;
 	sendToAll(channel: string, payload?: unknown, windowIdsToIgnore?: number[]): void;

@@ -205,6 +205,28 @@ export const TAB_UNFOCUSED_INACTIVE_MODIFIED_BORDER = registerColor('tab.unfocus
 
 //#endregion
 
+//#region IDE-CODE: Tab Awaiting-Input Badge
+
+/**
+ * IDE-CODE (DEV-GAPS-12): color of the orange dot shown on a native editor
+ * tab when its chat tab is awaiting the user's input (approval pending or
+ * clarifying question pending). Cursor changelog 0-48-x: "When a tab is
+ * awaiting your input, you'll see an orange dot on that tab."
+ *
+ * HONEST-COLOR: Cursor's exact orange hex is UNKNOWN — no evidence from
+ * Cursor docs or binary for the precise value. The `#e8a13c` fallback below
+ * matches the `--vscode-charts-orange` fallback already used for the
+ * webview chat tab bar dot, and is NOT claimed to be Cursor's color.
+ */
+export const TAB_AWAITING_INPUT_DOT = registerColor('tab.awaitingInputDot', {
+	dark: '#e8a13c',
+	light: '#e8a13c',
+	hcDark: '#e8a13c',
+	hcLight: '#e8a13c'
+}, localize('tabAwaitingInputDot', "Color of the dot shown on an editor tab when its chat tab is awaiting the user's input. Tabs are the containers for editors in the editor area. Multiple tabs can be opened in one editor group. There can be multiple editor groups."));
+
+//#endregion
+
 // < --- Editors --- >
 
 export const EDITOR_PANE_BACKGROUND = registerColor('editorPane.background', editorBackground, localize('editorPaneBackground', "Background color of the editor pane visible on the left and right side of the centered editor layout."));

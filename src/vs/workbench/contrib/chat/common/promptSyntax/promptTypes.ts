@@ -161,6 +161,10 @@ export enum PromptFileSource {
 	ClaudeWorkspaceLocal = 'claude-workspace-local',
 	AgentsWorkspace = 'agents-workspace',
 	AgentsPersonal = 'agents-personal',
+	CursorWorkspace = 'cursor-workspace',
+	CursorPersonal = 'cursor-personal',
+	CodexWorkspace = 'codex-workspace',
+	CodexPersonal = 'codex-personal',
 	ConfigWorkspace = 'config-workspace',
 	ConfigPersonal = 'config-personal',
 	UserData = 'user-data',
@@ -178,6 +182,14 @@ export function getSourceDescription(source: PromptFileSource): string | undefin
 			return localize('source.agentsWorkspace', "Workspace");
 		case PromptFileSource.AgentsPersonal:
 			return localize('source.agentsPersonal', "Global");
+		case PromptFileSource.CursorWorkspace:
+			return localize('source.cursorWorkspace', "Workspace (only used by Cursor agents)");
+		case PromptFileSource.CursorPersonal:
+			return localize('source.cursorPersonal', "Global (only used by Cursor agents)");
+		case PromptFileSource.CodexWorkspace:
+			return localize('source.codexWorkspace', "Workspace (only used by Codex agents)");
+		case PromptFileSource.CodexPersonal:
+			return localize('source.codexPersonal', "Global (only used by Codex agents)");
 		case PromptFileSource.GitHubWorkspace:
 			return localize('source.githubWorkspace', "Workspace (only used by Copilot agents)");
 		case PromptFileSource.CopilotPersonal:

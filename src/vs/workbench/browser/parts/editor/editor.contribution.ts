@@ -74,6 +74,11 @@ import { ICommandAction } from '../../../../platform/action/common/action.js';
 import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
 import { getFontSnippets } from '../../../../base/browser/fonts.js';
 import { registerEditorFontConfigurations } from '../../../../editor/common/config/editorConfigurationSchema.js';
+// IDE-CODE (orange-dot-native-tabs, DEV-GAPS-12): registers the internal
+// `ide.chat.setEditorTabBadge` command + the IEditorTabBadgeService
+// singleton the ide-agent extension uses to push per-tab awaiting-input
+// state for the native-tab orange dot (Cursor 0-48-x parity).
+import './editorTabBadges.js';
 
 //#region Editor Registrations
 
@@ -403,8 +408,20 @@ MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: UNPIN_ED
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: SPLIT_EDITOR, title: localize('splitRight', "Split Right") }, group: '5_split', order: 10, when: SplitEditorsVertically.negate() });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: SPLIT_EDITOR, title: localize('splitDown', "Split Down") }, group: '5_split', order: 10, when: SplitEditorsVertically });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { submenu: MenuId.EditorSplitMoveSubmenu, title: localize('splitAndMoveEditor', "Split & Move"), group: '5_split', order: 15 });
-MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: MOVE_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, title: localize('moveToNewWindow', "Move into New Window") }, group: '7_new_window', order: 10 });
-MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: COPY_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, title: localize('copyToNewWindow', "Copy into New Window") }, group: '7_new_window', order: 20 });
+// IDE-CODE (WORKER-GAPS-66A, `chat-tab-title-menu-inventory`): Cursor 3.25.9
+// EXCLUDES the chat-editor scheme from BOTH stock `7_new_window` entries
+// (workbench.desktop.main.js @27384426: "Move into New Window"
+// `group:"7_new_window",order:10,when:he.and(Ru.Scheme.isEqualTo(ft.composer).negate(),Ru.Scheme.isEqualTo("cursor-browser").negate())`
+// and the adjacent "Copy into New Window" entry `group:"7_new_window",order:20`
+// with the identical `when`)
+// because the chat title menu carries its own explicit
+// `workbench.action.moveEditorToNewWindow` contribution in group
+// `5z_new_window` (order 10, see contrib/composer `common/chatTitleMenu.ts`);
+// without the exclusion chat tabs would show "Move into New Window" twice.
+// The fork's browser editor has no cursor-browser tab-scheme analog, so only
+// the `ide-chat` scheme is excluded here.
+MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: MOVE_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, title: localize('moveToNewWindow', "Move into New Window") }, group: '7_new_window', order: 10, when: ContextKeyExpr.notEquals('resourceScheme', 'ide-chat') });
+MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: COPY_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, title: localize('copyToNewWindow', "Copy into New Window") }, group: '7_new_window', order: 20, when: ContextKeyExpr.notEquals('resourceScheme', 'ide-chat') });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { submenu: MenuId.EditorTitleContextShare, title: localize('share', "Share"), group: '11_share', order: -1, when: MultipleEditorsSelectedInGroupContext.negate() });
 
 // Editor Title Context Menu: Split & Move Editor Submenu

@@ -171,11 +171,15 @@ export interface IResolvedPromptSourceFolder {
  */
 export const DEFAULT_SKILL_SOURCE_FOLDERS: readonly IPromptSourceFolder[] = [
 	{ path: '.agents/skills', source: PromptFileSource.AgentsWorkspace, storage: PromptsStorage.local },
+	{ path: '.cursor/skills', source: PromptFileSource.CursorWorkspace, storage: PromptsStorage.local },
 	{ path: '.github/skills', source: PromptFileSource.GitHubWorkspace, storage: PromptsStorage.local },
 	{ path: '.claude/skills', source: PromptFileSource.ClaudeWorkspace, storage: PromptsStorage.local },
+	{ path: '.codex/skills', source: PromptFileSource.CodexWorkspace, storage: PromptsStorage.local },
 	{ path: '~/.agents/skills', source: PromptFileSource.AgentsPersonal, storage: PromptsStorage.user },
+	{ path: '~/.cursor/skills', source: PromptFileSource.CursorPersonal, storage: PromptsStorage.user },
 	{ path: '~/.copilot/skills', source: PromptFileSource.CopilotPersonal, storage: PromptsStorage.user },
 	{ path: '~/.claude/skills', source: PromptFileSource.ClaudePersonal, storage: PromptsStorage.user },
+	{ path: '~/.codex/skills', source: PromptFileSource.CodexPersonal, storage: PromptsStorage.user },
 ];
 
 /**

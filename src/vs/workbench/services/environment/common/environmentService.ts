@@ -34,6 +34,11 @@ export interface IWorkbenchEnvironmentService extends IEnvironmentService {
 	readonly remoteAuthority?: string;
 	readonly skipReleaseNotes: boolean;
 	readonly skipWelcome: boolean;
+	// IDE-CODE (GAPS-148, onboarding-flow): Cursor 3.25.9's environment
+	// service carries `skipOnboarding` next to `skipWelcome` (binary getters
+	// at workbench.desktop.main.js @18758384); read by the onboarding
+	// service's maybeOnboard().
+	readonly skipOnboarding: boolean;
 	readonly disableWorkspaceTrust: boolean;
 	readonly isSessionsWindow: boolean;
 	readonly webviewExternalEndpoint: string;

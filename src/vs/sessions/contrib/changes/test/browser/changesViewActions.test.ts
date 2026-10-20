@@ -6,6 +6,8 @@
 import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
+import { KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
+import { OperatingSystem } from '../../../../../base/common/platform.js';
 import { constObservable, derivedObservableWithCache, IObservable, observableValue, transaction } from '../../../../../base/common/observable.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { hasKey } from '../../../../../base/common/types.js';
@@ -20,6 +22,8 @@ import { Context } from '../../../../../platform/contextkey/browser/contextKeySe
 import { ContextKeyExpression } from '../../../../../platform/contextkey/common/contextkey.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { MockContextKeyService, MockKeybindingService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
+import { decodeKeybinding } from '../../../../../base/common/keybindings.js';
+import { KeybindingsRegistry } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
 import { IWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { EditorContextKeys } from '../../../../../editor/common/editorContextKeys.js';
@@ -41,6 +45,7 @@ import { ISessionsService } from '../../../../services/sessions/browser/sessions
 import { IChat, ISessionChangeset, ISessionChangesSummary, ISessionFolder, ISessionWorkspace } from '../../../../services/sessions/common/session.js';
 import { IActiveSession } from '../../../../services/sessions/common/sessionsManagement.js';
 import { ActiveSessionContextKeys, ChangesContextKeys, ChangesViewMode } from '../../common/changes.js';
+import { COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID, COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_KEYBINDING_WEIGHT, collapseOrExpandAllDiffFilesMenuLabel, computeAllDiffFilesCollapsed, planCollapseOrExpandAllDiffFiles } from '../../common/collapseAllDiffFiles.js';
 import { IChangesViewService } from '../../common/changesViewService.js';
 import { CustomViewVisibleContext, IsPhoneLayoutContext, SessionHasWorkspaceContext, SessionIsCreatedContext, DesktopChangesEditorTransitionContext, DesktopDiffEditorInputActiveContext, DesktopLayoutContext } from '../../../../common/contextkeys.js';
 import { SessionChangesEditor } from '../../browser/sessionChangesEditor.js';
@@ -982,5 +987,60 @@ suite('Changes View Actions', () => {
 			visibleWhileChangesResolve: true,
 			visibleForCustomView: false,
 		});
+	});
+
+	// DEV-GAPS-103 (collapse-all-files-shortcut): Cursor 3.25.9 glass
+	// command `glass.collapseOrExpandAllDiffFiles` — "Collapse / Expand
+	// All Files", f1:!1, keybinding Alt+Shift+Semicolon (macOS:
+	// WinCtrl+Shift+Semicolon), weight 250 (glass `gp`). Evidence:
+	// workbench.glass.main.js @45494583, @45457978, @45469683.
+	test('glass.collapseOrExpandAllDiffFiles is registered with the verbatim binary id and title, and no palette entry (f1 false)', () => {
+		const command = CommandsRegistry.getCommand(COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID);
+		assert.ok(command, 'expected the glass collapse/expand toggle command to be registered');
+		assert.strictEqual(COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID, 'glass.collapseOrExpandAllDiffFiles');
+		const title = typeof command.title === 'string' ? command.title : command.title?.value;
+		assert.strictEqual(title, 'Collapse / Expand All Files');
+		const paletteItems = MenuRegistry.getMenuItems(MenuId.CommandPalette)
+			.filter(isIMenuItem)
+			.filter(item => item.command.id === COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID);
+		assert.deepStrictEqual(paletteItems, []);
+	});
+
+	test('glass.collapseOrExpandAllDiffFiles keybinding matches the binary chords, weight and when', () => {
+		const linuxBindings = KeybindingsRegistry.getDefaultKeybindingsForOS(OperatingSystem.Linux)
+			.filter(binding => binding.command === COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID);
+		assert.strictEqual(linuxBindings.length, 1);
+		assert.strictEqual(
+			linuxBindings[0].keybinding?.getHashCode(),
+			decodeKeybinding(KeyMod.Shift | KeyMod.Alt | KeyCode.Semicolon, OperatingSystem.Linux)?.getHashCode());
+		assert.strictEqual(linuxBindings[0].weight1, COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_KEYBINDING_WEIGHT);
+		assert.strictEqual(COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_KEYBINDING_WEIGHT, 250);
+		const linuxWhen = linuxBindings[0].when?.serialize() ?? '';
+		assert.ok(linuxWhen.includes(IsSessionsWindowContext.key), 'when must require the sessions (agents) window');
+		assert.ok(linuxWhen.includes(SessionChangesEditor.ID), 'when must accept the session changes editor (diff/agentChanges)');
+		assert.ok(linuxWhen.includes(MultiDiffEditor.ID), 'when must accept the multi diff editor');
+
+		const macBindings = KeybindingsRegistry.getDefaultKeybindingsForOS(OperatingSystem.Macintosh)
+			.filter(binding => binding.command === COLLAPSE_OR_EXPAND_ALL_DIFF_FILES_COMMAND_ID);
+		assert.strictEqual(macBindings.length, 1);
+		assert.strictEqual(
+			macBindings[0].keybinding?.getHashCode(),
+			decodeKeybinding(KeyMod.WinCtrl | KeyMod.Shift | KeyCode.Semicolon, OperatingSystem.Macintosh)?.getHashCode());
+	});
+
+	test('glass.collapseOrExpandAllDiffFiles toggle planning matches the binary handlers', () => {
+		// PR tab handler (glass @34031310): allCollapsed -> expand, else collapse.
+		assert.strictEqual(planCollapseOrExpandAllDiffFiles(3, true), 'expand');
+		assert.strictEqual(planCollapseOrExpandAllDiffFiles(3, false), 'collapse');
+		// Mixed state is not all-collapsed -> collapse (binary label state).
+		assert.strictEqual(planCollapseOrExpandAllDiffFiles(3, computeAllDiffFilesCollapsed([true, false, true])), 'collapse');
+		assert.strictEqual(computeAllDiffFilesCollapsed([true, true]), true);
+		assert.strictEqual(computeAllDiffFilesCollapsed([]), true);
+		// No files -> no-op (binary PR handler guards on hasDiffs).
+		assert.strictEqual(planCollapseOrExpandAllDiffFiles(0, true), 'none');
+		assert.strictEqual(planCollapseOrExpandAllDiffFiles(0, false), 'none');
+		// Tab menu label (glass @33630478): Expand All iff all collapsed.
+		assert.strictEqual(collapseOrExpandAllDiffFilesMenuLabel(true), 'Expand All');
+		assert.strictEqual(collapseOrExpandAllDiffFilesMenuLabel(false), 'Collapse All');
 	});
 });

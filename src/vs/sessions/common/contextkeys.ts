@@ -179,6 +179,14 @@ export const DesktopDiffEditorInputActiveContext = new RawContextKey<boolean>('a
 export const DesktopChangesTabMissingContext = new RawContextKey<boolean>('agentSessionsDesktopChangesTabMissing', false, localize('agentSessionsDesktopChangesTabMissing', "Whether the desktop session supports a Changes editor but its tab is not currently open"));
 export const DesktopFilesTabMissingContext = new RawContextKey<boolean>('agentSessionsDesktopFilesTabMissing', false, localize('agentSessionsDesktopFilesTabMissing', "Whether the desktop session supports a Files tab but its tab is not currently open"));
 export const DesktopChangesTabAvailableContext = new RawContextKey<boolean>('agentSessionsDesktopChangesTabAvailable', false, localize('agentSessionsDesktopChangesTabAvailable', "Whether the desktop session supports a Changes editor"));
+/**
+ * Cursor parity (workbench-open-changes-tab): verbatim `changesTabAvailable`
+ * policy identifier. Set by ChangesTabAvailabilityContribution from
+ * `_isChangesTabActivatable()`; gates `glass.openChangesTab` and the new-tab
+ * "Changes" entry. Distinct from `agentSessionsDesktopChangesTabAvailable`,
+ * which describes desktop session support, not open-changes activatability.
+ */
+export const ChangesTabAvailableContext = new RawContextKey<boolean>('changesTabAvailable', false, localize('changesTabAvailable', "Whether the Changes tab can be opened (git repo with uncommitted changes, or a completed agent session with unreviewed changes)"));
 export const DesktopFilesTabAvailableContext = new RawContextKey<boolean>('agentSessionsDesktopFilesTabAvailable', false, localize('agentSessionsDesktopFilesTabAvailable', "Whether the desktop session supports a Files editor"));
 
 //#endregion

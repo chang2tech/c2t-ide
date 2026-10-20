@@ -4,12 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { session } from 'electron';
-import { createHash } from 'crypto';
 import { normalize } from '../../../base/common/path.js';
 import { isLinux } from '../../../base/common/platform.js';
-import { joinPath } from '../../../base/common/resources.js';
 import { TernarySearchTree } from '../../../base/common/ternarySearchTree.js';
 import { URI } from '../../../base/common/uri.js';
+import { resolveBrowserSessionStorageTarget } from './browserSessionStorage.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { BrowserViewStorageScope, IBrowserViewSessionOptions } from '../common/browserView.js';
 import { BrowserSessionTrust, IBrowserSessionTrust } from './browserSessionTrust.js';
@@ -130,54 +129,73 @@ export class BrowserSession {
 	}
 
 	/**
+	 * Create the Electron session for a resolved storage target. Partition
+	 * targets go through `session.fromPartition` (persisted when the partition
+	 * carries the `persist:` prefix); path targets go through `session.fromPath`
+	 * (always persisted at the given directory — cookies, localStorage and
+	 * IndexedDB survive restarts).
+	 */
+	private static _electronSessionForTarget(target: { readonly partition: string | undefined; readonly path: string | undefined }): Electron.Session {
+		if (target.path !== undefined) {
+			return session.fromPath(target.path);
+		}
+		if (target.partition !== undefined) {
+			return session.fromPartition(target.partition);
+		}
+		throw new Error('Browser session storage target has neither a partition nor a path');
+	}
+
+	/**
 	 * Get or create the singleton global-scope session.
 	 */
 	static getOrCreateGlobal(instantiationService: IInstantiationService): BrowserSession {
-		const electronSession = session.fromPartition('persist:vscode-browser');
+		const target = resolveBrowserSessionStorageTarget({ scope: BrowserViewStorageScope.Global });
+		const electronSession = BrowserSession._electronSessionForTarget(target);
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, 'global', electronSession, BrowserViewStorageScope.Global);
+			?? instantiationService.createInstance(BrowserSession, target.id, electronSession, BrowserViewStorageScope.Global);
 	}
 
 	/**
 	 * Get or create a workspace-scope session for the given workspace.
 	 */
 	static getOrCreateWorkspace(instantiationService: IInstantiationService, workspaceId: string, workspaceStorageHome: URI): BrowserSession {
-		const storage = joinPath(workspaceStorageHome, workspaceId, 'browserStorage');
-		const electronSession = session.fromPath(storage.fsPath);
+		const target = resolveBrowserSessionStorageTarget({
+			scope: BrowserViewStorageScope.Workspace,
+			sessionOptions: { scope: BrowserViewStorageScope.Workspace },
+			workspaceId,
+			workspaceStorageHome,
+		});
+		const electronSession = BrowserSession._electronSessionForTarget(target);
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, `workspace:${workspaceId}`, electronSession, BrowserViewStorageScope.Workspace);
+			?? instantiationService.createInstance(BrowserSession, target.id, electronSession, BrowserViewStorageScope.Workspace);
 	}
 
 	/**
 	 * Get or create an ephemeral session for the given view or target ID.
 	 */
 	static getOrCreateEphemeral(instantiationService: IInstantiationService, viewId: string, type?: string): BrowserSession {
-		if (type === 'workspace' || type === 'ephemeral' || type === 'agent') {
-			throw new Error(`Cannot create session with reserved type '${type}'`);
-		}
-
-		const sessionId = `${type ?? 'ephemeral'}:${viewId}`;
-		const electronSession = session.fromPartition(`vscode-browser-${type}${viewId}`);
+		const target = resolveBrowserSessionStorageTarget({
+			scope: BrowserViewStorageScope.Ephemeral,
+			sessionOptions: { scope: BrowserViewStorageScope.Ephemeral },
+			viewId,
+			ephemeralType: type,
+		});
+		const electronSession = BrowserSession._electronSessionForTarget(target);
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, sessionId, electronSession, BrowserViewStorageScope.Ephemeral);
+			?? instantiationService.createInstance(BrowserSession, target.id, electronSession, BrowserViewStorageScope.Ephemeral);
 	}
 
 	/** Get or create an in-memory agent session by affinity, workspace, or window. */
 	static getOrCreateAgent(instantiationService: IInstantiationService, workspaceId: string | undefined, affinity?: string, windowId?: number): BrowserSession {
-		let identity: string;
-		if (affinity !== undefined) {
-			identity = `affinity:${affinity}`;
-		} else if (workspaceId !== undefined) {
-			identity = `workspace:${workspaceId}`;
-		} else if (windowId !== undefined) {
-			identity = `window:${windowId}`;
-		} else {
-			throw new Error('Agent browser sessions require an affinity, workspace, or window');
-		}
-		const identityHash = createHash('sha256').update(identity).digest('hex');
-		const electronSession = session.fromPartition(`vscode-browser-agent-${identityHash}`);
+		const target = resolveBrowserSessionStorageTarget({
+			scope: BrowserViewStorageScope.Agent,
+			sessionOptions: { scope: BrowserViewStorageScope.Agent, affinity },
+			workspaceId,
+			windowId,
+		});
+		const electronSession = BrowserSession._electronSessionForTarget(target);
 		return BrowserSession._bySession.get(electronSession)
-			?? instantiationService.createInstance(BrowserSession, `agent:${identityHash}`, electronSession, BrowserViewStorageScope.Agent);
+			?? instantiationService.createInstance(BrowserSession, target.id, electronSession, BrowserViewStorageScope.Agent);
 	}
 
 	/**

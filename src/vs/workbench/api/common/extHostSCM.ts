@@ -542,6 +542,19 @@ class ExtHostSourceControlResourceGroup implements vscode.SourceControlResourceG
 	}
 }
 
+/**
+ * Internal `SourceControl.remotes` API surface mirroring Cursor's extension
+ * host: it intentionally is not declared in `vscode.d.ts` (Cursor's shipped
+ * type definitions do not expose it either); only the built-in git extension
+ * sets it, and the workbench reads it through `SCMProviderFeatures.remotes`.
+ */
+export interface IExtHostSourceControlRemote {
+	readonly name: string;
+	readonly fetchUrl?: string;
+	readonly pushUrl?: string;
+	readonly isReadOnly: boolean;
+}
+
 class ExtHostSourceControl implements vscode.SourceControl {
 
 	private static _handlePool: number = 0;
@@ -620,6 +633,17 @@ class ExtHostSourceControl implements vscode.SourceControl {
 
 		this._count = count;
 		this.#proxy.$updateSourceControl(this.handle, { count });
+	}
+
+	private _remotes: IExtHostSourceControlRemote[] | undefined = undefined;
+
+	get remotes(): IExtHostSourceControlRemote[] | undefined {
+		return this._remotes;
+	}
+
+	set remotes(remotes: IExtHostSourceControlRemote[] | undefined) {
+		this._remotes = remotes;
+		this.#proxy.$updateSourceControl(this.handle, { remotes });
 	}
 
 	private _quickDiffProvider: vscode.QuickDiffProvider | undefined = undefined;

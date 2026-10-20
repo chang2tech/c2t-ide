@@ -1,0 +1,31 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* "Terminal Hint" (Cursor parity, GAPS-142): the Cmd/Ctrl+K hint at the top
+ * of a terminal instance. Class names and values are Cursor's verbatim ones
+ * (Cursor sets them inline: textAlign center, opacity 1, color
+ * var(--vscode-input-placeholderForeground), fontSize 10px, height 20px on
+ * `.prompt-bar-hint`; the `.prompt-bar-container` is display:none/block).
+ * The fork has no setTopUiContributionHeight, so the container overlays the
+ * top 20px of the instance instead of pushing its content down. */
+
+.monaco-workbench .prompt-bar-container {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 20px;
+	pointer-events: none;
+	z-index: 100;
+}
+
+.monaco-workbench .prompt-bar-hint {
+	text-align: center;
+	opacity: 1;
+	color: var(--vscode-input-placeholderForeground);
+	font-size: 10px;
+	height: 20px;
+	line-height: 20px;
+}

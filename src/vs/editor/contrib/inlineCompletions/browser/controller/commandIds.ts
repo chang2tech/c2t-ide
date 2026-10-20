@@ -5,6 +5,11 @@
 
 export const inlineSuggestCommitId = 'editor.action.inlineSuggest.commit';
 
+// GAPS-115 (tab-remap-accept): Cursor 3.25.9's remappable Tab-accept command
+// id — verbatim from workbench.desktop.main.js (dMe assignment @487120):
+// `dMe="editor.action.acceptCursorTabSuggestion"`.
+export const acceptCursorTabSuggestionId = 'editor.action.acceptCursorTabSuggestion';
+
 export const inlineSuggestCommitAlternativeActionId = 'editor.action.inlineSuggest.commitAlternativeAction';
 
 export const showPreviousInlineSuggestionActionId = 'editor.action.inlineSuggest.showPrevious';

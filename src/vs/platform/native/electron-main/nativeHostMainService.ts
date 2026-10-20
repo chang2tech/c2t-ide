@@ -27,7 +27,7 @@ import { IEnvironmentMainService } from '../../environment/electron-main/environ
 import { createDecorator, IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { ILifecycleMainService, IRelaunchOptions } from '../../lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../../log/common/log.js';
-import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, IOpenAgentsWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../common/native.js';
+import { FocusMode, IApplicationBadge, ICommonNativeHostService, INativeHostOptions, INativeSystemWideKeybinding, INativeSystemWideKeybindingResult, INativeZipFile, INativeZipOptions, INativeZipProgress, IOpenAgentsWindowOptions, IOpenGlassWindowOptions, IOSProperties, IOSProxy, IOSProxyConfig, IOSStatistics, IStartTracingOptions, IToastOptions, IToastResult, PowerSaveBlockerType, SystemIdleState, ThermalState } from '../common/native.js';
 import { IGlobalKeybindingsMainService } from '../../globalKeybindings/electron-main/globalKeybindingsMainService.js';
 import { IGPUProcessMainService } from '../../gpu/electron-main/gpuProcessMainService.js';
 import { IProductService } from '../../product/common/productService.js';
@@ -381,6 +381,25 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 		if (windows.length > 0) {
 			// Transfer focus is a no-op on macOS while VS Code is hidden, e.g. when run from a system-wide keybinding
 			windows[0].focus({ mode: FocusMode.Force });
+		}
+	}
+
+	/**
+	 * IDE-CODE: Cursor `cursor.openOrFocusGlassWindow` analog — opens or
+	 * focuses the IDE's dedicated Agents ("glass") window via
+	 * {@link IWindowsMainService.openOrFocusGlassWindow} (binary:
+	 * out/main.js, `openOrFocusGlassWindowForMenu`). Never routes through
+	 * the stock agent-sessions window.
+	 */
+	async openGlassWindow(windowId: number | undefined, options?: IOpenGlassWindowOptions): Promise<void> {
+		const window = await this.windowsMainService.openOrFocusGlassWindow({
+			context: OpenContext.API,
+			contextWindowId: windowId,
+			cli: this.environmentMainService.args,
+		});
+		if (window) {
+			// Transfer focus is a no-op on macOS while VS Code is hidden, e.g. when run from a system-wide keybinding
+			window.focus({ mode: FocusMode.Force });
 		}
 	}
 

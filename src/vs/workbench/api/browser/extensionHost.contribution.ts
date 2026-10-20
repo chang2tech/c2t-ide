@@ -70,6 +70,7 @@ import './mainThreadTheming.js';
 import './mainThreadTreeViews.js';
 import './mainThreadDownloadService.js';
 import './mainThreadUrls.js';
+import './mainThreadCheckoutProvider.js';
 import './mainThreadUriOpeners.js';
 import './mainThreadWindow.js';
 import './mainThreadPower.js';

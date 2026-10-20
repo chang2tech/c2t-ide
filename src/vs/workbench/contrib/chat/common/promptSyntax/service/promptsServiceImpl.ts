@@ -12,7 +12,7 @@ import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../
 import { StopWatch } from '../../../../../../base/common/stopwatch.js';
 import { autorun, IReader, observableFromEvent } from '../../../../../../base/common/observable.js';
 import { ResourceMap, ResourceSet } from '../../../../../../base/common/map.js';
-import { basename, dirname, isEqual, joinPath } from '../../../../../../base/common/resources.js';
+import { basename, dirname, isEqual, joinPath, relativePath } from '../../../../../../base/common/resources.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { OffsetRange } from '../../../../../../editor/common/core/ranges/offsetRange.js';
 import { type ITextModel } from '../../../../../../editor/common/model.js';
@@ -1106,6 +1106,10 @@ export class PromptsService extends Disposable implements IPromptsService {
 					description: sanitizedDescription,
 					disableModelInvocation: file.disableModelInvocation ?? false,
 					userInvocable: file.userInvocable ?? true,
+					paths: file.paths,
+					icon: file.icon,
+					color: file.color,
+					metadata: file.metadata,
 					pluginUri: file.promptPath.pluginUri,
 					pluginLabel: file.promptPath.pluginLabel,
 					extension: file.promptPath.extension,
@@ -1162,6 +1166,10 @@ export class PromptsService extends Disposable implements IPromptsService {
 			githubWorkspace: number;
 			agentsPersonal: number;
 			agentsWorkspace: number;
+			cursorPersonal: number;
+			cursorWorkspace: number;
+			codexPersonal: number;
+			codexWorkspace: number;
 			configPersonal: number;
 			configWorkspace: number;
 			extensionContribution: number;
@@ -1182,6 +1190,10 @@ export class PromptsService extends Disposable implements IPromptsService {
 			githubWorkspace: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of GitHub workspace skills.' };
 			agentsPersonal: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of .agents personal skills.' };
 			agentsWorkspace: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of .agents workspace skills.' };
+			cursorPersonal: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of Cursor personal skills.' };
+			cursorWorkspace: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of Cursor workspace skills.' };
+			codexPersonal: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of Codex personal skills.' };
+			codexWorkspace: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of Codex workspace skills.' };
 			configPersonal: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of custom configured personal skills.' };
 			configWorkspace: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of custom configured workspace skills.' };
 			extensionContribution: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true; comment: 'Number of extension contributed skills.' };
@@ -1205,6 +1217,10 @@ export class PromptsService extends Disposable implements IPromptsService {
 			githubWorkspace: skillsBySource.get(PromptFileSource.GitHubWorkspace) ?? 0,
 			agentsPersonal: skillsBySource.get(PromptFileSource.AgentsPersonal) ?? 0,
 			agentsWorkspace: skillsBySource.get(PromptFileSource.AgentsWorkspace) ?? 0,
+			cursorPersonal: skillsBySource.get(PromptFileSource.CursorPersonal) ?? 0,
+			cursorWorkspace: skillsBySource.get(PromptFileSource.CursorWorkspace) ?? 0,
+			codexPersonal: skillsBySource.get(PromptFileSource.CodexPersonal) ?? 0,
+			codexWorkspace: skillsBySource.get(PromptFileSource.CodexWorkspace) ?? 0,
 			configWorkspace: skillsBySource.get(PromptFileSource.ConfigWorkspace) ?? 0,
 			configPersonal: skillsBySource.get(PromptFileSource.ConfigPersonal) ?? 0,
 			extensionContribution: skillsBySource.get(PromptFileSource.ExtensionContribution) ?? 0,
@@ -1560,8 +1576,12 @@ export class PromptsService extends Disposable implements IPromptsService {
 				nameToUri.set(sanitizedName, uri);
 				const disableModelInvocation = parsedFile.header?.disableModelInvocation === true;
 				const userInvocable = parsedFile.header?.userInvocable !== false;
+				// Explicit `paths` frontmatter wins; otherwise a skill in a nested
+				// skill folder is auto-scoped to the directory that contains it
+				// (monorepo support).
+				const paths = parsedFile.header?.paths ?? this.getNestedSkillAutoScope(uri);
 
-				files.push({ status: 'loaded', promptPath: this.withPromptPathMetadata(promptPath, sanitizedName, description), disableModelInvocation, userInvocable });
+				files.push({ status: 'loaded', promptPath: this.withPromptPathMetadata(promptPath, sanitizedName, description), disableModelInvocation, userInvocable, paths, icon: parsedFile.header?.icon, color: parsedFile.header?.color, metadata: parsedFile.header?.metadata });
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
 				this.logger.error(`[computeSkillDiscoveryInfo] Failed to validate Agent skill file: ${uri}`, msg);
@@ -1575,6 +1595,39 @@ export class PromptsService extends Disposable implements IPromptsService {
 		}
 
 		return files;
+	}
+
+	/**
+	 * Computes the auto-scope for a skill discovered in a nested skill folder
+	 * (e.g. `<workspace>/packages/app/.cursor/skills/<name>/SKILL.md`).
+	 * Nested skill folders are auto-scoped to the directory that contains the
+	 * nested `.cursor/skills` (or `.agents/skills`) folder, so that in a
+	 * monorepo a package-local skill applies to that package's files.
+	 * Returns undefined for root-level skill folders (no extra scoping needed)
+	 * and for skills outside any workspace folder.
+	 */
+	private getNestedSkillAutoScope(skillUri: URI): readonly string[] | undefined {
+		const path = skillUri.path;
+		let scopeDirPath: string | undefined;
+		for (const marker of ['/.cursor/skills/', '/.agents/skills/']) {
+			const idx = path.indexOf(marker);
+			if (idx > 0) {
+				scopeDirPath = path.substring(0, idx);
+				break;
+			}
+		}
+		if (scopeDirPath === undefined) {
+			return undefined;
+		}
+		const workspaceFolder = this.workspaceService.getWorkspaceFolder(skillUri);
+		if (!workspaceFolder) {
+			return undefined;
+		}
+		const relative = relativePath(workspaceFolder.uri, workspaceFolder.uri.with({ path: scopeDirPath }));
+		if (!relative) {
+			return undefined;
+		}
+		return [`${relative}/**`];
 	}
 
 	private async getInstructionsDiscoveryInfo(token: CancellationToken): Promise<IInstructionDiscoveryInfo> {

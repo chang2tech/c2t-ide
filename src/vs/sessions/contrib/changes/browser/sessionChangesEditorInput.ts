@@ -28,8 +28,10 @@ import { ISessionChangesService } from '../common/sessionChangesService.js';
  */
 export class SessionChangesEditorInput extends DockedEditorInput {
 
-	static readonly ID = 'workbench.input.agentSessions.sessionChanges';
-	static readonly EDITOR_ID = 'workbench.editor.agentSessions.sessionChanges';
+	// Typed as `string` (not literals) so subclasses can declare their own
+	// editor ids (e.g. SessionReviewChangesEditorInput).
+	static readonly ID: string = 'workbench.input.agentSessions.sessionChanges';
+	static readonly EDITOR_ID: string = 'workbench.editor.agentSessions.sessionChanges';
 
 	private readonly _innerInput = this._register(new MutableDisposable<MultiDiffEditorInput>());
 
@@ -121,7 +123,11 @@ export class SessionChangesEditorInput extends DockedEditorInput {
 		if (this === otherInput) {
 			return true;
 		}
+		// Distinct editor kinds never match, even when they share the
+		// multi-diff source (e.g. the Review Changes input subclasses this
+		// input but is a different tab with its own identity).
 		return otherInput instanceof SessionChangesEditorInput
+			&& otherInput.typeId === SessionChangesEditorInput.ID
 			&& otherInput.multiDiffSource.toString() === this.multiDiffSource.toString();
 	}
 }

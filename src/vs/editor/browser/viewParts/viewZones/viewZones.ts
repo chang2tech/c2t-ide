@@ -18,6 +18,16 @@ interface IMyViewZone {
 	whitespaceId: string;
 	delegate: IViewZone;
 	isInHiddenArea: boolean;
+	/**
+	 * IDE-CODE (Cursor parity — binary 3.25.9 `workbench.glass.main.js`,
+	 * `PromptBarViewZone` options): Cursor copies `showEvenWhenNotInViewport`
+	 * from the `IViewZone` delegate onto its internal zone record in
+	 * `_addZone` (direct copy, never re-synced — Cursor's `_layoutZone` /
+	 * `_recomputeWhitespacesProps` only sync `isInHiddenArea`). The render
+	 * loop then skips viewport culling for flagged zones, so the zone's DOM
+	 * stays mounted when its anchor scrolls out of the viewport.
+	 */
+	showEvenWhenNotInViewport: boolean;
 	isVisible: boolean;
 	domNode: FastDomNode<HTMLElement>;
 	marginDomNode: FastDomNode<HTMLElement> | null;
@@ -25,6 +35,15 @@ interface IMyViewZone {
 
 interface IComputedViewZoneProps {
 	isInHiddenArea: boolean;
+	/**
+	 * Mirrors Cursor's `_computeWhitespaceProps` return shape (binary
+	 * 3.25.9): present only when `afterLineNumber !== 0` — Cursor's
+	 * early-return branch for `afterLineNumber === 0` omits the field.
+	 * Neither `_layoutZone` nor `_recomputeWhitespacesProps` reads it in
+	 * Cursor's bundle either; `_addZone` copies the flag straight from the
+	 * delegate instead.
+	 */
+	showEvenWhenNotInViewport?: boolean;
 	afterViewLineNumber: number;
 	heightInPx: number;
 	minWidthInPx: number;
@@ -190,6 +209,12 @@ export class ViewZones extends ViewPart {
 		const isVisible = zone.showInHiddenAreas || this._context.viewModel.coordinatesConverter.modelPositionIsVisible(zoneBeforeModelPosition);
 		return {
 			isInHiddenArea: !isVisible,
+			// IDE-CODE (Cursor parity — binary 3.25.9): Cursor's
+			// `_computeWhitespaceProps` returns this field (copied from the
+			// delegate). Kept for shape parity; the flag is consumed from
+			// the zone record, which `_addZone` copies straight from the
+			// delegate.
+			showEvenWhenNotInViewport: zone.showEvenWhenNotInViewport === true,
 			afterViewLineNumber: viewPosition.lineNumber,
 			heightInPx: (isVisible ? this._heightInPixels(zone) : 0),
 			minWidthInPx: this._minWidthInPixels(zone)
@@ -239,6 +264,13 @@ export class ViewZones extends ViewPart {
 			whitespaceId: whitespaceId,
 			delegate: zone,
 			isInHiddenArea: props.isInHiddenArea,
+			// IDE-CODE (Cursor parity — binary 3.25.9): Cursor copies the
+			// flag straight from the delegate at add-time (`_addZone`), and
+			// never re-syncs it in `_layoutZone` / `_recomputeWhitespacesProps`.
+			// `=== true` normalizes the optional input to a boolean; every
+			// consumer only truthiness-tests the field, so this is
+			// behaviorally identical to Cursor's direct copy.
+			showEvenWhenNotInViewport: zone.showEvenWhenNotInViewport === true,
 			isVisible: false,
 			domNode: createFastDomNode(zone.domNode),
 			marginDomNode: zone.marginDomNode ? createFastDomNode(zone.marginDomNode) : null
@@ -363,17 +395,31 @@ export class ViewZones extends ViewPart {
 
 		let hasVisibleZone = false;
 		for (const visibleWhitespace of visibleWhitespaces) {
-			if (this._zones[visibleWhitespace.id].isInHiddenArea) {
-				continue;
+			const zone = this._zones[visibleWhitespace.id];
+			// IDE-CODE (Cursor parity — binary 3.25.9): Cursor guards the
+			// record lookup (`o && ...`) and culls a zone that sits in a
+			// hidden area UNLESS it opted out via `showEvenWhenNotInViewport`.
+			if (zone && !(zone.isInHiddenArea && !zone.showEvenWhenNotInViewport)) {
+				visibleZones[visibleWhitespace.id] = visibleWhitespace;
+				hasVisibleZone = true;
 			}
-			visibleZones[visibleWhitespace.id] = visibleWhitespace;
-			hasVisibleZone = true;
 		}
 
 		const keys = Object.keys(this._zones);
 		for (let i = 0, len = keys.length; i < len; i++) {
 			const id = keys[i];
 			const zone = this._zones[id];
+
+			// IDE-CODE (Cursor parity — binary 3.25.9):
+			// `if (!l || !n.hasOwnProperty(a) && l.showEvenWhenNotInViewport) continue;`
+			// A zone that opted out via `showEvenWhenNotInViewport` and is
+			// NOT in the current viewport data is left completely alone —
+			// the loop body (which would set `display: none`) is skipped, so
+			// its DOM node stays mounted (e.g. the Cmd+K prompt bar remains
+			// visible when its anchor scrolls out of view).
+			if (!visibleZones.hasOwnProperty(id) && zone.showEvenWhenNotInViewport) {
+				continue;
+			}
 
 			let newTop = 0;
 			let newHeight = 0;

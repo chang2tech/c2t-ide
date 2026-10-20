@@ -455,6 +455,24 @@ export interface IAgentSkill {
 	 */
 	readonly userInvocable: boolean;
 	/**
+	 * Glob patterns that scope the skill to specific files (`paths` frontmatter).
+	 * A skill discovered in a nested skill folder without explicit `paths` is
+	 * auto-scoped to the directory that contains the nested skill folder.
+	 */
+	readonly paths?: readonly string[];
+	/**
+	 * Badge icon for the skill (`icon` frontmatter).
+	 */
+	readonly icon?: string;
+	/**
+	 * Badge color for the skill (`color` frontmatter, one of the skill badge palette).
+	 */
+	readonly color?: string;
+	/**
+	 * Arbitrary key/value metadata (`metadata` frontmatter).
+	 */
+	readonly metadata?: Record<string, string | boolean | number>;
+	/**
 	 * Optional plugin URI describing where this skill originated.
 	 */
 	readonly pluginUri?: URI;
@@ -528,6 +546,14 @@ export interface IPromptFileDiscoveryResult {
 	readonly userInvocable?: boolean;
 	/** If true, the skill won't be automatically loaded by the agent (disable-model-invocation: true) */
 	readonly disableModelInvocation?: boolean;
+	/** Glob patterns that scope the skill to specific files (`paths` frontmatter, or the nested-skill auto-scope) */
+	readonly paths?: readonly string[];
+	/** Badge icon for the skill (`icon` frontmatter) */
+	readonly icon?: string;
+	/** Badge color for the skill (`color` frontmatter) */
+	readonly color?: string;
+	/** Arbitrary key/value metadata (`metadata` frontmatter) */
+	readonly metadata?: Record<string, string | boolean | number>;
 }
 
 /**

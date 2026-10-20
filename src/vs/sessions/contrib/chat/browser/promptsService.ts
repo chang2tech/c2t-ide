@@ -69,6 +69,10 @@ export class AgenticPromptsService extends PromptsService {
 						description,
 						disableModelInvocation: parsed.header?.disableModelInvocation === true,
 						userInvocable: parsed.header?.userInvocable !== false,
+						paths: parsed.header?.paths,
+						icon: parsed.header?.icon,
+						color: parsed.header?.color,
+						metadata: parsed.header?.metadata,
 					});
 				} catch (e) {
 					this.logger.warn(`[AgenticPromptsService] Failed to parse built-in skill: ${skillFileUri}`, e instanceof Error ? e.message : String(e));

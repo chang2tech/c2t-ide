@@ -149,4 +149,19 @@ suite('BrowserOverlayManager', () => {
 
 		assert.deepStrictEqual(overlays.map(o => o.type), [BrowserOverlayType.Dialog]);
 	});
+
+	// design-mode-drawing: the frozen-frame overlay fills the browser container
+	// while the user draws regions, so the native view must be hidden.
+	test('detects the design-mode drawing overlay covering the browser container', () => {
+		const browserContainer = addElement('browser-container', {
+			position: 'absolute', left: '0px', top: '0px', width: '300px', height: '300px'
+		});
+		addElement('browser-design-mode-overlay', {
+			position: 'absolute', left: '0px', top: '0px', width: '300px', height: '300px'
+		}, browserContainer);
+
+		const overlays = manager.getOverlappingOverlays(browserContainer);
+
+		assert.deepStrictEqual(overlays.map(o => o.type), [BrowserOverlayType.DesignMode]);
+	});
 });

@@ -31,7 +31,7 @@ import { IConfigurationService } from '../../platform/configuration/common/confi
 import { ConfigurationService } from '../../platform/configuration/common/configurationService.js';
 import { IDiagnosticsMainService } from '../../platform/diagnostics/electron-main/diagnosticsMainService.js';
 import { DiagnosticsService } from '../../platform/diagnostics/node/diagnosticsService.js';
-import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
+import { isChatSubcommand, NativeParsedArgs } from '../../platform/environment/common/argv.js';
 import { EnvironmentMainService, IEnvironmentMainService } from '../../platform/environment/electron-main/environmentMainService.js';
 import { addArg, parseMainProcessArgv } from '../../platform/environment/node/argvHelper.js';
 import { createWaitMarkerFileSync } from '../../platform/environment/node/wait.js';
@@ -616,7 +616,10 @@ class CodeMain {
 			}
 		}
 
-		if (args.chat) {
+		// The bool `--chat` flag form (standalone chat window, `chat === true`)
+		// is handled in openFirstWindow; only the subcommand object form
+		// (`chat <prompt>`) is normalized here.
+		if (isChatSubcommand(args.chat)) {
 			if (args.chat['new-window']) {
 				// Apply `--new-window` flag to the main arguments
 				args['new-window'] = true;

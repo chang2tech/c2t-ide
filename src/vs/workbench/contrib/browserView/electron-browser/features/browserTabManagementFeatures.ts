@@ -29,8 +29,8 @@ import { BrowserNewTabPlacementSettingId } from '../browserViewWorkbenchService.
 import { IConfigurationRegistry, Extensions as ConfigurationExtensions, ConfigurationScope } from '../../../../../platform/configuration/common/configurationRegistry.js';
 import { workbenchConfigurationNodeBase } from '../../../../common/configuration.js';
 import { IExternalOpener, IOpenerService } from '../../../../../platform/opener/common/opener.js';
-import { isLocalhostAuthority, isAllInterfacesAuthority } from '../../../../../platform/url/common/trustedDomains.js';
-import { IConfigurationService, isConfigured } from '../../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY, OPEN_LOCAL_LINKS_CONFIG_KEY, OPEN_LOCAL_LINKS_DEFAULT, resolveLegacyLocalhostLinkOpenerDecision } from '../../common/openLocalLinks.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { ToggleTitleBarConfigAction } from '../../../../browser/parts/titlebar/titlebarActions.js';
@@ -591,7 +591,27 @@ class BrowserEditorOpenContextKeyContribution extends Disposable implements IWor
 registerWorkbenchContribution2(BrowserEditorOpenContextKeyContribution.ID, BrowserEditorOpenContextKeyContribution, WorkbenchPhase.AfterRestored);
 
 /**
- * Opens localhost URLs and all-interfaces URLs in the Integrated Browser when the setting is enabled.
+ * Legacy upstream localhost link opener.
+ *
+ * IDE-CODE (DEV-GAPS-159, QA-155 NF-1): this `IExternalOpener` used to open
+ * localhost links itself when `workbench.browser.openLocalhostLinks` was
+ * enabled. Contributed external openers run BEFORE the OpenerService
+ * `_openers` loop (openerService.ts:199-207), so it pre-empted the Cursor
+ * parity interceptor (`OpenLocalLinksOpenerContribution`, DEV-GAPS-147) on
+ * every `allowContributedOpeners` caller — with a narrower classifier
+ * (trustedDomains `isLocalhostAuthority`/`isAllInterfacesAuthority`: no
+ * 127.0.0.0/8 range, no trailing-dot handling), no `pBn` rewrite, no
+ * ssh-remote exclusion — and it opened links even when
+ * `ide.browser.openLocalhostLinks` (the fork surface of Cursor's
+ * `autoOpenLocalhostUrls`, the binary's ONLY such setting) was false.
+ * This provider therefore no longer opens links itself; the gating matrix
+ * is `resolveLegacyLocalhostLinkOpenerDecision` in
+ * ../../common/openLocalLinks.ts. HONEST-DIVERGENCE: the binary has no
+ * equivalent of this provider or setting at all, so
+ * `workbench.browser.openLocalhostLinks` is now a legacy no-op for the
+ * open decision (its configuration registration below is kept for schema
+ * compatibility), and the `isDefaultLinkOpen` hint pill is consequently
+ * no longer set on link opens (the binary shows the UrlOpenToast instead).
  */
 export class LocalhostLinkOpenerContribution extends Disposable implements IWorkbenchContribution, IExternalOpener {
 	static readonly ID = 'workbench.contrib.localhostLinkOpener';
@@ -599,9 +619,6 @@ export class LocalhostLinkOpenerContribution extends Disposable implements IWork
 	constructor(
 		@IOpenerService openerService: IOpenerService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
-		@IEditorService private readonly editorService: IEditorService,
-		@ITelemetryService private readonly telemetryService: ITelemetryService,
-		@IBrowserViewWorkbenchService private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
 	) {
 		super();
 
@@ -609,36 +626,25 @@ export class LocalhostLinkOpenerContribution extends Disposable implements IWork
 	}
 
 	async openExternal(href: string, ctx: { sourceUri: URI; preferredOpenerId?: string; viewColumn?: ViewColumn }, _token: CancellationToken): Promise<boolean> {
-		if (!this.configurationService.getValue<boolean>('workbench.browser.openLocalhostLinks')) {
-			return false;
-		}
-
-		// If we are in a remote session, always use the original source URI (and not the href which may be the forwarded address)
-		if (this.browserViewWorkbenchService.willUseRemoteProxy() && ctx.sourceUri) {
-			href = ctx.sourceUri.toString();
-		}
-
-		try {
-			const parsed = new URL(href);
-			if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		const decision = resolveLegacyLocalhostLinkOpenerDecision(
+			this.configurationService.getValue<boolean>(LEGACY_OPEN_LOCALHOST_LINKS_CONFIG_KEY) ?? false,
+			this.configurationService.getValue<boolean>(OPEN_LOCAL_LINKS_CONFIG_KEY) ?? OPEN_LOCAL_LINKS_DEFAULT,
+		);
+		switch (decision) {
+			case 'disabled':
+				// Legacy setting off: unchanged upstream behavior.
 				return false;
-			}
-			if (!isLocalhostAuthority(parsed.host) && !isAllInterfacesAuthority(parsed.host)) {
+			case 'suppressed-by-ide-off':
+				// `ide.browser.openLocalhostLinks` is false: the Cursor
+				// setting's OFF wins — no path may auto-open the link.
 				return false;
-			}
-		} catch {
-			return false;
+			case 'defer-to-ide-opener':
+				// Both on: return false so the open falls through to the
+				// parity interceptor in the `_openers` loop, whose `lqt`
+				// classifier is a strict superset of the legacy one and
+				// which applies the binary's exclusions and `pBn` rewrite.
+				return false;
 		}
-
-		logBrowserOpen(this.telemetryService, 'localhostLinkOpener');
-
-		// Check whether the setting was explicitly set by the user or is still at its default value.
-		// When it is a default, tag the viewState so that the hint pill can be shown.
-		const isDefaultLinkOpen = !isConfigured(this.configurationService.inspect('workbench.browser.openLocalhostLinks'));
-
-		const browserUri = BrowserViewUri.forId(generateUuid());
-		await this.editorService.openEditor({ resource: browserUri, options: { pinned: true, viewState: { url: href, isDefaultLinkOpen } } }, await this.browserViewWorkbenchService.getPreferredGroup(ctx.viewColumn === ViewColumn.Beside ? SIDE_GROUP : undefined));
-		return true;
 	}
 }
 
@@ -931,6 +937,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'Controls whether the Integrated Browser button is shown in the title bar.'
 			)
 		},
+		// IDE-CODE (DEV-GAPS-159): legacy upstream setting. Since the
+		// DEV-GAPS-159 gating (see LocalhostLinkOpenerContribution above),
+		// this value no longer decides whether localhost links open in the
+		// Integrated Browser — `ide.browser.openLocalhostLinks` (Cursor's
+		// `autoOpenLocalhostUrls`) is the single deciding setting, as in
+		// the Cursor binary, which has no equivalent of this setting. The
+		// registration is kept for schema compatibility only.
 		'workbench.browser.openLocalhostLinks': {
 			type: 'boolean',
 			default: false,

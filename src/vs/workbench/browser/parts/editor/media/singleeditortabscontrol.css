@@ -130,3 +130,30 @@
 .monaco-workbench .part.editor > .content .editor-group-container.active > .title > .single-tab-and-actions-container > .title-actions {
 	opacity: 1;
 }
+
+/* IDE-CODE (orange-dot-native-tabs): orange dot on the single-tab title
+   when the active editor tab is awaiting the user's input (Cursor parity —
+   cursor.com/changelog/0-48-x: "When a tab is awaiting your input, you'll
+   see an orange dot on that tab"). The `.tab-badge-dot` element is created
+   in SingleEditorTabsControl.create; the `awaiting-input` class is toggled
+   by redrawTabBadge from the IEditorTabBadgeService state, which the
+   ide-agent extension feeds via the `ide.chat.setEditorTabBadge` bridge
+   command. Color fallback note: the exact Cursor orange hex is UNKNOWN —
+   #e8a13c matches the ide-agent webview tab bar dot, not a claimed Cursor
+   value. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title > .label-container > .tab-badge-dot,
+.monaco-workbench .part.editor > .content .editor-group-container > .title > .single-tab-and-actions-container > .label-container > .tab-badge-dot {
+	display: none;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .title > .label-container.awaiting-input > .tab-badge-dot,
+.monaco-workbench .part.editor > .content .editor-group-container > .title > .single-tab-and-actions-container > .label-container.awaiting-input > .tab-badge-dot {
+	display: block;
+	flex: none;
+	align-self: center;
+	width: 6px;
+	height: 6px;
+	margin-left: 6px;
+	border-radius: 50%;
+	background-color: var(--tab-awaiting-input-dot-color, #e8a13c);
+}

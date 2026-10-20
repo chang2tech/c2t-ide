@@ -10,6 +10,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { INativeMcpDiscoveryData } from '../../../../../platform/mcp/common/nativeMcpDiscoveryHelper.js';
 import { getCopilotGlobalMcpConfigurationResource } from '../../../../../platform/mcp/common/mcpCopilotGlobalConfiguration.js';
 import { ExternalDiscoverySource } from '../mcpConfiguration.js';
+import { cursorMcpNetworkPolicyToSandbox, parseCursorMcpNetworkMode, resolveCursorMcpNetworkPolicy } from '../cursorMcpNetworkModes.js';
 import { McpCollectionSortOrder, McpServerDefinition, McpServerLaunch, McpServerTransportType } from '../mcpTypes.js';
 
 export interface NativeMpcDiscoveryAdapter {
@@ -32,6 +33,10 @@ export async function claudeConfigToServerDefinition(idPrefix: string, contents:
 			headers?: Record<string, string>;
 			oauthClientId?: unknown;
 			oauth?: { clientId?: unknown } | null;
+			/** Fork addition (feature `mcp-network-modes`): per-server Cursor network mode. */
+			networkMode?: unknown;
+			/** Fork addition (feature `mcp-network-modes`): domains for the `allowlist` network mode. */
+			allowedDomains?: unknown;
 		}>;
 	};
 
@@ -43,6 +48,13 @@ export async function claudeConfigToServerDefinition(idPrefix: string, contents:
 
 	return Promise.all(Object.entries(parsed.mcpServers).map(async ([name, server]): Promise<Mutable<McpServerDefinition>> => {
 		const oauthClientId = server.url ? getOAuthClientId(server) : undefined;
+		// Fork addition (feature `mcp-network-modes`): per-server Cursor
+		// network modes (Allow all / Allowlist / Deny all / No sandbox) via
+		// the `networkMode` (+ optional `allowedDomains`) config keys. Only
+		// applied when explicitly configured, so non-Cursor sources sharing
+		// this parser (Claude Desktop, Copilot, Windsurf) keep prior behavior.
+		const explicitNetworkMode = parseCursorMcpNetworkMode(server.networkMode);
+		const cursorNetworkPolicy = resolveCursorMcpNetworkPolicy({ networkMode: server.networkMode, allowedDomains: server.allowedDomains });
 		const launch: McpServerLaunch = server.url ? {
 			type: McpServerTransportType.HTTP,
 			uri: URI.parse(server.url),
@@ -55,7 +67,7 @@ export async function claudeConfigToServerDefinition(idPrefix: string, contents:
 			env: server.env || {},
 			envFile: undefined,
 			cwd: options?.cwd?.fsPath,
-			sandbox: undefined
+			sandbox: explicitNetworkMode !== undefined ? cursorMcpNetworkPolicyToSandbox(cursorNetworkPolicy) : undefined
 		};
 		const defaultCwd = launch.type === McpServerTransportType.Stdio ? options?.defaultCwd : undefined;
 		// Keep the legacy fsPath-based nonce so existing trust decisions survive this URI-preservation change.
@@ -67,6 +79,7 @@ export async function claudeConfigToServerDefinition(idPrefix: string, contents:
 			launch,
 			defaultCwd,
 			cacheNonce: await McpServerLaunch.hash(nonceLaunch),
+			...(explicitNetworkMode !== undefined ? { cursorNetworkPolicy } : {}),
 			// Keep the raw URL, since `URI` normalization would encode the references.
 			...(options?.expandEnvironmentVariables ? { environmentVariableExpansion: server.url ? { url: server.url } : {} } : {}),
 		};

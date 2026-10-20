@@ -20,11 +20,12 @@ import { AgentWorkbenchLayout, IAgentWorkbenchLayoutService } from '../../../bro
 import { getSessionChangesFileCountLabel } from '../common/changes.js';
 import { IChangesViewService } from '../common/changesViewService.js';
 import { SessionChangesEditorInput } from './sessionChangesEditorInput.js';
-import { ISessionChangesEditorOptions, ISessionChangesService } from '../common/sessionChangesService.js';
+import { SessionReviewChangesEditorInput } from './sessionReviewChangesEditor.js';
+import { IReviewChangesProps, ISessionChangesEditorOptions, ISessionChangesService } from '../common/sessionChangesService.js';
 import { UNCOMMITTED_CHANGES_CHANGESET_ID } from '../../../services/sessions/common/session.js';
 
 export { ISessionChangesService } from '../common/sessionChangesService.js';
-export type { ISessionChangesEditorOptions } from '../common/sessionChangesService.js';
+export type { ISessionChangesEditorOptions, IReviewChangesProps } from '../common/sessionChangesService.js';
 
 const CHANGES_MULTI_DIFF_SOURCE_SCHEME = 'changes-multi-diff-source';
 
@@ -121,6 +122,32 @@ export class SessionChangesService extends Disposable implements ISessionChanges
 	}
 
 	async openChangesEditor(sessionResource: URI, options?: ISessionChangesEditorOptions, group?: PreferredGroup): Promise<IEditorGroup | undefined> {
+		return this.openChangesEditorInternal(
+			sessionResource,
+			options,
+			group,
+			multiDiffSource => this.instantiationService.createInstance(SessionChangesEditorInput, multiDiffSource),
+			localize('sessions.changes.title', 'Session Changes'),
+		);
+	}
+
+	async openReviewChangesEditor(sessionResource: URI, reviewProps: IReviewChangesProps, options?: ISessionChangesEditorOptions, group?: PreferredGroup): Promise<IEditorGroup | undefined> {
+		return this.openChangesEditorInternal(
+			sessionResource,
+			options,
+			group,
+			multiDiffSource => this.instantiationService.createInstance(SessionReviewChangesEditorInput, multiDiffSource, reviewProps),
+			localize('sessions.reviewChanges.title', 'Session Review Changes'),
+		);
+	}
+
+	private async openChangesEditorInternal(
+		sessionResource: URI,
+		options: ISessionChangesEditorOptions | undefined,
+		group: PreferredGroup | undefined,
+		createInput: (multiDiffSource: URI) => EditorInput,
+		mobileLabel: string,
+	): Promise<IEditorGroup | undefined> {
 		if (options?.changesetSelection) {
 			if (options.changesetSelection.kind === 'transient') {
 				this.changesViewService.showChangeset(options.changesetSelection.changeset);
@@ -136,7 +163,7 @@ export class SessionChangesService extends Disposable implements ISessionChanges
 		const multiDiffSource = this.getChangesEditorResource(sessionResource);
 
 		if (this.layoutService.agentWorkbenchLayout === AgentWorkbenchLayout.Desktop) {
-			const input = this.instantiationService.createInstance(SessionChangesEditorInput, multiDiffSource);
+			const input = createInput(multiDiffSource);
 			const pane = await this.editorService.openEditor(input, { ...editorOptions, pinned: true }, group);
 			await this.expandRevealTarget(pane?.input, editorOptions);
 			return pane?.group;
@@ -144,7 +171,7 @@ export class SessionChangesService extends Disposable implements ISessionChanges
 
 		const pane = await this.editorService.openEditor({
 			multiDiffSource,
-			label: localize('sessions.changes.title', 'Session Changes'),
+			label: mobileLabel,
 			options: editorOptions,
 		}, group);
 		await this.expandRevealTarget(pane?.input, editorOptions);

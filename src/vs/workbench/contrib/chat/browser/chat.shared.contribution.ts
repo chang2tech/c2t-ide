@@ -1073,6 +1073,19 @@ configurationRegistry.registerConfiguration({
 			default: true,
 			description: nls.localize('chat.contextUsage.enabled', "Show the context window usage indicator in the chat input."),
 		},
+		[ChatConfiguration.UsageRingDisplayMode]: {
+			type: 'string',
+			enum: ['auto', 'always', 'never'],
+			default: 'auto',
+			description: nls.localize('chat.usageRing.displayMode', "When to show the monthly usage ring in the chat status bar. 'auto' shows it once usage reaches the display threshold, 'always' shows it whenever usage data is available, 'never' hides it."),
+		},
+		[ChatConfiguration.UsageRingDisplayThreshold]: {
+			type: 'number',
+			default: 50,
+			minimum: 0,
+			maximum: 100,
+			description: nls.localize('chat.usageRing.displayThreshold', "Monthly usage percentage at or above which the usage ring appears in the chat status bar."),
+		},
 		[ChatConfiguration.Verbose]: {
 			type: 'boolean',
 			default: true,

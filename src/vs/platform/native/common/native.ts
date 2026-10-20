@@ -103,6 +103,20 @@ export interface IOpenAgentsWindowOptions {
 	readonly draft?: IAgentsWindowDraft;
 }
 
+/**
+ * IDE-CODE: options for opening the dedicated Agents ("glass") window, the
+ * analog of Cursor's `cursor.openOrFocusGlassWindow` command args (binary:
+ * out/vs/workbench/workbench.desktop.main.js — `{ agentsWindowOpenSource }`).
+ */
+export interface IOpenGlassWindowOptions {
+	/**
+	 * Where the open/focus request came from (e.g. `ide_title_bar_button`,
+	 * `ide_agents_sidebar`, `ide_empty_editor_parallel_agents_button`),
+	 * mirroring Cursor's `agentsWindowOpenSource` argument.
+	 */
+	readonly source?: string;
+}
+
 export interface ICPUProperties {
 	model: string;
 	speed: number;
@@ -291,6 +305,15 @@ export interface ICommonNativeHostService {
 	openWindow(toOpen: IWindowOpenable[], options?: IOpenWindowOptions): Promise<void>;
 
 	openAgentsWindow(options?: IOpenAgentsWindowOptions): Promise<void>;
+
+	/**
+	 * IDE-CODE: opens or focuses the dedicated Agents ("glass") window — the
+	 * analog of Cursor's `cursor.openOrFocusGlassWindow` main-process path
+	 * (binary: out/main.js, `nativeHostMainService` glass handlers). Unlike
+	 * {@link openAgentsWindow} (the stock VS Code agent-sessions workspace
+	 * window), this targets the IDE's own dedicated Agents window.
+	 */
+	openGlassWindow(options?: IOpenGlassWindowOptions): Promise<void>;
 
 	getAgentHostEditorState(legacyEditorSessionCount: number): Promise<IAgentHostEditorState>;
 	updateAgentHostEditorState(update: AgentHostEditorUpdate): Promise<void>;

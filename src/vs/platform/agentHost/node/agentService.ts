@@ -122,6 +122,7 @@ import { detachedWorktreeRecordUri, getPullRequestSessionBranchName, IAgentHostW
 import { IAgentHostProviderService } from './agentHostProviderService.js';
 import type { IAgentHostSessionLifecycleCandidate } from './agentHostSessionLifecycle.js';
 import { IAgentHostCheckpointService } from '../common/agentHostCheckpointService.js';
+import { IAgentHostStorageCompareService } from '../common/agentHostStorageCompareService.js';
 import { IAgentHostReviewService } from '../common/agentHostReviewService.js';
 import { AgentHostChangesetCoordinator } from './agentHostChangesetCoordinator.js';
 import { IAgentHostCompletions } from './agentHostCompletions.js';
@@ -997,6 +998,7 @@ export class AgentService extends Disposable implements IAgentService {
 		@ITelemetryService private readonly _telemetryService: ITelemetryService,
 		@IAgentHostSessionOpenTelemetry private readonly _sessionOpenTelemetry: IAgentHostSessionOpenTelemetry,
 		@IAgentHostChatContributions private readonly _chatContributions: IAgentHostChatContributions,
+		@IAgentHostStorageCompareService private readonly _storageCompareService: IAgentHostStorageCompareService,
 		@IAgentHostSubscriptionService private readonly _subscriptions: IAgentHostSubscriptionService,
 		@IAgentHostChatOwnershipService private readonly _chatOwnership: IAgentHostChatOwnershipService,
 		@IAgentHostChatInputService private readonly _chatInputService: IAgentHostChatInputService,
@@ -1332,6 +1334,12 @@ export class AgentService extends Disposable implements IAgentService {
 		));
 		this._runWhenStartupSettled('catalog reconciliation', () => {
 			this._catalogReconciliationService.schedule();
+		});
+		// Host-owned storage compare (Cursor class `pw`): first periodic
+		// compare 15s after start, then every 10min; checkpoint commits feed
+		// it via noteCheckpoint (60s debounce).
+		this._runWhenStartupSettled('storage compare', () => {
+			this._storageCompareService.start();
 		});
 		this._chatMovability = this._register(new AgentHostChatMovability(this._stateManager, this._configurationService, {
 			conversions: this._workspaceConversionService,

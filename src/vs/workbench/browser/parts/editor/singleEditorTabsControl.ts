@@ -19,6 +19,7 @@ import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { defaultBreadcrumbsWidgetStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
 import { BreadcrumbsControlFactory } from './breadcrumbsControl.js';
+import { TAB_AWAITING_INPUT_DOT } from '../../../common/theme.js';
 
 interface IRenderedEditorLabel {
 	readonly editor?: EditorInput;
@@ -29,6 +30,8 @@ export class SingleEditorTabsControl extends EditorTabsControl {
 
 	private titleContainer: HTMLElement | undefined;
 	private editorLabel: IResourceLabel | undefined;
+	/** Container holding the label (+ the IDE-CODE awaiting-input dot). */
+	private labelContainer: HTMLElement | undefined;
 	private activeLabel: IRenderedEditorLabel = Object.create(null);
 
 	private breadcrumbsControlFactory: BreadcrumbsControlFactory | undefined;
@@ -36,6 +39,14 @@ export class SingleEditorTabsControl extends EditorTabsControl {
 
 	protected override create(parent: HTMLElement): HTMLElement {
 		super.create(parent);
+
+		// IDE-CODE (DEV-GAPS-12): refresh the awaiting-input dot when the
+		// badge service changes the badge of the currently shown editor.
+		this._register(this.editorTabBadgeService.onDidChangeTabBadge(editor => {
+			if (this.tabsModel.isActive(editor)) {
+				this.redrawTabBadge();
+			}
+		}));
 
 		const titleContainer = this.titleContainer = parent;
 		titleContainer.draggable = true;
@@ -52,12 +63,18 @@ export class SingleEditorTabsControl extends EditorTabsControl {
 			titleContainer.appendChild(singleTabAndActionsContainer);
 		}
 
-		const labelContainer = $('.label-container');
+		const labelContainer = this.labelContainer = $('.label-container');
 		singleTabAndActionsContainer.appendChild(labelContainer);
 
 		// Editor Label
 		this.editorLabel = this._register(this.instantiationService.createInstance(ResourceLabel, labelContainer, {})).element;
 		this._register(addDisposableListener(this.editorLabel.element, EventType.CLICK, e => this.onTitleLabelClick(e)));
+
+		// IDE-CODE (DEV-GAPS-12): awaiting-input badge dot (hidden unless the
+		// label container carries the `awaiting-input` class). Real DOM
+		// (not ::after): pseudo-elements are used elsewhere on tab chrome.
+		const tabBadgeDot = $('.tab-badge-dot', { 'aria-hidden': true });
+		labelContainer.appendChild(tabBadgeDot);
 
 		if (!this.breadcrumbsInHeader) {
 			this.breadcrumbsControlFactory = this._register(this.instantiationService.createInstance(BreadcrumbsControlFactory, labelContainer, this.groupView, {
@@ -347,6 +364,25 @@ export class SingleEditorTabsControl extends EditorTabsControl {
 			// Update Editor Actions Toolbar
 			this.updateEditorActionsToolbar();
 		}
+
+		// IDE-CODE (DEV-GAPS-12): awaiting-input badge dot
+		this.redrawTabBadge();
+	}
+
+	/**
+	 * IDE-CODE (DEV-GAPS-12): native-editor-tab orange dot. Cursor shows an
+	 * orange dot on a chat tab "when a tab is awaiting your input"
+	 * (cursor.com/changelog/0-48-x); the badge state arrives from the
+	 * ide-agent extension via the `ide.chat.setEditorTabBadge` bridge
+	 * command (see editorTabBadges.ts).
+	 */
+	private redrawTabBadge(): void {
+		const editor = this.tabsModel.activeEditor;
+		const awaitingInput = !!editor && this.editorTabBadgeService.getTabBadge(editor)?.kind === 'awaiting-input';
+		this.labelContainer?.classList.toggle('awaiting-input', awaitingInput);
+		// Theme color (with the honest #e8a13c fallback when no theme defines
+		// `tab.awaitingInputDot` — see TAB_AWAITING_INPUT_DOT).
+		this.labelContainer?.style.setProperty('--tab-awaiting-input-dot-color', this.getColor(TAB_AWAITING_INPUT_DOT) ?? '');
 	}
 
 	private getVerbosity(style: string | undefined): Verbosity {

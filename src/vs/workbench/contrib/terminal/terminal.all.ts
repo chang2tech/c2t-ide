@@ -34,6 +34,7 @@ import '../terminalContrib/resizeDimensionsOverlay/browser/terminal.resizeDimens
 import '../terminalContrib/sendSequence/browser/terminal.sendSequence.contribution.js';
 import '../terminalContrib/sendSignal/browser/terminal.sendSignal.contribution.js';
 import '../terminalContrib/selectionToolbar/browser/terminal.selectionToolbar.contribution.js';
+import '../terminalContrib/promptBarHint/browser/terminal.promptBarHint.contribution.js';
 import '../terminalContrib/suggest/browser/terminal.suggest.contribution.js';
 import '../terminalContrib/telemetry/browser/terminal.telemetry.contribution.js';
 import '../terminalContrib/wslRecommendation/browser/terminal.wslRecommendation.contribution.js';

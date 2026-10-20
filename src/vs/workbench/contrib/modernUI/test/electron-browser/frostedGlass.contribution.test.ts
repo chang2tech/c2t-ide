@@ -16,6 +16,9 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../../platform/native/common/native.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
+import { InMemoryStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
+import { editorBackground } from '../../../../../platform/theme/common/colors/editorColors.js';
+import { GLASS_SPLASH_STORAGE_KEY, parseGlassSplash } from '../../../composer/common/glassSplashPersistence.js';
 import { ColorScheme } from '../../../../../platform/theme/common/theme.js';
 import { TestColorTheme, TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { IWorkbenchEnvironmentService } from '../../../../services/environment/common/environmentService.js';
@@ -67,7 +70,8 @@ suite('FrostedGlassContribution', () => {
 		const environment = new class extends mock<IWorkbenchEnvironmentService>() {
 			override readonly isSessionsWindow = isSessionsWindow;
 		}();
-		const createContribution = () => store.add(new FrostedGlassContribution(configuration, layout, accessibility, theme, nativeHost, log, environment));
+		const storage = store.add(new InMemoryStorageService());
+		const createContribution = () => store.add(new FrostedGlassContribution(configuration, layout, accessibility, theme, nativeHost, log, environment, storage));
 		const state = () => layout.containers.map(container => container.classList.contains('modern-ui-frosted-glass'));
 		const styleState = () => layout.containers.map(container => ({
 			glass: container.classList.contains('modern-ui-frosted-glass'),
@@ -82,7 +86,7 @@ suite('FrostedGlassContribution', () => {
 				change: { keys: [key], overrides: [] }
 			});
 		};
-		return { configuration, layout, addedContainer, accessibility, transparencyChanged, theme, nativeHost, gpuChanged, warnings, createContribution, state, styleState, configure };
+		return { configuration, layout, addedContainer, accessibility, transparencyChanged, theme, nativeHost, gpuChanged, warnings, createContribution, state, styleState, configure, storage };
 	}
 
 	test('shares enabled and opacity defaults with the Agents window', () => {
@@ -108,6 +112,25 @@ suite('FrostedGlassContribution', () => {
 			keys: ['workbench.modernUIFrostedGlass', 'workbench.modernUIFrostedGlassOpacity'],
 			experimental: [false, false],
 		});
+	});
+
+	test('persists the glass splash snapshot on every theme change (glass-theme-splash-persistence)', () => {
+		const services = createServices();
+		services.theme.setTheme(new TestColorTheme({ [editorBackground]: '#1E1E1E' }, ColorScheme.DARK));
+		services.createContribution();
+		const stored = services.storage.get(GLASS_SPLASH_STORAGE_KEY, StorageScope.APPLICATION);
+		assert.deepStrictEqual(parseGlassSplash(stored), {
+			splash: { baseTheme: 'vs-dark', background: 'rgb(30, 30, 30)' },
+			glassPreference: { detectColorScheme: false, settingsId: 'test' },
+		});
+		// Every theme change re-persists the snapshot.
+		services.theme.setTheme(new TestColorTheme({ [editorBackground]: '#2D2D2D' }, ColorScheme.DARK));
+		const updated = parseGlassSplash(services.storage.get(GLASS_SPLASH_STORAGE_KEY, StorageScope.APPLICATION));
+		assert.strictEqual(updated?.splash.background, 'rgb(45, 45, 45)');
+		// Unobserved bucket (light theme): nothing persisted, nothing thrown.
+		services.theme.setTheme(new TestColorTheme({ [editorBackground]: '#FFFFFF' }, ColorScheme.LIGHT));
+		const afterLight = parseGlassSplash(services.storage.get(GLASS_SPLASH_STORAGE_KEY, StorageScope.APPLICATION));
+		assert.strictEqual(afterLight?.splash.background, 'rgb(45, 45, 45)');
 	});
 
 	test('reads the shared GPU state once without changing surfaces when explicitly disabled', async () => {

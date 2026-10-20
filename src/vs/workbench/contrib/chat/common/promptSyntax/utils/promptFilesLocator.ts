@@ -35,6 +35,18 @@ import { AGENT_HOST_SCHEME } from '../../../../../../platform/agentHost/common/a
  */
 const MAX_INSTRUCTIONS_RECURSION_DEPTH = 5;
 
+/**
+ * Maximum depth when searching workspace folders for nested skill folders
+ * (e.g. `<repo>/packages/app/.cursor/skills`). Keeps monorepo discovery
+ * bounded while covering typical package nesting.
+ */
+const MAX_NESTED_SKILL_FOLDER_DEPTH = 4;
+
+/**
+ * Directories never traversed during nested skill folder search.
+ */
+const NESTED_SKILL_SEARCH_EXCLUDES = new Set(['node_modules', '.git']);
+
 export interface IWorkspaceInstructionFile {
 	readonly fileName: string;
 	readonly type: AgentInstructionFileType;

@@ -96,6 +96,8 @@ export enum ChatConfiguration {
 	ChatViewSessionsOrientation = 'chat.viewSessions.orientation',
 	ChatViewProgressBadgeEnabled = 'chat.viewProgressBadge.enabled',
 	ChatContextUsageEnabled = 'chat.contextUsage.enabled',
+	UsageRingDisplayMode = 'chat.usageRing.displayMode',
+	UsageRingDisplayThreshold = 'chat.usageRing.displayThreshold',
 	Verbose = 'chat.verbose',
 	ProgressBorder = 'chat.progressBorder.enabled',
 	PersistentProgress = 'chat.experimental.persistentProgress',

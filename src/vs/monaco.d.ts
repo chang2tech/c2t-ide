@@ -5518,6 +5518,15 @@ declare namespace monaco.editor {
 		 */
 		showInHiddenAreas?: boolean;
 		/**
+		 * Render the zone even when its anchor line is outside the viewport.
+		 *
+		 * IDE-CODE Cursor-parity extension: Cursor 3.25.9 sets
+		 * `showEvenWhenNotInViewport: true` on its `PromptBarViewZone` (Cmd+K
+		 * prompt bar). Stock VS Code has no such field — only `showInHiddenAreas`.
+		 * Defaults to false (stock viewport culling applies).
+		 */
+		showEvenWhenNotInViewport?: boolean;
+		/**
 		 * Tiebreaker that is used when multiple view zones want to be after the same line.
 		 * Defaults to `afterColumn` otherwise 10000;
 		 */

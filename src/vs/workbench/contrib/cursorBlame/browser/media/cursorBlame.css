@@ -1,0 +1,105 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/*
+ * Cursor Blame panes (DEV-GAPS-178). The class NAMES are Cursor-verbatim
+ * (3.25.9 file-blame component: `cursor-file-blame-line-<baseColorIndex>`
+ * + `cursor-file-blame-opacity-<opacityIndex>` whole-line decorations);
+ * the binary's own color values live in its bundled CSS and were not
+ * recovered, so the hues/alphas below are fork-chosen translucent tints
+ * (4 hues x 4 alpha steps) that read on both light and dark themes.
+ */
+
+.cursor-blame-editor,
+.cursor-file-blame-editor {
+	padding: 12px 16px;
+	overflow: auto;
+}
+
+.cursor-file-blame-editor {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	box-sizing: border-box;
+}
+
+.cursor-file-blame-header {
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.cursor-file-blame-status {
+	min-height: 18px;
+	opacity: 0.85;
+}
+
+.cursor-file-blame-info {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 26px;
+}
+
+.cursor-file-blame-info-text {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.cursor-file-blame-editor-container {
+	flex: 1;
+	min-height: 0;
+	position: relative;
+}
+
+.cursor-blame-large-commit-banner {
+	padding: 8px 12px;
+	margin: 8px 0;
+	border: 1px solid var(--vscode-editorWarning-foreground, #bf8803);
+	border-radius: 4px;
+}
+
+.cursor-blame-file {
+	margin: 10px 0;
+}
+
+.cursor-blame-file-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.cursor-blame-file-path {
+	font-weight: 600;
+}
+
+.cursor-blame-file-counts {
+	opacity: 0.85;
+}
+
+.cursor-blame-file-patch {
+	overflow: auto;
+	padding: 8px;
+	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
+}
+
+/* Whole-line blame tints: hue by baseColorIndex, alpha by opacityIndex. */
+.cursor-file-blame-line-0.cursor-file-blame-opacity-0 { background-color: rgba(59, 130, 246, 0.10); }
+.cursor-file-blame-line-0.cursor-file-blame-opacity-1 { background-color: rgba(59, 130, 246, 0.16); }
+.cursor-file-blame-line-0.cursor-file-blame-opacity-2 { background-color: rgba(59, 130, 246, 0.22); }
+.cursor-file-blame-line-0.cursor-file-blame-opacity-3 { background-color: rgba(59, 130, 246, 0.28); }
+.cursor-file-blame-line-1.cursor-file-blame-opacity-0 { background-color: rgba(34, 197, 94, 0.10); }
+.cursor-file-blame-line-1.cursor-file-blame-opacity-1 { background-color: rgba(34, 197, 94, 0.16); }
+.cursor-file-blame-line-1.cursor-file-blame-opacity-2 { background-color: rgba(34, 197, 94, 0.22); }
+.cursor-file-blame-line-1.cursor-file-blame-opacity-3 { background-color: rgba(34, 197, 94, 0.28); }
+.cursor-file-blame-line-2.cursor-file-blame-opacity-0 { background-color: rgba(245, 158, 11, 0.10); }
+.cursor-file-blame-line-2.cursor-file-blame-opacity-1 { background-color: rgba(245, 158, 11, 0.16); }
+.cursor-file-blame-line-2.cursor-file-blame-opacity-2 { background-color: rgba(245, 158, 11, 0.22); }
+.cursor-file-blame-line-2.cursor-file-blame-opacity-3 { background-color: rgba(245, 158, 11, 0.28); }
+.cursor-file-blame-line-3.cursor-file-blame-opacity-0 { background-color: rgba(168, 85, 247, 0.10); }
+.cursor-file-blame-line-3.cursor-file-blame-opacity-1 { background-color: rgba(168, 85, 247, 0.16); }
+.cursor-file-blame-line-3.cursor-file-blame-opacity-2 { background-color: rgba(168, 85, 247, 0.22); }
+.cursor-file-blame-line-3.cursor-file-blame-opacity-3 { background-color: rgba(168, 85, 247, 0.28); }

@@ -21,6 +21,7 @@ import { canLog, ILogService, LogLevel } from '../../../platform/log/common/log.
 import product from '../../../platform/product/common/product.js';
 import { StorageScope } from '../../../platform/storage/common/storage.js';
 import { extensionPrefixedIdentifier, McpCollectionDefinition, McpConnectionState, McpServerDefinition, McpServerEnvironmentVariableExpansion, McpServerLaunch, McpServerStaticMetadata, McpServerStaticToolAvailability, McpServerTransportHTTP, McpServerTransportType, UserInteractionRequiredError } from '../../contrib/mcp/common/mcpTypes.js';
+import { resolveCursorMcpVariablesInLaunch } from '../../contrib/mcp/common/cursorMcpVariables.js';
 import { MCP } from '../../contrib/mcp/common/modelContextProtocol.js';
 import { checkProposedApiEnabled, isProposedApiEnabled } from '../../services/extensions/common/extensions.js';
 import { ExtHostMcpShape, IMcpAuthenticationDetails, IAuthMetadataSource, IStartMcpOptions, MainContext, MainThreadMcpShape, IAuthResourceMetadataSource, IAuthServerMetadataSource } from './extHost.protocol.js';
@@ -134,11 +135,24 @@ export class ExtHostMcpService extends Disposable implements IExtHostMpcService 
 	}
 
 	/**
-	 * Hosts without a process environment, such as the web worker extension host,
-	 * leave references verbatim, as the Copilot runtime does without an environment.
+	 * Resolves Cursor-style MCP variables (`${env:}`, `${userHome}`, ...)
+	 * first, then applies the Copilot-runtime `${VAR}` expansion when the
+	 * definition opts in via `environmentVariableExpansion`.
+	 *
+	 * Hosts without a process environment, such as the web worker extension
+	 * host, leave `${env:NAME}` references verbatim, as the Copilot runtime
+	 * does without an environment; `${workspaceFolder}`-style references
+	 * that are knowable here are still resolved.
 	 */
-	async $expandEnvironmentVariables(launch: McpServerLaunch.Serialized, _expansion: McpServerEnvironmentVariableExpansion): Promise<McpServerLaunch.Serialized> {
-		return launch;
+	async $expandEnvironmentVariables(launch: McpServerLaunch.Serialized, _expansion: McpServerEnvironmentVariableExpansion | undefined): Promise<McpServerLaunch.Serialized> {
+		const folders = this._workspaceService.getWorkspaceFolders();
+		const resolved = resolveCursorMcpVariablesInLaunch(McpServerLaunch.fromSerialized(launch), {
+			env: {},
+			userHome: undefined,
+			workspaceFolder: folders?.[0]?.uri.fsPath,
+			pathSeparator: '/',
+		});
+		return McpServerLaunch.toSerialized(resolved);
 	}
 
 	$stopMcp(id: number): void {
