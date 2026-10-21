@@ -26,9 +26,9 @@ const commit = getVersion(REPO_ROOT);
 const quality = (product as { quality?: string }).quality;
 const version = (quality && quality !== 'stable') ? `${packageJson.version}-${quality}` : packageJson.version;
 
-const sourceMappingURLBase = `https://main.vscode-cdn.net/sourcemaps/${commit}`;
+const sourceMappingURLBase = commit ? `https://main.vscode-cdn.net/sourcemaps/${commit}` : undefined;
 const esbuildBundleVSCodeWebTask = task.define('esbuild-vscode-web', () => runEsbuildBundle('out-vscode-web', false, true, 'web'));
-const esbuildBundleVSCodeWebMinTask = task.define('esbuild-vscode-web-min', () => runEsbuildBundle('out-vscode-web-min', true, true, 'web', `${sourceMappingURLBase}/core`));
+const esbuildBundleVSCodeWebMinTask = task.define('esbuild-vscode-web-min', () => runEsbuildBundle('out-vscode-web-min', true, true, 'web', sourceMappingURLBase ? `${sourceMappingURLBase}/core` : undefined));
 
 function packageTask(sourceFolderName: string, destinationFolderName: string) {
 	const destination = path.join(BUILD_ROOT, destinationFolderName);
