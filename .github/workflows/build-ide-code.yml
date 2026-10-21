@@ -57,6 +57,29 @@ jobs:
             build/package-lock.json
             extensions/ide-agent/package-lock.json
 
+      # Cache node_modules khóa theo hash của TOÀN BỘ lockfile (root, build/,
+      # remote/ và mọi extensions/*/package-lock.json): lockfile đổi ở bất kỳ
+      # đâu là khóa cache đổi theo. Chỉ khi cache khớp CHÍNH XÁC (cache-hit
+      # == 'true') mới bỏ qua 3 bước cài đặt bên dưới; khớp một phần qua
+      # restore-keys thì các bước cài vẫn chạy bình thường (npm ci xóa sạch
+      # rồi cài lại theo lockfile) nên cache không bao giờ làm sai
+      # dependencies — tệ nhất là không tiết kiệm được thời gian.
+      # .build/typings chứa electron.d.ts do postinstall tải về, bước biên
+      # dịch src cần file này nên phải cache kèm.
+      - name: Cache node_modules (theo lockfile)
+        id: nm-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            build/node_modules
+            remote/node_modules
+            extensions/*/node_modules
+            .build/typings
+          key: ide-code-nm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json') }}
+          restore-keys: |
+            ide-code-nm-${{ runner.os }}-
+
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
@@ -74,6 +97,7 @@ jobs:
             wget
 
       - name: Install build/ dependencies
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         working-directory: build
         run: |
           set -e
@@ -88,6 +112,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install root dependencies
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         run: |
           set -e
           # --ignore-scripts: skip native module builds (e.g. native-keymap
@@ -105,6 +130,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install workspace dependencies (postinstall)
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         run: |
           set -e
           # The script-free root install above also skipped the root
@@ -261,12 +287,36 @@ jobs:
             build/package-lock.json
             extensions/ide-agent/package-lock.json
 
+      # Cache node_modules khóa theo hash của TOÀN BỘ lockfile (root, build/,
+      # remote/ và mọi extensions/*/package-lock.json): lockfile đổi ở bất kỳ
+      # đâu là khóa cache đổi theo. Chỉ khi cache khớp CHÍNH XÁC (cache-hit
+      # == 'true') mới bỏ qua 3 bước cài đặt bên dưới; khớp một phần qua
+      # restore-keys thì các bước cài vẫn chạy bình thường (npm ci xóa sạch
+      # rồi cài lại theo lockfile) nên cache không bao giờ làm sai
+      # dependencies — tệ nhất là không tiết kiệm được thời gian.
+      # .build/typings chứa electron.d.ts do postinstall tải về, bước biên
+      # dịch src cần file này nên phải cache kèm.
+      - name: Cache node_modules (theo lockfile)
+        id: nm-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            build/node_modules
+            remote/node_modules
+            extensions/*/node_modules
+            .build/typings
+          key: ide-code-nm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json') }}
+          restore-keys: |
+            ide-code-nm-${{ runner.os }}-
+
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install build/ dependencies
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         working-directory: build
         shell: bash
         run: |
@@ -279,6 +329,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install root dependencies
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -e
@@ -297,6 +348,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install workspace dependencies (postinstall)
+        if: steps.nm-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -e
