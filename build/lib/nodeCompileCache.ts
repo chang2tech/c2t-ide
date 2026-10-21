@@ -78,12 +78,46 @@ export async function generateNodeCompileCache(platform: string, outputDirectory
 
 	try {
 		const env = createNodeCompileCacheGenerationEnvironment(portableDirectory);
-		await runCacheGeneration(paths.application, paths.cacheDirectory, env);
+		await runCacheGenerationWithRetry(paths.application, paths.cacheDirectory, env);
 		const totalCacheEntryCount = await validateNodeCompileCache(paths.cacheDirectory, process.arch);
 		console.log(`Generated ${totalCacheEntryCount} total Node.js compile cache entries in ${paths.cacheDirectory}.`);
 	} finally {
 		await removeDirectoryWithRetries(portableDirectory);
 	}
+}
+
+/**
+ * Timeout and retry policy for the compile-cache generation subprocess.
+ *
+ * On CI (notably GitHub-hosted Windows runners) the packaged app can take
+ * much longer than the historical 120s budget to reach all readiness markers:
+ * the main process alone must reach the Eventually phase and then run the
+ * synchronous `flushCompileCache()` before writing its marker. Observed in
+ * build #14: identical binary passed in build #13, but the #14 runner was slow
+ * enough (esbuild bundle took 260s) that the 120s budget expired with only
+ * agent-host/pty-host markers written. A longer budget plus one retry absorbs
+ * slow-runner flakiness without masking a genuinely broken startup: if the app
+ * cannot start, both attempts fail and the packaging step still fails loudly.
+ */
+const CACHE_GENERATION_TIMEOUT_MS = 300_000;
+const CACHE_GENERATION_MAX_ATTEMPTS = 2;
+
+async function runCacheGenerationWithRetry(application: string, cacheDirectory: string, env: NodeJS.ProcessEnv): Promise<void> {
+	let lastError: unknown;
+	for (let attempt = 1; attempt <= CACHE_GENERATION_MAX_ATTEMPTS; attempt++) {
+		// Clear any partial output from a previous attempt so validation sees a clean state.
+		await fs.promises.rm(cacheDirectory, { recursive: true, force: true });
+		try {
+			await runCacheGeneration(application, cacheDirectory, env);
+			return;
+		} catch (error) {
+			lastError = error;
+			if (attempt < CACHE_GENERATION_MAX_ATTEMPTS) {
+				console.log(`Node.js compile cache generation attempt ${attempt}/${CACHE_GENERATION_MAX_ATTEMPTS} failed (${(error as Error).message.split('\n')[0]}); retrying...`);
+			}
+		}
+	}
+	throw lastError;
 }
 
 /**
@@ -163,7 +197,7 @@ function runCacheGeneration(application: string, cacheDirectory: string, env: No
 		const timeout = setTimeout(() => {
 			didTimeOut = true;
 			child.kill();
-		}, 120_000);
+		}, CACHE_GENERATION_TIMEOUT_MS);
 
 		child.stdout.on('data', chunk => output += chunk.toString());
 		child.stderr.on('data', chunk => output += chunk.toString());
