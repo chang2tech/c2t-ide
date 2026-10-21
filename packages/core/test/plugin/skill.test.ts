@@ -54,6 +54,37 @@ describe("SkillPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("registers built-in review skills (Cursor parity: /review, /review-bugbot, /review-security, /cursor-blame)", () =>
+    Effect.gen(function* () {
+      const skill = yield* Skill.Service
+      yield* SkillPlugin.Plugin.effect(
+        host({
+          app: { name: "test", version: "1.2.3", channel: "beta" },
+          skill: {
+            list: () => Effect.die("unused skill.list"),
+            transform: skill.transform,
+            reload: skill.reload,
+          },
+        }),
+      ).pipe(Effect.provide(config()))
+      const skills = yield* skill.list()
+      const expected = [
+        { id: "review", name: "Review", description: "code-review agent" },
+        { id: "review-bugbot", name: "Review Bugbot", description: "bugs and regressions" },
+        { id: "review-security", name: "Review Security", description: "security vulnerabilities" },
+        { id: "cursor-blame", name: "Cursor Blame", description: "prompts that produced them" },
+      ]
+      for (const item of expected) {
+        const found = skills.find((entry) => entry.id === item.id)
+        expect(found).toBeDefined()
+        expect(String(found?.name)).toBe(item.name)
+        expect(found?.description).toContain(item.description)
+        expect(String(found?.path)).toBe(`/builtin/${item.id}.md`)
+        expect(found?.content.trim().length).toBeGreaterThan(0)
+      }
+    }),
+  )
+
   it.effect("reports canonical configured plugin sources with existing labels and ordering", () =>
     Effect.gen(function* () {
       const skill = yield* Skill.Service
