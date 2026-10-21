@@ -52,6 +52,20 @@ export function getNodeCompileCachePaths(platform: string, outputDirectory: stri
 	};
 }
 
+/**
+ * Path of the packaged CLI bundle (`out/cli.js`) inside the packaged app —
+ * the entry the shipped `bin/code` / `bin/code.cmd` launchers execute with
+ * `ELECTRON_RUN_AS_NODE=1`. Used by the smoke check's `--version` tier
+ * (B-W1-F07): invoking the Electron binary with a bare `--version` boots
+ * the GUI main process instead, which has no `--version` handling.
+ */
+export function getPackagedCliEntry(platform: string, outputDirectory: string, product: INodeCompileCacheProduct): string {
+	if (platform === 'darwin') {
+		return path.join(outputDirectory, `${product.nameLong}.app`, 'Contents', 'Resources', 'app', 'out', 'cli.js');
+	}
+	return path.join(outputDirectory, 'resources', 'app', 'out', 'cli.js');
+}
+
 export function createNodeCompileCacheGenerationEnvironment(portableDirectory: string, parentEnvironment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
 	const env = { ...parentEnvironment };
 	delete env.ELECTRON_RUN_AS_NODE;
@@ -104,7 +118,7 @@ export async function generateNodeCompileCache(platform: string, outputDirectory
 			// builds #14/#15 pattern). Downgrading is only allowed with
 			// independent proof that the packaged app starts: run the fatal
 			// smoke check. If it throws, the build goes red here.
-			await runPackagedAppSmokeCheck(paths.application, portableDirectory);
+			await runPackagedAppSmokeCheck(paths.application, getPackagedCliEntry(platform, outputDirectory, product), portableDirectory);
 			// NOTE (B-W1-F03): the runtime does NOT warm this cache up later.
 			// Without a packaged cache, enableNodeCompileCache reports
 			// 'missing' and returns before enabling anything, and existing
@@ -332,8 +346,15 @@ async function runCacheGenerationWithRetry(application: string, cacheDirectory: 
  * the only full packaged-app startup in the -ci series, so before a timeout
  * may be downgraded to "slow runner", the app must prove — independently of
  * the full 5-kind cache run — that it starts:
- *  1. `--version` exits 0 within a small budget (binary loads, bootstrap
- *     runs; src/main.ts enables the main compile cache before mainImpl).
+ *  1. The packaged CLI entry (`out/cli.js`, run exactly the way the shipped
+ *     `bin/code.cmd` launcher runs it: `ELECTRON_RUN_AS_NODE=1 <exe>
+ *     out/cli.js --version`) prints the version and exits 0 within a small
+ *     budget (binary loads, node bootstrap runs, CLI bundle parses args).
+ *     NOTE (B-W1-F07): spawning `<exe> --version` WITHOUT the CLI entry is
+ *     NOT a version check — the Electron main process has no `--version`
+ *     handling in electron-main, so it boots the full GUI app, never prints
+ *     a version, and idles until the timeout kills it (exit code 1). That
+ *     is what failed build alpha.23 on Windows, not a broken app.
  *  2. A shortened generating-mode launch reaches the `main` readiness
  *     marker, which is only written after the main process reaches the
  *     Eventually phase (src/vs/code/electron-main/app.ts). The other four
@@ -344,14 +365,20 @@ async function runCacheGenerationWithRetry(application: string, cacheDirectory: 
 const SMOKE_VERSION_TIMEOUT_MS = 30_000;
 const SMOKE_MAIN_MARKER_TIMEOUT_MS = 120_000;
 
-async function runPackagedAppSmokeCheck(application: string, portableDirectory: string): Promise<void> {
+async function runPackagedAppSmokeCheck(application: string, cliEntry: string, portableDirectory: string): Promise<void> {
 	console.log('Running packaged-app smoke check before packaging without a compile cache...');
-	// Tier 1: --version
+	// Tier 1: --version through the packaged CLI entry, exactly like the
+	// shipped bin/code.cmd launcher (ELECTRON_RUN_AS_NODE=1 <exe> out/cli.js).
 	await new Promise<void>((resolve, reject) => {
 		const env = createNodeCompileCacheGenerationEnvironment(portableDirectory);
 		delete env.VSCODE_GENERATE_NODE_COMPILE_CACHE;
+		// Run the CLI bundle as Node inside the packaged Electron binary,
+		// mirroring resources/win32/bin/code.cmd. Spawning `<exe> --version`
+		// directly would boot the GUI main process (no --version handling in
+		// electron-main) and hang until the timeout — see B-W1-F07 above.
+		env.ELECTRON_RUN_AS_NODE = '1';
 		// detached on POSIX so killProcessTree can signal the whole process group (B-W1-F05).
-		const child = cp.spawn(application, ['--version'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+		const child = cp.spawn(application, [cliEntry, '--version'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
 		let output = '';
 		const timeout = setTimeout(() => killProcessTree(child, 'the packaged-app smoke check (--version) process tree'), SMOKE_VERSION_TIMEOUT_MS);
 		child.stdout.on('data', chunk => output += chunk.toString());
@@ -360,7 +387,9 @@ async function runPackagedAppSmokeCheck(application: string, portableDirectory: 
 		child.on('close', (code, signal) => {
 			clearTimeout(timeout);
 			if (code !== 0) {
-				reject(new Error(`Packaged-app smoke check failed: --version exited with code ${code} and signal ${signal ?? 'none'}.\n${output}`));
+				reject(new Error(`Packaged-app smoke check failed: --version exited with code ${code} and signal ${signal ?? 'none'}.` + '\n' + output));
+			} else if (!/\d+\.\d+\.\d+/.test(output)) {
+				reject(new Error('Packaged-app smoke check failed: --version exited 0 but printed no version string.' + '\n' + output));
 			} else {
 				resolve();
 			}
