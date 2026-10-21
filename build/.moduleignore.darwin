@@ -15,3 +15,10 @@
 @vscode/windows-registry/*.txt
 @vscode/windows-registry/package.json
 !@vscode/windows-registry/dist/index.d.ts
+# node-pty ships prebuilds for all platforms in its npm tarball. The win32
+# prebuilds alone are ~24 MB of Windows binaries that are useless in the
+# macOS package, and the linux prebuilds are equally unusable there, so
+# both are stripped. The darwin prebuilds must stay: they belong to the
+# target platform of this package.
+node-pty/prebuilds/win32-*/**
+node-pty/prebuilds/linux-*/**

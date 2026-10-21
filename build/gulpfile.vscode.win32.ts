@@ -81,6 +81,19 @@ function buildWin32Setup(arch: string, target: string): task.CallbackTask {
 		const productJson = JSON.parse(fs.readFileSync(originalProductJsonPath, 'utf8'));
 		productJson['target'] = target;
 
+		// Fork repo URL derived from product.json licenseUrl (strip the /blob/... suffix);
+		// product.json has no dedicated project-URL field. AppSupportUrl below
+		// uses reportIssueUrl verbatim. AppPublisher is wired from
+		// product.win32AppPublisher (added by FIX-PUBLISHER).
+		const publisherUrl = product.licenseUrl.replace(/\/blob\/.*$/, '');
+
+		// LOAD-BEARING (A2-P2-2): the product.json AppId values (win32*AppId) MUST keep
+		// the "{{GUID}" form. "{{" is Inno Setup's literal-brace escape for
+		// [Setup] AppId={#AppId} in code.iss, and code.iss
+		// copy('{#IncompatibleTargetAppId}', 2, 38) depends on the 39-char form to
+		// extract exactly "{GUID}" (38 chars). "Normalizing" to a single "{" breaks
+		// both: ISCC fails with "Unknown constant" and copy() returns 37 chars
+		// missing the leading "{".
 		const definitions: Record<string, unknown> = {
 			NameLong: product.nameLong,
 			NameShort: product.nameShort,
@@ -110,12 +123,14 @@ function buildWin32Setup(arch: string, target: string): task.CallbackTask {
 			ProductJsonRelativePath: productJsonRelativePath,
 			ProductJsonPath: productJsonPath,
 			VersionedResourcesFolder: versionedResourcesFolder,
-			Quality: quality
+			Quality: quality,
+			AppPublisher: product.win32AppPublisher,
+			AppPublisherUrl: publisherUrl,
+			AppSupportUrl: product.reportIssueUrl,
+			AppUpdatesUrl: publisherUrl
 		};
 
 		if (quality === 'stable' || quality === 'insider') {
-			definitions['AppxPackage'] = `${quality === 'stable' ? 'code' : 'code_insider'}_${arch}.appx`;
-			definitions['AppxPackageDll'] = `${quality === 'stable' ? 'code' : 'code_insider'}_explorer_command_${arch}.dll`;
 			definitions['AppxPackageName'] = `${product.win32AppUserModelId}`;
 			const ctxMenu = (product as { win32ContextMenu?: Record<string, { clsid: string }> }).win32ContextMenu;
 			if (ctxMenu && ctxMenu[arch]) {

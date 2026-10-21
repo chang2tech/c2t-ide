@@ -95,6 +95,14 @@ export class ChatSetupContribution extends Disposable implements IWorkbenchContr
 	) {
 		super();
 
+		// IDE Code: this product has no default chat extension of its own
+		// (product.defaultChatAgent.chatExtensionId is empty; the real agent
+		// is registered independently), so there is no default chat agent to
+		// set up. Stay inert even if an entitlement context exists.
+		if (!defaultChat.chatExtensionId) {
+			return;
+		}
+
 		const context = chatEntitlementService.context?.value;
 		const requests = chatEntitlementService.requests?.value;
 		if (!context || !requests) {
@@ -737,6 +745,13 @@ class ChatSetupExtensionUrlHandler implements IExtensionUrlHandlerOverride {
 	) { }
 
 	canHandleURL(url: URI): boolean {
+		// IDE Code: with an empty default chat extension id, the authority
+		// comparison below would match every product-protocol URL that has
+		// an empty authority. Never claim URLs in that case.
+		if (!defaultChat.chatExtensionId) {
+			return false;
+		}
+
 		return url.scheme === this.productService.urlProtocol && equalsIgnoreCase(url.authority, defaultChat.chatExtensionId);
 	}
 

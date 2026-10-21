@@ -177,9 +177,21 @@ export function markNodeCompileCacheReady(log?: (message: string) => void): void
 	}
 }
 
-export async function waitForNodeCompileCacheReady(): Promise<void> {
+/**
+ * Waits for all compile-cache kinds to publish their readiness markers.
+ * Bounded by an internal deadline (B-W1-F02): without one, a kind that never
+ * becomes ready hangs the generating-mode main process forever and the
+ * build only sees its own outer timeout kill, unable to distinguish a slow
+ * runner from an app stuck at a specific phase. The deadline is shorter
+ * than the build-side generation budget so the app reports the missing
+ * kinds itself instead of being killed silently. The message prefix is a
+ * contract with the build-side classifier in build/lib/nodeCompileCache.ts
+ * (INTERNAL_WAIT_TIMEOUT_SIGNATURE) — do not reword it casually.
+ */
+export async function waitForNodeCompileCacheReady(timeoutMs = 240_000): Promise<void> {
 	const { Promises } = await import('./pfs.js');
 	const pendingKinds = new Set(nodeCompileCacheKinds);
+	const deadline = Date.now() + timeoutMs;
 	while (pendingKinds.size > 0) {
 		for (const kind of pendingKinds) {
 			if (await Promises.exists(getNodeCompileCacheReadyMarkerPath(kind))) {
@@ -187,6 +199,9 @@ export async function waitForNodeCompileCacheReady(): Promise<void> {
 			}
 		}
 		if (pendingKinds.size > 0) {
+			if (Date.now() >= deadline) {
+				throw new Error(`Node compile cache readiness timed out after ${timeoutMs}ms; missing kinds: ${[...pendingKinds].join(', ')}.`);
+			}
 			await new Promise(resolve => setTimeout(resolve, 50));
 		}
 	}

@@ -103,18 +103,41 @@ suite('WSL Remote Agent Host Helpers', () => {
 	});
 
 	suite('composeAgentHostBootstrapScript', () => {
-		test('propagates telemetry disablement to the WSL agent host', () => {
+		test('fails closed instead of composing a pinned bootstrap script that downloads the CLI', () => {
+			// Previously this asserted the composed script ended with the
+			// agent-host launch line (telemetry disablement included). That
+			// script embedded a `curl` download of Microsoft's CLI artifact,
+			// and IDE Code publishes no fork CLI artifact, so composing a
+			// non-custom bootstrap script now throws from
+			// `buildCLIDownloadUrl` before any script exists. Telemetry
+			// disablement propagation remains covered by the custom-command
+			// test below, which returns before the download URL is built.
 			const commit = 'a'.repeat(40);
-			const script = composeAgentHostBootstrapScript({
-				serverDataFolderName: '.vscode-server',
-				quality: 'stable',
-				commit,
-				os: 'linux',
-				arch: 'x64',
-				telemetryLevel: TelemetryConfiguration.OFF,
-			});
+			assert.throws(
+				() => composeAgentHostBootstrapScript({
+					serverDataFolderName: '.vscode-server',
+					quality: 'stable',
+					commit,
+					os: 'linux',
+					arch: 'x64',
+					telemetryLevel: TelemetryConfiguration.OFF,
+				}),
+				new RegExp(`CLI download is disabled in IDE Code: no fork CLI artifact is published \\(requested cli-linux-x64/stable, commit ${commit}\\)`),
+			);
+		});
 
-			assert.ok(script.endsWith(`exec ~/.vscode-server/code-${commit} --cli-data-dir ~/.vscode-server/cli --telemetry-level off agent host --port 0 --idle-timeout 300`));
+		test('fails closed instead of composing an unpinned bootstrap script that downloads the CLI', () => {
+			assert.throws(
+				() => composeAgentHostBootstrapScript({
+					serverDataFolderName: '.vscode-server',
+					quality: 'stable',
+					commit: undefined,
+					os: 'linux',
+					arch: 'x64',
+					telemetryLevel: TelemetryConfiguration.OFF,
+				}),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published \(requested cli-linux-x64\/stable\)/,
+			);
 		});
 
 		test('exports telemetry disablement for a custom command', () => {

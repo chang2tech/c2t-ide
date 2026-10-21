@@ -179,23 +179,42 @@ export function resolveRemotePlatform(unameS: string, unameM: string, libc = '')
 }
 
 /**
- * URL of the CLI download artifact.
+ * URL of the CLI download artifact — FAIL-CLOSED in this fork (IDE Code).
  *
- * When `commit` is provided, uses the commit-pinned URL form so we get
- * the exact CLI matching the current desktop build (mirrors Remote-SSH).
- * When `commit` is undefined (dev/OSS builds), falls back to `latest`.
+ * Upstream, this built a URL on Microsoft's update service
+ * (`update.code.visualstudio.com`, `commit:<sha>`-pinned when `commit` was
+ * provided, `latest` otherwise). This fork's build workflow publishes no
+ * `cli-*` artifact anywhere, so there is no honest replacement URL to
+ * point at: forming the Microsoft URL would download Microsoft's CLI, and
+ * inventing another host would be fabricating an endpoint that does not
+ * serve this fork's builds.
+ *
+ * This function is the single choke point for every CLI download in this
+ * area — the SSH/dev-container installer
+ * (`remoteAgentHostCliInstaller.ts`, pinned and loose paths) and the WSL
+ * bootstrap composer (`wslRemoteAgentHostHelpers.ts`) all call it — so it
+ * now always throws instead of returning a URL. What that means differs
+ * by caller. On the SSH and dev-container paths the installer checks for
+ * an already-installed CLI first and returns early on reuse, so this
+ * function is only reached when a download would actually be attempted,
+ * and only that attempt fails. The WSL composer, by contrast, calls this
+ * function unconditionally while composing its bootstrap script, before
+ * the script's own already-installed check can run, so a WSL connection
+ * fails closed even when a suitable CLI is already installed in the
+ * distro. In every case the failure is loud — this explicit
+ * disabled-download error — and nothing is ever downloaded from
+ * Microsoft's servers. This fail-closed behaviour is the accepted alpha
+ * behaviour, not a pending bug.
+ *
+ * Re-enable downloads only once this fork publishes its own CLI artifacts
+ * from its own endpoint, and build the URL from that endpoint here.
  */
 export function buildCLIDownloadUrl(os: string, arch: string, quality: string, commit?: string): string {
-	const base = 'https://update.code.visualstudio.com';
-	const artifact = `cli-${os}-${arch}`;
-	if (commit) {
-		// Defense-in-depth: same validation as getRemoteCLIBin so the URL
-		// can never be formed with a non-SHA commit (would 404) and stays
-		// consistent with the commit-keyed install path.
-		const c = validateCommit(commit);
-		return `${base}/commit:${c}/${artifact}/${quality}`;
-	}
-	return `${base}/latest/${artifact}/${quality}`;
+	// Defense-in-depth, preserved from the upstream implementation: same
+	// validation as getRemoteCLIBin, so an unsafe commit is still rejected
+	// as such instead of being masked by the disabled-download error.
+	const validatedCommit = commit ? validateCommit(commit) : undefined;
+	throw new Error(`CLI download is disabled in IDE Code: no fork CLI artifact is published (requested cli-${os}-${arch}/${quality}${validatedCommit ? `, commit ${validatedCommit}` : ''})`);
 }
 
 /**

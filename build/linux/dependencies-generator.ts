@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 import { spawnSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
 import { getChromiumSysroot, getVSCodeSysroot } from './debian/install-sysroot.ts';
 import { generatePackageDeps as generatePackageDepsDebian } from './debian/calculate-deps.ts';
 import { generatePackageDeps as generatePackageDepsRpm } from './rpm/calculate-deps.ts';
@@ -46,16 +47,27 @@ export async function getDependencies(packageType: 'deb' | 'rpm', buildDir: stri
 	// Get the files for which we want to find dependencies.
 	// Native modules are unpacked next to the ASAR archive in `node_modules.asar.unpacked`.
 	const nativeModulesPath = path.join(buildDir, 'resources', 'app', 'node_modules.asar.unpacked');
+	// Fail loudly if the unpacked native-modules tree is missing. Returning an
+	// empty dependency list here previously produced a package with an empty
+	// `Depends:` field that still built and uploaded as if it were valid
+	// (BUILD-QA B-W3-02), and it also skipped the FAIL_BUILD_FOR_NEW_DEPENDENCIES
+	// gate below, which only runs on the non-empty path.
+	if (!fs.existsSync(nativeModulesPath)) {
+		throw new Error(`getDependencies: native modules path does not exist: '${nativeModulesPath}'. The packaged app tree '${buildDir}' is missing or incomplete; refusing to generate package dependencies from it.`);
+	}
 	const findResult = spawnSync('find', [nativeModulesPath, '-name', '*.node']);
-	if (findResult.status) {
-		console.error('Error finding files:');
-		console.error(findResult.stderr.toString());
-		return [];
+	if (findResult.error || findResult.status !== 0) {
+		const detail = findResult.error ? String(findResult.error) : (findResult.stderr?.toString() ?? `exit status ${findResult.status}`);
+		throw new Error(`getDependencies: 'find' failed for native modules under '${nativeModulesPath}': ${detail}`);
 	}
 
 	const appPath = path.join(buildDir, applicationName);
 	// Add the native modules
-	const files = findResult.stdout.toString().trimEnd().split('\n');
+	const nativeModuleFiles = findResult.stdout.toString().split('\n').map(line => line.trim()).filter(line => line.length > 0);
+	if (nativeModuleFiles.length === 0) {
+		throw new Error(`getDependencies: no '*.node' files found under '${nativeModulesPath}'. The packaged app tree '${buildDir}' looks incomplete; refusing to generate package dependencies from it.`);
+	}
+	const files = [...nativeModuleFiles];
 	// Add the tunnel binary.
 	files.push(path.join(buildDir, 'bin', product.tunnelApplicationName));
 	// Add the main executable.

@@ -309,38 +309,42 @@ suite('SSH Remote Agent Host Helpers', () => {
 	suite('buildCLIDownloadUrl', () => {
 		const commit = 'abcdef0123456789abcdef0123456789abcdef01';
 
-		test('uses `latest` URL when commit is omitted', () => {
-			assert.strictEqual(
-				buildCLIDownloadUrl('linux', 'x64', 'insider'),
-				'https://update.code.visualstudio.com/latest/cli-linux-x64/insider'
+		// IDE Code (fork) fail-closed: this fork publishes no `cli-*`
+		// artifact, so no download URL is ever formed — in particular the
+		// upstream Microsoft update-service URL must never be produced.
+		// Every call throws the disabled-download error instead.
+		test('fails closed when commit is omitted', () => {
+			assert.throws(
+				() => buildCLIDownloadUrl('linux', 'x64', 'insider'),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
 			);
 		});
 
-		test('works for darwin arm64 stable (no commit)', () => {
-			assert.strictEqual(
-				buildCLIDownloadUrl('darwin', 'arm64', 'stable'),
-				'https://update.code.visualstudio.com/latest/cli-darwin-arm64/stable'
+		test('fails closed for darwin arm64 stable (no commit)', () => {
+			assert.throws(
+				() => buildCLIDownloadUrl('darwin', 'arm64', 'stable'),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
 			);
 		});
 
-		test('uses the Alpine artifact for musl Linux', () => {
-			assert.strictEqual(
-				buildCLIDownloadUrl('alpine', 'x64', 'insider'),
-				'https://update.code.visualstudio.com/latest/cli-alpine-x64/insider'
+		test('fails closed for the Alpine artifact for musl Linux', () => {
+			assert.throws(
+				() => buildCLIDownloadUrl('alpine', 'x64', 'insider'),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
 			);
 		});
 
-		test('pins to commit when provided', () => {
-			assert.strictEqual(
-				buildCLIDownloadUrl('linux', 'x64', 'insider', commit),
-				`https://update.code.visualstudio.com/commit:${commit}/cli-linux-x64/insider`,
+		test('fails closed when a commit is provided', () => {
+			assert.throws(
+				() => buildCLIDownloadUrl('linux', 'x64', 'insider', commit),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
 			);
 		});
 
-		test('pins to commit for darwin arm64 stable', () => {
-			assert.strictEqual(
-				buildCLIDownloadUrl('darwin', 'arm64', 'stable', commit),
-				`https://update.code.visualstudio.com/commit:${commit}/cli-darwin-arm64/stable`,
+		test('fails closed when pinning to commit for darwin arm64 stable', () => {
+			assert.throws(
+				() => buildCLIDownloadUrl('darwin', 'arm64', 'stable', commit),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
 			);
 		});
 
@@ -350,9 +354,11 @@ suite('SSH Remote Agent Host Helpers', () => {
 
 		test('normalizes uppercase hex commits to lowercase', () => {
 			const upper = 'ABCDEF0123456789ABCDEF0123456789ABCDEF01';
-			assert.strictEqual(
-				buildCLIDownloadUrl('linux', 'x64', 'insider', upper),
-				`https://update.code.visualstudio.com/commit:abcdef0123456789abcdef0123456789abcdef01/cli-linux-x64/insider`,
+			// The commit is still validated/normalized before failing
+			// closed, so the error names the normalized lowercase commit.
+			assert.throws(
+				() => buildCLIDownloadUrl('linux', 'x64', 'insider', upper),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published \(requested cli-linux-x64\/insider, commit abcdef0123456789abcdef0123456789abcdef01\)/,
 			);
 		});
 	});
@@ -674,7 +680,7 @@ suite('SSH Remote Agent Host Helpers', () => {
 	});
 
 	suite('ensureRemoteAgentHostCliInstalled', () => {
-		test('reports whether a CLI was reused or installed', async () => {
+		test('reuses an installed CLI and fails closed when a download would be required', async () => {
 			const cliBin = getRemoteCLIBin('.vscode-server', 'insider');
 			const options = {
 				serverDataFolderName: '.vscode-server',
@@ -686,54 +692,60 @@ suite('SSH Remote Agent Host Helpers', () => {
 			const commit = '1234567890abcdef1234567890abcdef12345678';
 			const pinnedOptions = { ...options, commit };
 			const pinnedCliBin = getRemoteCLIBin('.vscode-server', 'insider', commit);
+			// Reuse paths never build a download URL, so they keep working.
 			const reused = await ensureRemoteAgentHostCliInstalled(
 				async () => ({ stdout: '1.0.0\n__vscode_cli_update_exit_code__:0\n', stderr: '', code: 0 }),
 				{ os: 'linux', arch: 'x64' },
 				options,
 			);
+			// Loose install: the existing binary check fails, so a download
+			// would be required — that must fail closed (IDE Code publishes
+			// no CLI artifact) instead of downloading from Microsoft.
 			let calls = 0;
-			const installed = await ensureRemoteAgentHostCliInstalled(
-				async () => {
-					calls++;
-					return { stdout: '', stderr: '', code: calls === 1 ? 1 : 0 };
-				},
-				{ os: 'linux', arch: 'x64' },
-				options,
+			await assert.rejects(
+				ensureRemoteAgentHostCliInstalled(
+					async () => {
+						calls++;
+						return { stdout: '', stderr: '', code: calls === 1 ? 1 : 0 };
+					},
+					{ os: 'linux', arch: 'x64' },
+					options,
+				),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
 			);
 			const reusedPinned = await ensureRemoteAgentHostCliInstalled(
 				async () => ({ stdout: '', stderr: '', code: 0 }),
 				{ os: 'linux', arch: 'x64' },
 				pinnedOptions,
 			);
+			// Pinned install: `test -x` fails, so a download would be
+			// required — same fail-closed expectation.
 			calls = 0;
-			const installedPinned = await ensureRemoteAgentHostCliInstalled(
-				async () => {
-					calls++;
-					return { stdout: '', stderr: '', code: calls === 1 ? 1 : 0 };
-				},
-				{ os: 'linux', arch: 'x64' },
-				pinnedOptions,
+			await assert.rejects(
+				ensureRemoteAgentHostCliInstalled(
+					async () => {
+						calls++;
+						return { stdout: '', stderr: '', code: calls === 1 ? 1 : 0 };
+					},
+					{ os: 'linux', arch: 'x64' },
+					pinnedOptions,
+				),
+				/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
 			);
 
 			assert.deepStrictEqual(
 				{
 					reused,
-					installed,
 					reusedPinned,
-					installedPinned,
 					registrationTimeouts: {
 						reused: getNewAgentHostRegistrationTimeoutMs(reused.installed),
-						installed: getNewAgentHostRegistrationTimeoutMs(installed.installed),
 						reusedPinned: getNewAgentHostRegistrationTimeoutMs(reusedPinned.installed),
-						installedPinned: getNewAgentHostRegistrationTimeoutMs(installedPinned.installed),
 					},
 				},
 				{
 					reused: { cliBin, installed: false },
-					installed: { cliBin, installed: true },
 					reusedPinned: { cliBin: pinnedCliBin, installed: false },
-					installedPinned: { cliBin: pinnedCliBin, installed: true },
-					registrationTimeouts: { reused: undefined, installed: 300_000, reusedPinned: undefined, installedPinned: 300_000 },
+					registrationTimeouts: { reused: undefined, reusedPinned: undefined },
 				},
 			);
 		});

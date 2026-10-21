@@ -14,6 +14,11 @@ suite('Remote Agent Host CLI installer cache', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 	const commit = 'a'.repeat(40);
 	const cliBin = `~/.vscode-server-insiders/code-insiders-${commit}`;
+	const looseCliBin = `~/.vscode-server-insiders/code-insiders`;
+	// IDE Code publishes no fork CLI artifact, so `buildCLIDownloadUrl`
+	// throws this error before any cache or download command can be formed
+	// (the pinned installer calls it before its cache/download `try` block).
+	const pinnedDisabledError = new RegExp(`CLI download is disabled in IDE Code: no fork CLI artifact is published \\(requested cli-linux-arm64/insider, commit ${commit}\\)`);
 
 	function fixture(cacheError?: Error, exists = false, pinned = true, shared = true) {
 		const commands: string[] = [];
@@ -43,46 +48,55 @@ suite('Remote Agent Host CLI installer cache', () => {
 		};
 	}
 
-	test('installs a private copy from the cache instead of using the private downloader', async () => {
+	test('fails closed instead of installing a private copy from the cache', async () => {
 		const test = fixture();
-		const result = await test.run();
+		await assert.rejects(test.run(), pinnedDisabledError);
 		assert.deepStrictEqual({
-			result,
+			commands: test.commands,
 			cacheAttempts: test.commands.filter(command => command.includes('flock 9')).length,
 			privateDownloads: test.commands.filter(command => command.includes('curl -fsSL') && !command.includes('flock 9')).length,
-			reportedCache: test.messages.some(message => message.startsWith('Installed private CLI copy')),
+			microsoftDownloads: test.commands.filter(command => command.includes('update.code.visualstudio.com')).length,
+			reportedCache: test.messages,
 			validated: test.commands.includes(`${cliBin} --version`),
-		}, { result: { cliBin, installed: true }, cacheAttempts: 1, privateDownloads: 0, reportedCache: true, validated: true });
+		}, { commands: [`test -x ${cliBin}`], cacheAttempts: 0, privateDownloads: 0, microsoftDownloads: 0, reportedCache: [], validated: false });
 	});
 
-	test('reports cache failure and falls back to the existing private installer', async () => {
+	test('fails closed before the shared cache is tried, so a cache failure cannot fall back to a private download', async () => {
 		const test = fixture(new Error('flock is unavailable'));
-		await test.run();
+		await assert.rejects(test.run(), pinnedDisabledError);
 		assert.deepStrictEqual({
+			commands: test.commands,
 			privateDownloads: test.commands.filter(command => command.includes('curl -fsSL') && !command.includes('flock 9')).length,
+			microsoftDownloads: test.commands.filter(command => command.includes('update.code.visualstudio.com')).length,
 			messages: test.messages,
-		}, { privateDownloads: 1, messages: ['Shared CLI cache unavailable; downloading a private copy: flock is unavailable'] });
+		}, { commands: [`test -x ${cliBin}`], privateDownloads: 0, microsoftDownloads: 0, messages: [] });
 	});
 
-	test('does not fall back or continue downloading after cancellation', async () => {
+	test('fails closed before the cache runs, so cache cancellation is never reached and nothing downloads or falls back', async () => {
 		const test = fixture(new CancellationError());
-		await assert.rejects(test.run(), CancellationError);
+		await assert.rejects(test.run(), pinnedDisabledError);
 		assert.deepStrictEqual({
-			lastCommandWasCache: test.commands.at(-1)?.includes('flock 9'),
+			commands: test.commands,
+			downloads: test.commands.filter(command => command.includes('curl')).length,
 			messages: test.messages,
-		}, { lastCommandWasCache: true, messages: [] });
+		}, { commands: [`test -x ${cliBin}`], downloads: 0, messages: [] });
 	});
 
-	test('preserves private reuse, unpinned updates, and installations without a shared cache', async () => {
+	test('preserves private reuse and unpinned updates, and fails closed for an installation without a shared cache', async () => {
 		const existing = fixture(undefined, true);
 		const unpinned = fixture(undefined, false, false);
 		const privateOnly = fixture(undefined, false, true, false);
-		await Promise.all([existing.run(), unpinned.run(), privateOnly.run()]);
+		const [existingResult, unpinnedResult] = await Promise.all([existing.run(), unpinned.run()]);
+		await assert.rejects(privateOnly.run(), pinnedDisabledError);
 		assert.deepStrictEqual({
+			existingResult,
+			unpinnedResult,
 			cacheCommands: [...existing.commands, ...unpinned.commands, ...privateOnly.commands].filter(command => command.includes('flock 9')),
 			existingDownloads: existing.commands.filter(command => command.includes('curl')),
 			unpinnedUpdates: unpinned.commands.some(command => command.includes('code-insiders update')),
+			privateOnlyCommands: privateOnly.commands,
 			privateDownloads: privateOnly.commands.filter(command => command.includes('curl')).length,
-		}, { cacheCommands: [], existingDownloads: [], unpinnedUpdates: true, privateDownloads: 1 });
+			microsoftDownloads: [...existing.commands, ...unpinned.commands, ...privateOnly.commands].filter(command => command.includes('update.code.visualstudio.com')).length,
+		}, { existingResult: { cliBin, installed: false }, unpinnedResult: { cliBin: looseCliBin, installed: false }, cacheCommands: [], existingDownloads: [], unpinnedUpdates: true, privateOnlyCommands: [`test -x ${cliBin}`], privateDownloads: 0, microsoftDownloads: 0 });
 	});
 });

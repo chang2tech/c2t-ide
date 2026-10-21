@@ -791,17 +791,25 @@ suite('Dev Container Agent Host Main Service', () => {
 		assert.deepStrictEqual(service.devContainerArgs.filter(args => args[0] === 'up'), [['up', '--log-level', 'debug', '--workspace-folder', '/workspace']]);
 	});
 
-	test('caches bootstrap CLIs for each libc even when the server cache remains private', async () => {
+	test('fails closed for each libc instead of caching bootstrap CLIs when the server cache remains private', async () => {
+		// Previously this asserted the shared CLI cache install command
+		// (`flock 9` …) was used per libc. That cache path is itself a CLI
+		// download (its cache-miss branch curls the same download URL), and
+		// IDE Code publishes no CLI artifact, so `buildCLIDownloadUrl`
+		// throws before any cache or download command can be formed. The
+		// per-libc platform is still visible in the requested artifact
+		// named by the fail-closed error.
 		for (const [libc, platform] of [['', 'linux-x64'], ['musl', 'alpine-x64']]) {
 			const service = store.add(new TestDevContainerAgentHostMainService(libc, true, undefined, process.env, true, [], new Set(), '/tmp', new NullLogService(), 'a'.repeat(40)));
 			service.cacheSetupError = new Error('Preserving existing private server cache');
-			await service.connect({ connectionId: platform, workspaceFolder: '/workspace', name: 'Project' });
-			const cacheCommand = service.execCommands.find(command => command.includes('flock 9'));
+			await assert.rejects(
+				service.connect({ connectionId: platform, workspaceFolder: '/workspace', name: 'Project' }),
+				new RegExp(`CLI download is disabled in IDE Code: no fork CLI artifact is published \\(requested cli-${platform}/insider`),
+			);
 			assert.deepStrictEqual({
-				path: cacheCommand?.includes(`/vscode/vscode-server-oss/cli/bin/${platform}`),
-				copies: cacheCommand?.includes('cp "$entry/$archive" "$private_tmp/$archive"'),
-				privateDownloads: service.execCommands.filter(command => command.includes('curl') && !command.includes('flock 9')).length,
-			}, { path: true, copies: true, privateDownloads: 0 });
+				cacheCommands: service.execCommands.filter(command => command.includes('flock 9')).length,
+				downloads: service.execCommands.filter(command => command.includes('curl')).length,
+			}, { cacheCommands: 0, downloads: 0 });
 		}
 	});
 
@@ -810,13 +818,21 @@ suite('Dev Container Agent Host Main Service', () => {
 		service.cliCacheSetupError = new Error('Read-only CLI cache');
 		const output: string[] = [];
 		store.add(service.onDidOutput(event => output.push(event.data)));
-		await service.connect({ connectionId: 'private-cli', workspaceFolder: '/workspace', name: 'Project' });
+		// The shared-server-cache behaviour asserted below happens before
+		// the CLI install step; the install itself previously fell back to
+		// a private download, which now fails closed instead (IDE Code
+		// publishes no CLI artifact), so the connect rejects and no
+		// download is attempted.
+		await assert.rejects(
+			service.connect({ connectionId: 'private-cli', workspaceFolder: '/workspace', name: 'Project' }),
+			/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
+		);
 		assert.deepStrictEqual({
 			sharedServer: output.some(line => line.includes('Using shared server cache')),
 			warning: output.some(line => line.includes('Read-only CLI cache')),
 			cacheCommands: service.execCommands.filter(command => command.includes('flock 9')).length,
 			privateDownloads: service.execCommands.filter(command => command.includes('curl')).length,
-		}, { sharedServer: true, warning: true, cacheCommands: 0, privateDownloads: 1 });
+		}, { sharedServer: true, warning: true, cacheCommands: 0, privateDownloads: 0 });
 	});
 
 	test('forwards missing host Git identity without overwriting container identity', async () => {
@@ -1176,17 +1192,30 @@ suite('Dev Container Agent Host Main Service', () => {
 		});
 	}));
 
-	test('installs the Alpine CLI artifact in a musl container', async () => {
+	test('fails closed instead of downloading the Alpine CLI artifact in a musl container', async () => {
+		// This path reaches the CLI download through
+		// `ensureRemoteAgentHostCliInstalled` -> `buildCLIDownloadUrl`
+		// (the musl libc probe makes `resolveRemotePlatform` pick the
+		// `alpine` platform, and `_forceCliInstall` makes the existing-CLI
+		// checks fail so a download would be required). IDE Code publishes
+		// no CLI artifact, so the connect must fail closed with the
+		// disabled-download error and no command may carry a Microsoft
+		// update-service URL or attempt a CLI download.
 		const service = store.add(new TestDevContainerAgentHostMainService('musl', true));
-		await service.connect({
-			connectionId: 'connection',
-			workspaceFolder: '/workspace',
-			name: 'Project Dev Container',
-		});
-		await service.disconnect('connection');
+		await assert.rejects(
+			service.connect({
+				connectionId: 'connection',
+				workspaceFolder: '/workspace',
+				name: 'Project Dev Container',
+			}),
+			/CLI download is disabled in IDE Code: no fork CLI artifact is published/,
+		);
 
-		assert.ok(service.execCommands.some(command =>
-			command.includes('https://update.code.visualstudio.com/latest/cli-alpine-x64/insider')
-		));
+		assert.ok(!service.execCommands.some(command =>
+			command.includes('update.code.visualstudio.com')
+		), `no exec command may reference the Microsoft update service: ${service.execCommands.join('\n')}`);
+		assert.ok(!service.execCommands.some(command =>
+			command.includes('curl -fsSL')
+		), `no exec command may attempt a CLI download: ${service.execCommands.join('\n')}`);
 	});
 });

@@ -72,31 +72,148 @@ export function createNodeCompileCacheGenerationEnvironment(portableDirectory: s
 export async function generateNodeCompileCache(platform: string, outputDirectory: string, versionedResourcesFolder: string, product: INodeCompileCacheProduct): Promise<void> {
 	const paths = getNodeCompileCachePaths(platform, outputDirectory, versionedResourcesFolder, product);
 	const temporaryDirectory = platform === 'win32' ? os.tmpdir() : '/tmp';
-	const portableDirectory = await fs.promises.mkdtemp(path.join(temporaryDirectory, 'vscode-cache-'));
-
-	await fs.promises.rm(paths.cacheDirectory, { recursive: true, force: true });
-
+	// C-P1-1: no cleanup/setup step around this function may throw out of it
+	// and fail the build against the non-fatal design. The temporary portable
+	// directory is therefore created inside the guarded region below and
+	// every removal goes through tryRemoveDirectory (retry + warn, never
+	// throw), so a cleanup failure can neither replace a successful result
+	// nor mask a fatal generation/validation error thrown by the try block.
+	let portableDirectory: string | undefined;
 	try {
+		try {
+			portableDirectory = await fs.promises.mkdtemp(path.join(temporaryDirectory, 'vscode-cache-'));
+		} catch (error) {
+			console.warn(`WARNING: Could not create a temporary directory for Node.js compile cache generation (${(error as Error).message.split('\n')[0]}); packaging without a pre-generated compile cache. This package will start slower on every launch (the runtime never populates the cache itself) until a build with a generated cache ships.`);
+			return;
+		}
+		await tryRemoveDirectory(paths.cacheDirectory, 'the stale Node.js compile cache directory');
+
 		const env = createNodeCompileCacheGenerationEnvironment(portableDirectory);
 		try {
 			await runCacheGenerationWithRetry(paths.application, paths.cacheDirectory, env);
-			const totalCacheEntryCount = await validateNodeCompileCache(paths.cacheDirectory, process.arch);
-			console.log(`Generated ${totalCacheEntryCount} total Node.js compile cache entries in ${paths.cacheDirectory}.`);
 		} catch (error) {
-			// The pre-generated compile cache is a startup-speed optimization only:
-			// without it the packaged app still enables and populates the cache at
-			// runtime (enableNodeCompileCache warns and continues when not
-			// generating). Builds #14 and #15 both timed out here on GitHub-hosted
-			// Windows runners (300s x 2 attempts, markers for main /
-			// extension-host / shared-process never written) even though the app
-			// itself started and initialized fine. Do not block the release on
-			// this optimization: drop any partial cache output and package
-			// without a pre-generated cache.
-			console.warn(`WARNING: Node.js compile cache generation failed (${(error as Error).message.split('\n')[0]}); packaging without a pre-generated compile cache. First launches may be slower while the runtime cache warms up.`);
-			await fs.promises.rm(paths.cacheDirectory, { recursive: true, force: true });
+			const classification = classifyCacheGenerationFailure(error);
+			if (classification.fatal) {
+				// The app is broken, not the runner: keep the build red. This
+				// generation run is the only full packaged-app startup in the
+				// -ci series (gulpfile.vscode.ts pushes this task last), so
+				// there is no later smoke test to catch it.
+				throw error;
+			}
+			// Infrastructure candidate (timeout on a still-alive child, the
+			// builds #14/#15 pattern). Downgrading is only allowed with
+			// independent proof that the packaged app starts: run the fatal
+			// smoke check. If it throws, the build goes red here.
+			await runPackagedAppSmokeCheck(paths.application, portableDirectory);
+			// NOTE (B-W1-F03): the runtime does NOT warm this cache up later.
+			// Without a packaged cache, enableNodeCompileCache reports
+			// 'missing' and returns before enabling anything, and existing
+			// caches are opened readOnly (src/vs/base/node/nodeCompileCache.ts).
+			// A cache-less package is slower on EVERY launch of EVERY process
+			// kind until a build with a cache ships — say so plainly.
+			console.warn(`::warning title=Node compile cache skipped::Node.js compile cache generation timed out (${classification.reason}); packaging WITHOUT a pre-generated compile cache after the packaged-app smoke check passed. This package will start slower on every launch (the runtime never populates the cache itself) until a build with a generated cache ships.`);
+			await tryRemoveDirectory(paths.cacheDirectory, 'the partial Node.js compile cache directory');
+			return;
 		}
+		// Validation failures are fatal and deliberately outside the catch
+		// above: generation exited 0, so a malformed cache is an app/cache
+		// logic failure, never a slow runner.
+		const totalCacheEntryCount = await validateNodeCompileCache(paths.cacheDirectory, process.arch);
+		console.log(`Generated ${totalCacheEntryCount} total Node.js compile cache entries in ${paths.cacheDirectory}.`);
 	} finally {
-		await removeDirectoryWithRetries(portableDirectory);
+		if (portableDirectory) {
+			await tryRemoveDirectory(portableDirectory, 'the temporary portable directory');
+		}
+	}
+}
+
+/**
+ * Best-effort directory cleanup (C-P1-1). Uses the retrying remover so
+ * transient Windows file-lock races (EBUSY/EPERM/ENOTEMPTY) still heal, but
+ * a cleanup failure is only ever logged as a warning: it must never throw
+ * out of a catch/finally block and replace the primary result — neither a
+ * successful generation, a non-fatal downgrade, nor a fatal error that has
+ * to fail the build.
+ */
+async function tryRemoveDirectory(directory: string, description: string): Promise<void> {
+	try {
+		await removeDirectoryWithRetries(directory);
+	} catch (error) {
+		console.warn(`WARNING: Failed to clean up ${description} at ${directory} (${(error as Error).message.split('\n')[0]}); continuing.`);
+	}
+}
+
+/**
+ * Best-effort process-tree kill (B-W1-F05). A plain `child.kill()` only
+ * signals the direct child: the packaged app spawns sibling processes
+ * (shared process, extension host, pty host, agent host) that would
+ * otherwise survive a timeout kill as orphans, keep holding file locks,
+ * and keep writing into the cache/portable directories after the build
+ * layer has already cleaned them up or packaged them.
+ *
+ * Windows: `taskkill /pid <pid> /T /F` terminates the whole tree (`/T`)
+ * by force (`/F`). It is launched via execFile with the pid as a single
+ * argv entry — no shell is involved.
+ * POSIX: the children spawned in this file use `detached: true`, so the
+ * child is a process-group leader and `process.kill(-pid, 'SIGKILL')`
+ * signals the whole group, descendants included. If that group does not
+ * exist (ESRCH — e.g. a child that was not spawned detached) it falls
+ * back to a plain kill of the child itself.
+ *
+ * Like tryRemoveDirectory, this helper never throws: it is only called
+ * from timeout/error paths, and a failed kill must not replace the
+ * primary result or change how the surrounding promise settles. The
+ * promise still settles from the child's own `close`/`error` events,
+ * exactly as with the plain `child.kill()` calls this replaces.
+ * Exported so the tree-kill behaviour can be exercised by tests.
+ */
+export function killProcessTree(child: cp.ChildProcess, description: string): void {
+	try {
+		if (child.exitCode !== null || child.signalCode !== null) {
+			return; // Already exited: there is no tree left to kill.
+		}
+		const pid = child.pid;
+		if (pid === undefined) {
+			// The spawn never produced a pid (the spawn itself failed and
+			// the `error` handler owns settling): there is no tree to
+			// address, so only attempt the plain kill.
+			child.kill('SIGKILL');
+			return;
+		}
+		if (process.platform === 'win32') {
+			cp.execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, error => {
+				if (error) {
+					console.warn(`WARNING: Failed to kill ${description} (pid ${pid}) with taskkill (${error.message.split('\n')[0]}); falling back to a plain kill.`);
+					try {
+						child.kill('SIGKILL');
+					} catch {
+						// Already gone; the close/error handlers settle.
+					}
+				}
+			});
+			return;
+		}
+		// POSIX: signal the child's whole process group.
+		try {
+			process.kill(-pid, 'SIGKILL');
+			return;
+		} catch (groupError) {
+			if ((groupError as NodeJS.ErrnoException).code !== 'ESRCH') {
+				console.warn(`WARNING: Failed to kill the process group of ${description} (pid ${pid}) (${(groupError as Error).message.split('\n')[0]}); falling back to a plain kill.`);
+			}
+			// ESRCH means the group does not exist (the child was not a
+			// group leader): fall through to the plain kill below.
+		}
+		try {
+			process.kill(pid, 'SIGKILL');
+		} catch (killError) {
+			if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') {
+				console.warn(`WARNING: Failed to kill ${description} (pid ${pid}) (${(killError as Error).message.split('\n')[0]}); continuing.`);
+			}
+			// ESRCH: the child is already gone — nothing left to do.
+		}
+	} catch (error) {
+		console.warn(`WARNING: Failed to kill ${description} (${(error as Error).message.split('\n')[0]}); continuing.`);
 	}
 }
 
@@ -110,28 +227,188 @@ export async function generateNodeCompileCache(platform: string, outputDirectory
  * build #14: identical binary passed in build #13, but the #14 runner was slow
  * enough (esbuild bundle took 260s) that the 120s budget expired with only
  * agent-host/pty-host markers written. A longer budget plus one retry absorbs
- * slow-runner flakiness without masking a genuinely broken startup: if the app
- * cannot start, both attempts fail and the packaging step still fails loudly.
+ * slow-runner flakiness. Only timeouts are retried: spawn/exit failures are
+ * deterministic app failures and fail fast (see classifyCacheGenerationFailure
+ * for how the final failure is then treated — fatal, or downgraded only
+ * after the packaged-app smoke check passes).
  */
 const CACHE_GENERATION_TIMEOUT_MS = 300_000;
 const CACHE_GENERATION_MAX_ATTEMPTS = 2;
 
+/**
+ * Structured failure of one cache-generation run. The `failureKind` — not the
+ * message text — drives the fatal/non-fatal decision in
+ * generateNodeCompileCache:
+ * - 'spawn' / 'exit': the packaged app itself is broken (missing binary,
+ *   crash, early exit). Always fatal: this run is the only full packaged-app
+ *   startup in the -ci series, so swallowing it ships a broken app green.
+ * - 'timeout': the child was still alive when our budget expired and its
+ *   output carries no app-fatal signature. This is the only kind that may be
+ *   infrastructure (slow runner, see builds #14/#15) — and even then it is
+ *   only downgraded after an independent smoke check proves the app starts.
+ * - 'unknown': conservative default — fatal.
+ */
+type NodeCompileCacheFailureKind = 'timeout' | 'exit' | 'spawn' | 'unknown';
+
+class NodeCompileCacheGenerationError extends Error {
+	// Plain field declarations, not constructor parameter properties:
+	// build/tsconfig.json sets erasableSyntaxOnly (the build pipeline runs
+	// these .ts files through type stripping), which forbids them.
+	readonly failureKind: NodeCompileCacheFailureKind;
+	readonly readyKinds: readonly string[];
+	readonly childLifetimeMs: number;
+
+	constructor(message: string, failureKind: NodeCompileCacheFailureKind, readyKinds: readonly string[], childLifetimeMs: number) {
+		super(message);
+		this.name = 'NodeCompileCacheGenerationError';
+		this.failureKind = failureKind;
+		this.readyKinds = readyKinds;
+		this.childLifetimeMs = childLifetimeMs;
+	}
+}
+
+/** Output signatures of the runtime refusing to enable the cache in
+ *  generating mode (src/vs/base/node/nodeCompileCache.ts, the
+ *  `isGeneratingCache` throw). An app-side failure even when it surfaces
+ *  as a timeout, so it must never be downgraded. */
+const APP_FATAL_OUTPUT_SIGNATURES = [
+	'Unable to enable the packaged Node.js compile cache',
+	'is not active (status:'
+] as const;
+
+/** Signature of the internal readiness deadline from
+ *  waitForNodeCompileCacheReady (see fix for B-W1-F02). The app exiting
+ *  after this deadline is a timeout, not a crash. */
+const INTERNAL_WAIT_TIMEOUT_SIGNATURE = 'Node compile cache readiness timed out';
+
+function classifyCacheGenerationFailure(error: unknown): { readonly fatal: boolean; readonly reason: string } {
+	if (error instanceof NodeCompileCacheGenerationError) {
+		const outputTail = error.message;
+		if (APP_FATAL_OUTPUT_SIGNATURES.some(signature => outputTail.includes(signature))) {
+			return { fatal: true, reason: 'runtime refused to enable the packaged cache in generating mode' };
+		}
+		if (error.failureKind === 'timeout' || outputTail.includes(INTERNAL_WAIT_TIMEOUT_SIGNATURE)) {
+			return { fatal: false, reason: `generation timed out with the app still alive (ready kinds: ${error.readyKinds.join(', ') || 'none'}, child lived ${Math.round(error.childLifetimeMs / 1000)}s)` };
+		}
+		return { fatal: true, reason: `packaged app failure (${error.failureKind})` };
+	}
+	// Spawn errors surface as raw ErrnoException from child.on('error').
+	if ((error as NodeJS.ErrnoException)?.code === 'ENOENT' || (error as NodeJS.ErrnoException)?.syscall === 'spawn') {
+		return { fatal: true, reason: 'could not spawn the packaged application' };
+	}
+	return { fatal: true, reason: 'unclassified failure (conservative default)' };
+}
+
 async function runCacheGenerationWithRetry(application: string, cacheDirectory: string, env: NodeJS.ProcessEnv): Promise<void> {
 	let lastError: unknown;
 	for (let attempt = 1; attempt <= CACHE_GENERATION_MAX_ATTEMPTS; attempt++) {
-		// Clear any partial output from a previous attempt so validation sees a clean state.
-		await fs.promises.rm(cacheDirectory, { recursive: true, force: true });
+		// Clear any partial output from a previous attempt so validation sees
+		// a clean state. Best-effort like every other cleanup (C-P1-1): a
+		// locked leftover must not fail the build here — the generation run
+		// and the fatal validation that follows judge the result.
+		await tryRemoveDirectory(cacheDirectory, 'the partial Node.js compile cache directory from the previous attempt');
 		try {
 			await runCacheGeneration(application, cacheDirectory, env);
 			return;
 		} catch (error) {
 			lastError = error;
+			// Only a timeout can heal by retrying (a warmer/slower runner may
+			// finish on the second attempt). Spawn/exit failures are
+			// deterministic app failures — fail fast instead of paying for a
+			// second doomed run.
+			if (!(error instanceof NodeCompileCacheGenerationError) || error.failureKind !== 'timeout') {
+				throw error;
+			}
 			if (attempt < CACHE_GENERATION_MAX_ATTEMPTS) {
 				console.log(`Node.js compile cache generation attempt ${attempt}/${CACHE_GENERATION_MAX_ATTEMPTS} failed (${(error as Error).message.split('\n')[0]}); retrying...`);
 			}
 		}
 	}
 	throw lastError;
+}
+
+/**
+ * Fatal smoke check for the non-fatal path (B-W1-F01). Cache generation is
+ * the only full packaged-app startup in the -ci series, so before a timeout
+ * may be downgraded to "slow runner", the app must prove — independently of
+ * the full 5-kind cache run — that it starts:
+ *  1. `--version` exits 0 within a small budget (binary loads, bootstrap
+ *     runs; src/main.ts enables the main compile cache before mainImpl).
+ *  2. A shortened generating-mode launch reaches the `main` readiness
+ *     marker, which is only written after the main process reaches the
+ *     Eventually phase (src/vs/code/electron-main/app.ts). The other four
+ *     kinds are deliberately NOT required here: waiting for all of them on
+ *     a slow runner is exactly what timed out in builds #14/#15.
+ * Throws on any failure; the caller lets that fail the build.
+ */
+const SMOKE_VERSION_TIMEOUT_MS = 30_000;
+const SMOKE_MAIN_MARKER_TIMEOUT_MS = 120_000;
+
+async function runPackagedAppSmokeCheck(application: string, portableDirectory: string): Promise<void> {
+	console.log('Running packaged-app smoke check before packaging without a compile cache...');
+	// Tier 1: --version
+	await new Promise<void>((resolve, reject) => {
+		const env = createNodeCompileCacheGenerationEnvironment(portableDirectory);
+		delete env.VSCODE_GENERATE_NODE_COMPILE_CACHE;
+		// detached on POSIX so killProcessTree can signal the whole process group (B-W1-F05).
+		const child = cp.spawn(application, ['--version'], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+		let output = '';
+		const timeout = setTimeout(() => killProcessTree(child, 'the packaged-app smoke check (--version) process tree'), SMOKE_VERSION_TIMEOUT_MS);
+		child.stdout.on('data', chunk => output += chunk.toString());
+		child.stderr.on('data', chunk => output += chunk.toString());
+		child.on('error', error => { clearTimeout(timeout); reject(new Error(`Packaged-app smoke check (--version) could not spawn the application: ${error.message}`)); });
+		child.on('close', (code, signal) => {
+			clearTimeout(timeout);
+			if (code !== 0) {
+				reject(new Error(`Packaged-app smoke check failed: --version exited with code ${code} and signal ${signal ?? 'none'}.\n${output}`));
+			} else {
+				resolve();
+			}
+		});
+	});
+	// Tier 2: shortened generating-mode launch, main marker only, throwaway cache root
+	const smokeRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'vscode-smoke-cache-'));
+	try {
+		const env = createNodeCompileCacheGenerationEnvironment(portableDirectory);
+		env.VSCODE_NODE_COMPILE_CACHE_ROOT = smokeRoot;
+		await new Promise<void>((resolve, reject) => {
+			// detached on POSIX so killProcessTree can signal the whole process group (B-W1-F05).
+			const child = cp.spawn(application, [], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+			let output = '';
+			child.stdout.on('data', chunk => output += chunk.toString());
+			child.stderr.on('data', chunk => output += chunk.toString());
+			const mainMarker = path.join(smokeRoot, 'main', '.ready');
+			let poll: ReturnType<typeof setInterval>;
+			let timeout: ReturnType<typeof setTimeout>;
+			const stopWatching = () => { clearInterval(poll); clearTimeout(timeout); };
+			poll = setInterval(() => {
+				if (fs.existsSync(mainMarker)) {
+					stopWatching();
+					killProcessTree(child, 'the packaged-app smoke check process tree');
+					resolve();
+				}
+			}, 250);
+			timeout = setTimeout(() => {
+				stopWatching();
+				killProcessTree(child, 'the packaged-app smoke check process tree');
+				reject(new Error(`Packaged-app smoke check failed: main readiness marker not written within ${SMOKE_MAIN_MARKER_TIMEOUT_MS / 1000}s — the app did not reach the Eventually phase.\n${output}`));
+			}, SMOKE_MAIN_MARKER_TIMEOUT_MS);
+			child.on('error', error => { stopWatching(); reject(new Error(`Packaged-app smoke check could not spawn the application: ${error.message}`)); });
+			child.on('close', (code, signal) => {
+				stopWatching();
+				if (fs.existsSync(mainMarker)) {
+					resolve();
+				} else {
+					reject(new Error(`Packaged-app smoke check failed: application exited with code ${code} and signal ${signal ?? 'none'} before the main readiness marker.\n${output}`));
+				}
+			});
+		});
+	} finally {
+		// C-P1-1: smoke cleanup is best-effort too — a cleanup failure here
+		// must not replace the smoke result (pass or fatal failure).
+		await tryRemoveDirectory(smokeRoot, 'the smoke-check compile cache directory');
+	}
+	console.log('Packaged-app smoke check passed.');
 }
 
 /**
@@ -202,31 +479,48 @@ export async function validateNodeCompileCache(rootDirectory: string, architectu
 
 function runCacheGeneration(application: string, cacheDirectory: string, env: NodeJS.ProcessEnv): Promise<void> {
 	return new Promise((resolve, reject) => {
+		const startedAt = Date.now();
+		// Marker progress timeline: which kinds became ready, and when, so a
+		// timeout report distinguishes "still progressing slowly" from
+		// "stuck before phase X" (B-W1-F02).
+		const readyObservedAt = new Map<string, number>();
+		const progressPoll = setInterval(() => {
+			for (const kind of nodeCompileCacheKinds) {
+				if (!readyObservedAt.has(kind) && fs.existsSync(path.join(cacheDirectory, kind, '.ready'))) {
+					readyObservedAt.set(kind, Date.now() - startedAt);
+					console.log(`Node.js compile cache marker '${kind}' ready after ${Math.round((Date.now() - startedAt) / 1000)}s.`);
+				}
+			}
+		}, 5_000);
 		const child = cp.spawn(application, [], {
 			env,
-			stdio: ['ignore', 'pipe', 'pipe']
+			stdio: ['ignore', 'pipe', 'pipe'],
+			// detached on POSIX so killProcessTree can signal the whole process group (B-W1-F05).
+			detached: process.platform !== 'win32'
 		});
 		let output = '';
 		let didTimeOut = false;
 		const timeout = setTimeout(() => {
 			didTimeOut = true;
-			child.kill();
+			killProcessTree(child, 'the Node.js compile cache generation process tree');
 		}, CACHE_GENERATION_TIMEOUT_MS);
 
 		child.stdout.on('data', chunk => output += chunk.toString());
 		child.stderr.on('data', chunk => output += chunk.toString());
 		child.on('error', error => {
 			clearTimeout(timeout);
-			reject(error);
+			clearInterval(progressPoll);
+			reject(new NodeCompileCacheGenerationError(`Node.js compile cache generation could not spawn the packaged application: ${error.message}\n${output}`, 'spawn', [...readyObservedAt.keys()], Date.now() - startedAt));
 		});
 		child.on('close', (code, signal) => {
 			clearTimeout(timeout);
+			clearInterval(progressPoll);
 			if (didTimeOut) {
 				const missingKinds = nodeCompileCacheKinds.filter(kind => !fs.existsSync(path.join(cacheDirectory, kind, '.ready')));
 				const missingKindsMessage = missingKinds.length > 0 ? ` Missing readiness markers: ${missingKinds.join(', ')}.` : '';
-				reject(new Error(`Node.js compile cache generation timed out.${missingKindsMessage}\n${output}`));
+				reject(new NodeCompileCacheGenerationError(`Node.js compile cache generation timed out.${missingKindsMessage}\n${output}`, 'timeout', [...readyObservedAt.keys()], Date.now() - startedAt));
 			} else if (code !== 0) {
-				reject(new Error(`Node.js compile cache generation exited with code ${code} and signal ${signal ?? 'none'}.\n${output}`));
+				reject(new NodeCompileCacheGenerationError(`Node.js compile cache generation exited with code ${code} and signal ${signal ?? 'none'}.\n${output}`, 'exit', [...readyObservedAt.keys()], Date.now() - startedAt));
 			} else {
 				resolve();
 			}

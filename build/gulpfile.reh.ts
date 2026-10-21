@@ -8,6 +8,7 @@ import * as path from 'path';
 import es from 'event-stream';
 import * as util from './lib/util.ts';
 import { getVersion } from './lib/getVersion.ts';
+import { assertNoPlaceholders } from './lib/assertNoPlaceholders.ts';
 import * as task from './lib/gulp/task.ts';
 import { inlineMeta } from './lib/inlineMeta.ts';
 import { computeNLSMetadataHash } from './lib/nlsMetadata.ts';
@@ -31,6 +32,7 @@ import { runEsbuildBundle, getBootstrapEntryPointsForTarget } from './lib/esbuil
 import { fetchUrls } from './lib/fetch.ts';
 import { downloadFeedPackage } from './lib/azureFeed.ts';
 import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim } from './lib/copilot.ts';
+import { ensureParcelWatcherPlatformPackage, getParcelWatcherExcludeFilter, getParcelWatcherPlatformFiles } from './lib/platformPackages.ts';
 import { readAgentSdkResults } from './agent-sdk/common.ts';
 
 
@@ -260,6 +262,10 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 	const destination = path.join(BUILD_ROOT, destinationFolderName);
 
 	return () => {
+		if (!commit) {
+			console.warn(`WARNING: packaging REH without a commit hash; remote-cli scripts will carry COMMIT="" and the staged product.json will have no commit. Set BUILD_SOURCEVERSION to the full commit SHA or build from a git checkout.`);
+		}
+
 		const src = gulp.src(sourceFolderName + '/**', { base: '.' })
 			.pipe(rename(function (path) { path.dirname = path.dirname!.replace(new RegExp('^' + sourceFolderName), 'out'); }))
 			.pipe(util.setExecutableBit(['**/*.sh']))
@@ -361,10 +367,13 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 			.pipe(util.cleanNodeModules(path.join(import.meta.dirname, `.moduleignore.${process.platform}`)));
 		ensureCopilotPlatformPackage(platform, arch, 'remote/node_modules');
 		const copilotRuntimePrebuilds = gulp.src(getCopilotRuntimePrebuildFiles(platform, arch, 'remote/node_modules'), { base: 'remote', dot: true, allowEmpty: true });
-		const deps = es.merge(cleanedDeps, copilotRuntimePrebuilds)
+		ensureParcelWatcherPlatformPackage(platform, arch, 'remote/node_modules');
+		const parcelWatcherPlatformPackage = gulp.src(getParcelWatcherPlatformFiles(platform, arch, 'remote/node_modules'), { base: 'remote', dot: true, allowEmpty: true });
+		const deps = es.merge(cleanedDeps, copilotRuntimePrebuilds, parcelWatcherPlatformPackage)
 			.pipe(filter(getCopilotExcludeFilter(platform, arch)))
 			.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
 			.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
+			.pipe(filter(getParcelWatcherExcludeFilter(platform, arch)))
 			.pipe(jsFilter)
 			.pipe(util.stripSourceMappingURL())
 			.pipe(jsFilter.restore);
@@ -402,11 +411,13 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 					.pipe(replace('@@VERSION@@', version))
 					.pipe(replace('@@COMMIT@@', commit || ''))
 					.pipe(replace('@@APPNAME@@', product.applicationName))
+					.pipe(assertNoPlaceholders('reh remote-cli code.cmd'))
 					.pipe(rename(`bin/remote-cli/${product.applicationName}.cmd`)),
 				gulp.src('resources/server/bin/helpers/browser.cmd', { base: '.' })
 					.pipe(replace('@@VERSION@@', version))
 					.pipe(replace('@@COMMIT@@', commit || ''))
 					.pipe(replace('@@APPNAME@@', product.applicationName))
+					.pipe(assertNoPlaceholders('reh browser.cmd'))
 					.pipe(rename(`bin/helpers/browser.cmd`)),
 				gulp.src('resources/server/bin/code-server.cmd', { base: '.' })
 					.pipe(rename(`bin/${product.serverApplicationName}.cmd`)),
@@ -417,12 +428,14 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 					.pipe(replace('@@VERSION@@', version))
 					.pipe(replace('@@COMMIT@@', commit || ''))
 					.pipe(replace('@@APPNAME@@', product.applicationName))
+					.pipe(assertNoPlaceholders('reh remote-cli code.sh'))
 					.pipe(rename(`bin/remote-cli/${product.applicationName}`))
 					.pipe(util.setExecutableBit()),
 				gulp.src(`resources/server/bin/helpers/${platform === 'darwin' ? 'browser-darwin.sh' : 'browser-linux.sh'}`, { base: '.' })
 					.pipe(replace('@@VERSION@@', version))
 					.pipe(replace('@@COMMIT@@', commit || ''))
 					.pipe(replace('@@APPNAME@@', product.applicationName))
+					.pipe(assertNoPlaceholders('reh browser.sh'))
 					.pipe(rename(`bin/helpers/browser.sh`))
 					.pipe(util.setExecutableBit()),
 				gulp.src(`resources/server/bin/${platform === 'darwin' ? 'code-server-darwin.sh' : 'code-server-linux.sh'}`, { base: '.' })
@@ -449,13 +462,37 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 	};
 }
 
+// Spawn errors meaning "signtool could not run at all", as opposed to a
+// verdict about the file: ENOENT (not on PATH), EACCES (present but not
+// executable — e.g. a non-executable file or a directory shadowing it on
+// PATH, or an AV/lock block) and EPERM (the Windows/libuv spelling of the
+// same permission class; cf. the EBUSY/EPERM/ENOTEMPTY file-lock family in
+// lib/nodeCompileCache.ts). All three extend the original ENOENT exemption
+// (C-P2-1): no signature can be verified or stripped, so the alpha
+// (unsigned) build proceeds and the skip is logged loudly instead of
+// failing — or silently passing — the whole build. Any other spawn error,
+// and any non-zero signtool exit (signtool ran and itself failed), still
+// rejects exactly as before.
+const signtoolUnavailableCodes: ReadonlySet<string> = new Set(['ENOENT', 'EACCES', 'EPERM']);
+
+function isSigntoolUnavailable(err: Error): boolean {
+	return signtoolUnavailableCodes.has((err as NodeJS.ErrnoException).code ?? '');
+}
+
 function hasAuthenticodeSignature(filePath: string): Promise<boolean> {
 	return new Promise((resolve, reject) => {
 		const proc = cp.spawn('signtool.exe', ['verify', '/pa', filePath]);
 		// Alpha builds ship unsigned and CI runners have no signtool.exe on
-		// PATH: treat a missing signtool as "no signature" (skip strip) so
-		// rcedit stamping still runs instead of failing the whole build.
-		proc.on('error', err => ((err as NodeJS.ErrnoException).code === 'ENOENT' ? resolve(false) : reject(err)));
+		// PATH: treat a missing or unusable signtool as "no signature" (skip
+		// strip) so rcedit stamping still runs instead of failing the build.
+		proc.on('error', err => {
+			if (isSigntoolUnavailable(err)) {
+				console.warn(`WARNING: signtool.exe unavailable (${(err as NodeJS.ErrnoException).code}); treating ${filePath} as unsigned and skipping the signature check.`);
+				resolve(false);
+			} else {
+				reject(err);
+			}
+		});
 		proc.on('exit', code => resolve(code === 0));
 	});
 }
@@ -472,7 +509,19 @@ async function stripAuthenticodeSignature(filePath: string): Promise<void> {
 		let out = '';
 		proc.stdout?.on('data', chunk => out += chunk.toString());
 		proc.stderr?.on('data', chunk => out += chunk.toString());
-		proc.on('error', reject);
+		// Same exemption as the verify spawn above: if signtool cannot run
+		// at all (ENOENT/EACCES/EPERM, e.g. PATH changed between the two
+		// spawns), skip the strip loudly instead of failing the build. A
+		// non-zero exit below — signtool ran and the remove itself failed
+		// on a file that does carry a signature — still rejects.
+		proc.on('error', err => {
+			if (isSigntoolUnavailable(err)) {
+				console.warn(`WARNING: signtool.exe unavailable (${(err as NodeJS.ErrnoException).code}); skipping the signature strip for ${filePath}, which keeps its existing signature.`);
+				resolve();
+			} else {
+				reject(err);
+			}
+		});
 		proc.on('exit', code => {
 			if (code === 0) {
 				resolve();
@@ -536,7 +585,7 @@ function prepareCopilotRipgrepShimTaskREH(platform: string, arch: string, destin
 ['reh', 'reh-web'].forEach(type => {
 	const target = type === 'reh' ? 'server' : 'server-web';
 	const esbuildBundleTask = task.define(`esbuild-vscode-${type}`, () => runEsbuildBundle(`out-vscode-${type}`, false, true, target));
-	const esbuildBundleMinTask = task.define(`esbuild-vscode-${type}-min`, () => runEsbuildBundle(`out-vscode-${type}-min`, true, true, target, `https://main.vscode-cdn.net/sourcemaps/${commit}/core`));
+	const esbuildBundleMinTask = task.define(`esbuild-vscode-${type}-min`, () => runEsbuildBundle(`out-vscode-${type}-min`, true, true, target, commit ? `https://main.vscode-cdn.net/sourcemaps/${commit}/core` : undefined));
 
 	BUILD_TARGETS.forEach(buildTarget => {
 		const dashed = (str: string) => (str ? `-${str}` : ``);

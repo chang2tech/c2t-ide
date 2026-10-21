@@ -73,10 +73,17 @@ jobs:
           path: |
             node_modules
             build/node_modules
+            build/rspack/node_modules
+            build/vite/node_modules
             remote/node_modules
+            remote/web/node_modules
+            extensions/node_modules
             extensions/*/node_modules
+            extensions/css-language-features/server/node_modules
+            extensions/html-language-features/server/node_modules
+            extensions/json-language-features/server/node_modules
             .build/typings
-          key: ide-code-nm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json') }}
+          key: ide-code-nm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json', 'extensions/package-lock.json', 'extensions/css-language-features/server/package-lock.json', 'extensions/html-language-features/server/package-lock.json', 'extensions/json-language-features/server/package-lock.json', 'remote/web/package-lock.json', 'build/rspack/package-lock.json', 'build/vite/package-lock.json', '.nvmrc', '.npmrc') }}
           restore-keys: |
             ide-code-nm-${{ runner.os }}-
 
@@ -86,6 +93,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install system dependencies
+        shell: bash
         run: |
           set -e
           sudo apt-get update -y
@@ -99,6 +107,7 @@ jobs:
       - name: Install build/ dependencies
         if: steps.nm-cache.outputs.cache-hit != 'true'
         working-directory: build
+        shell: bash
         run: |
           set -e
           # --ignore-scripts: skip native module builds (e.g. native-keymap
@@ -113,6 +122,7 @@ jobs:
 
       - name: Install root dependencies
         if: steps.nm-cache.outputs.cache-hit != 'true'
+        shell: bash
         run: |
           set -e
           # --ignore-scripts: skip native module builds (e.g. native-keymap
@@ -131,6 +141,7 @@ jobs:
 
       - name: Install workspace dependencies (postinstall)
         if: steps.nm-cache.outputs.cache-hit != 'true'
+        shell: bash
         run: |
           set -e
           # The script-free root install above also skipped the root
@@ -157,6 +168,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run copilot extension postinstall
+        shell: bash
         run: |
           set -e
           # extensions/copilot is the only built-in extension with an
@@ -167,6 +179,7 @@ jobs:
           npm --prefix extensions/copilot run postinstall
 
       - name: Compile ide-agent extension
+        shell: bash
         run: |
           set -e
           npm --prefix extensions/ide-agent ci
@@ -174,13 +187,16 @@ jobs:
           test -f extensions/ide-agent/out/extension.js
 
       - name: Compile auxiliary ide-* extensions
+        shell: bash
         run: |
           set -e
           # ide-checkout / ide-deeplink / ide-worktree-textmate are packaged
           # as built-in extensions (main: ./out/extension.js) but nothing
           # else compiles them, and out/ is gitignored -- without this step
           # CI would package them with no entry point (found in build #11
-          # follow-up audit). They have no lockfile, so use npm install.
+          # follow-up audit). Only ide-deeplink has a package-lock.json;
+          # ide-checkout and ide-worktree-textmate have none, so use
+          # npm install for all three.
           for ext in ide-checkout ide-deeplink ide-worktree-textmate; do
             npm --prefix "extensions/$ext" install --ignore-scripts --no-audit --no-fund
             npm --prefix "extensions/$ext" run compile
@@ -190,6 +206,7 @@ jobs:
 
 
       - name: Package Electron app (VSCode-linux-x64)
+        shell: bash
         run: |
           set -e
           npm run gulp vscode-linux-x64
@@ -201,6 +218,7 @@ jobs:
 
 
       - name: Build .deb package
+        shell: bash
         run: |
           set -e
           # PHẢI chạy riêng từng lệnh: gulp-cli chạy nhiều task cùng 1 lệnh ở chế độ
@@ -210,12 +228,26 @@ jobs:
           # cũng chạy 2 lệnh riêng biệt.
           npm run gulp vscode-linux-x64-prepare-deb
           npm run gulp vscode-linux-x64-build-deb
-          ls -la .build/linux/deb/amd64/deb/
+          ls -la .build/linux/deb/amd64/deb/*.deb
+          # Verify the artifact itself (BUILD-QA B-W3-02): `ls` only proves a
+          # file exists. Parse the .deb with dpkg-deb and require a non-empty
+          # Depends plus the real payload inside the archive. `set -e` above
+          # makes any failing check fail the whole step (red build).
+          DEB_COUNT=$(ls .build/linux/deb/amd64/deb/*.deb | wc -l)
+          [ "$DEB_COUNT" -eq 1 ] || { echo "::error::expected exactly 1 .deb, found $DEB_COUNT" >&2; exit 1; }
+          DEB=$(ls .build/linux/deb/amd64/deb/*.deb)
+          echo "Verifying $DEB"
+          dpkg-deb --info "$DEB"
+          [ -n "$(dpkg-deb -f "$DEB" Depends)" ] || { echo "::error::$DEB has an empty Depends field" >&2; exit 1; }
+          dpkg-deb --contents "$DEB" | grep -q 'usr/share/ide-code/ide-code$' || { echo "::error::$DEB is missing usr/share/ide-code/ide-code" >&2; exit 1; }
+          dpkg-deb --contents "$DEB" | grep -q 'usr/share/ide-code/resources/app/' || { echo "::error::$DEB is missing usr/share/ide-code/resources/app/" >&2; exit 1; }
+          echo "Verified: $DEB (Depends non-empty, payload present)"
 
       - name: Build AppImage
         env:
           ARCH: x86_64
           APPIMAGE_EXTRACT_AND_RUN: 1
+        shell: bash
         run: |
           set -e
           APPDIR="$PWD/dist/appimage/IDECode.AppDir"
@@ -248,21 +280,41 @@ jobs:
           EOF
           chmod +x "$APPDIR/AppRun"
 
-          wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" -O /tmp/appimagetool
+          # C-P2-11: pin appimagetool theo tag co dinh + kiem SHA256.
+          # Gia tri da xac minh tu release chinh thuc AppImage/appimagetool 1.9.1:
+          # digest API chinh thuc + tai asset ve do lai sha256sum khop nhau (W5, 2026-10-21).
+          APPIMAGETOOL_TAG="1.9.1"
+          APPIMAGETOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+          wget -q "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_TAG}/appimagetool-x86_64.AppImage" -O /tmp/appimagetool
+          echo "${APPIMAGETOOL_SHA256}  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
           VERSION="$(node -p "require('./package.json').version")"
           /tmp/appimagetool "$APPDIR" "dist/IDE-Code-${VERSION}-linux-x64.AppImage"
           ls -la dist/*.AppImage
 
-      - name: Upload artifacts
+      - name: Resolve package version
+        id: ver
+        run: |
+          set -e
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ide-code-linux-x64
-          path: |
-            .build/linux/deb/amd64/deb/*.deb
-            dist/*.AppImage
+          name: ide-code-linux-x64-deb-v${{ steps.ver.outputs.version }}
+          path: .build/linux/deb/amd64/deb/*.deb
           if-no-files-found: error
-          retention-days: 14
+          compression-level: 0
+          retention-days: 90
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ide-code-linux-x64-appimage-v${{ steps.ver.outputs.version }}
+          path: dist/*.AppImage
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
 
   build-windows-x64:
     name: Windows x64 (installer)
@@ -276,6 +328,41 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Enable git long paths (this checkout only)
+        shell: bash
+        run: git config core.longpaths true
+
+      - name: Guard - fail on over-long paths (MAX_PATH)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $limit = 230
+          $longest = Get-ChildItem -LiteralPath (Get-Location).Path -Recurse -Force -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName } |
+            Sort-Object { $_.Length } -Descending |
+            Select-Object -First 1
+          if (-not $longest) { throw "path guard: workspace is empty after checkout" }
+          Write-Host "Longest checkout path: $($longest.Length) chars (limit $limit, MAX_PATH 260)"
+          Write-Host $longest
+          if ($longest.Length -gt $limit) { throw "Path too long: $($longest.Length) > $limit - shorten the test/fixture name or move it shallower" }
+
+      - name: Sanity check - Git Bash and Windows SDK
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bash = Get-Command bash.exe -ErrorAction SilentlyContinue
+          if (-not $bash) { throw "bash.exe (Git Bash) not found on PATH - windows-2022 image assumption broken" }
+          Write-Host "Git Bash: $($bash.Source)"
+          & $bash.Source -c 'echo "bash $BASH_VERSION"'
+          if ($LASTEXITCODE -ne 0) { throw "bash.exe found but does not run" }
+          $sdkBin = "C:\Program Files (x86)\Windows Kits\10\bin"
+          if (-not (Test-Path $sdkBin)) { throw "Windows SDK bin dir not found: $sdkBin" }
+          $signtool = Get-ChildItem $sdkBin -Directory | Where-Object { Test-Path (Join-Path $_.FullName "x64\signtool.exe") }
+          if (-not $signtool) { throw "signtool.exe not found under any Windows SDK version in $sdkBin" }
+          $makeappx = Get-ChildItem $sdkBin -Directory | Where-Object { Test-Path (Join-Path $_.FullName "x64\makeappx.exe") }
+          if (-not $makeappx) { throw "makeappx.exe not found under any Windows SDK version in $sdkBin" }
+          Write-Host "Windows SDK tools OK (signtool + makeappx present under $sdkBin)"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -303,10 +390,17 @@ jobs:
           path: |
             node_modules
             build/node_modules
+            build/rspack/node_modules
+            build/vite/node_modules
             remote/node_modules
+            remote/web/node_modules
+            extensions/node_modules
             extensions/*/node_modules
+            extensions/css-language-features/server/node_modules
+            extensions/html-language-features/server/node_modules
+            extensions/json-language-features/server/node_modules
             .build/typings
-          key: ide-code-nm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json') }}
+          key: ide-code-nm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json', 'extensions/package-lock.json', 'extensions/css-language-features/server/package-lock.json', 'extensions/html-language-features/server/package-lock.json', 'extensions/json-language-features/server/package-lock.json', 'remote/web/package-lock.json', 'build/rspack/package-lock.json', 'build/vite/package-lock.json', '.nvmrc', '.npmrc') }}
           restore-keys: |
             ide-code-nm-${{ runner.os }}-
 
@@ -394,11 +488,16 @@ jobs:
           # `npm ci` inside build/npm/gyp.
           node build/npm/preinstall.ts
           NODE_GYP="$PWD/build/npm/gyp/node_modules/.bin/node-gyp.cmd"
-          TARGET="$(sed -n 's/^target="\(.*\)"$/\1/p' .npmrc)"
-          # Scoped @vscode packages (13 native packages ship no prebuilds and
-          # only get bindings from their install scripts -- forward audit R4).
+          # tr -d '\r': .npmrc may be checked out with CRLF on Windows
+          # (.gitattributes has no eol rule for it); a trailing \r would
+          # make the sed $ anchor miss and leave TARGET empty.
+          TARGET="$(tr -d '\r' < .npmrc | sed -n 's/^target="\(.*\)"$/\1/p')"
+          [ -n "$TARGET" ] || { echo "failed to read Electron target from .npmrc" >&2; exit 1; }
+          # Scoped @vscode packages (9 scoped + 4 unscoped below = 13 native
+          # packages in total ship no prebuilds and only get bindings from
+          # their install scripts -- forward audit R4).
           for pkg in policy-watcher spdlog sqlite3 windows-mutex windows-registry windows-process-tree deviceid native-watchdog windows-ca-certs; do
-            ( cd "node_modules/@vscode/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --dist-url=https://electronjs.org/headers )
+            ( cd "node_modules/@vscode/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --arch="$VSCODE_ARCH" --dist-url=https://electronjs.org/headers )
           done
           # Unscoped packages. native-keymap goes LAST on purpose: it is the
           # package --ignore-scripts was introduced for; building it against
@@ -406,7 +505,7 @@ jobs:
           # unverified -- if it fails, the step fails fast here and only this
           # entry needs to be dropped, the bindings above are already built.
           for pkg in native-is-elevated kerberos windows-foreground-love native-keymap; do
-            ( cd "node_modules/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --dist-url=https://electronjs.org/headers )
+            ( cd "node_modules/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --arch="$VSCODE_ARCH" --dist-url=https://electronjs.org/headers )
           done
           # Fail fast with a clear message if any binding is missing, instead of
           # a cryptic crash 45 minutes later in generateNodeCompileCache.
@@ -461,7 +560,9 @@ jobs:
           # Same as the Linux job: these built-in extensions have
           # main: ./out/extension.js, out/ is gitignored, and nothing else
           # compiles them -- they must be built here or packaging ships
-          # them without an entry point.
+          # them without an entry point. Lockfiles: only ide-deeplink has
+          # a package-lock.json; ide-checkout and
+          # ide-worktree-textmate have none, so npm install for all three.
           for ext in ide-checkout ide-deeplink ide-worktree-textmate; do
             npm --prefix "extensions/$ext" install --ignore-scripts --no-audit --no-fund
             npm --prefix "extensions/$ext" run compile
@@ -470,19 +571,28 @@ jobs:
 
 
 
-      - name: Download Explorer dll (appx)
-        shell: bash
+      - name: Add Windows SDK to PATH (for signtool)
+        shell: powershell
         run: |
-          set -e
-          # Downloads code_explorer_command_x64.dll from the public
-          # microsoft/vscode-explorer-command mirror into .build/win32/appx;
-          # packageTask merges it into the packaged app's appx/ folder.
-          # Upstream runs the same command before the client build
-          # (product-build-win32-compile.yml:69).
-          node build/win32/explorer-dll-fetcher.ts .build/win32/appx
-          test -f .build/win32/appx/code_explorer_command_x64.dll
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          $ErrorActionPreference = "Stop"
+          # patchWin32DependenciesTask (build/gulpfile.vscode.ts) spawns
+          # signtool.exe from PATH to detect existing Authenticode
+          # signatures before rcedit patches version resources; with
+          # signtool missing it silently treats signed files (e.g. the
+          # Explorer command DLL) as unsigned, and rcedit then breaks
+          # their signatures without any warning. Upstream prepends the
+          # SDK bin dir for the client build for exactly this reason
+          # (product-build-win32-compile.yml: "for
+          # patchWin32DependenciesTask signtool usage"). Locate the
+          # newest SDK bin dir that contains signtool.exe and publish
+          # it via GITHUB_PATH so the Package step inherits it.
+          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "x64" } |
+            Where-Object { Test-Path (Join-Path $_ "signtool.exe") } |
+            Select-Object -First 1
+          if (-not $sdk) { throw "signtool.exe not found in Windows SDK" }
+          Add-Content -Path $env:GITHUB_PATH -Value $sdk
 
       - name: Package Electron app (VSCode-win32-x64)
         shell: bash
@@ -492,31 +602,6 @@ jobs:
           # gulp packages to <repo>/../VSCode-win32-x64 (upstream layout:
           # build/gulpfile.vscode.ts packageTask), not .build/win32-x64.
           test -f ../VSCode-win32-x64/IDE\ Code.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Prepare appx package
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          # makeappx.exe ships with the Windows SDK but is not on PATH;
-          # upstream adds the SDK bin dir explicitly
-          # (product-build-win32-compile.yml:110-113). Resolve the newest
-          # installed SDK version dir instead of hardcoding 10.0.26100.0.
-          $sdk = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Directory |
-            Sort-Object Name -Descending |
-            ForEach-Object { Join-Path $_.FullName "x64" } |
-            Where-Object { Test-Path (Join-Path $_ "makeappx.exe") } |
-            Select-Object -First 1
-          if (-not $sdk) { throw "makeappx.exe not found in Windows SDK" }
-          $env:PATH = "$sdk;$env:PATH"
-          # quality is "stable" (product.json) so the package name is
-          # code_x64.appx, matching the AppxPackage definition ISCC gets
-          # from buildWin32Setup (gulpfile.vscode.win32.ts:117).
-          makeappx pack /d "..\VSCode-win32-x64\appx\manifest" /p "..\VSCode-win32-x64\appx\code_x64.appx" /nv
-          if ($LASTEXITCODE -ne 0) { throw "makeappx pack failed" }
-          Remove-Item -Path "..\VSCode-win32-x64\appx\manifest" -Recurse -Force
-          if (-not (Test-Path "..\VSCode-win32-x64\appx\code_x64.appx")) { throw "code_x64.appx missing after makeappx" }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -545,10 +630,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve package version
+        id: ver
+        shell: bash
+        run: |
+          set -e
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Rename installer with version
+        shell: bash
+        run: |
+          set -e
+          VERSION="$(node -p "require('./package.json').version")"
+          mv .build/win32-x64/system-setup/VSCodeSetup.exe ".build/win32-x64/system-setup/IDE-Code-Setup-x64-${VERSION}.exe"
+          ls -la .build/win32-x64/system-setup/*.exe
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ide-code-windows-x64
+          name: ide-code-windows-x64-v${{ steps.ver.outputs.version }}
           path: .build/win32-x64/system-setup/*Setup*.exe
           if-no-files-found: error
-          retention-days: 14
+          compression-level: 0
+          retention-days: 90

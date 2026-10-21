@@ -10,7 +10,8 @@ import es from 'event-stream';
 import vfs from 'vinyl-fs';
 import electron from '@vscode/gulp-electron';
 import * as util from './lib/util.ts';
-import { getVersion } from './lib/getVersion.ts';
+import { getVersion, requireCommit } from './lib/getVersion.ts';
+import { assertNoPlaceholders } from './lib/assertNoPlaceholders.ts';
 import { readISODate, writeISODate } from './lib/date.ts';
 import * as task from './lib/gulp/task.ts';
 import { inlineMeta } from './lib/inlineMeta.ts';
@@ -28,6 +29,7 @@ import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, 
 import { checkApiProposalNamesTask, copyCodiconsTask } from './lib/compilation.ts';
 import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim, renderCopilotShimLauncher } from './lib/copilot.ts';
 import { ensureOSProxyResolverPlatformPackage, getOSProxyResolverExcludeFilter, getOSProxyResolverPlatformFiles } from './lib/osProxyResolver.ts';
+import { ensureClaudeAgentSdkPlatformPackage, ensureParcelWatcherPlatformPackage, getClaudeAgentSdkExcludeFilter, getClaudeAgentSdkPlatformFiles, getParcelWatcherExcludeFilter, getParcelWatcherPlatformFiles } from './lib/platformPackages.ts';
 import { readAgentSdkResults } from './agent-sdk/common.ts';
 import { readDictationRuntimeResults } from './dictation-runtime/common.ts';
 import { promisify } from 'util';
@@ -59,7 +61,7 @@ function getLockedPackageVersion(packageName: string): string {
 	return version;
 }
 
-const sourceMappingURLBase = `https://main.vscode-cdn.net/sourcemaps/${commit}`;
+const sourceMappingURLBase = commit ? `https://main.vscode-cdn.net/sourcemaps/${commit}` : undefined;
 const isCI = !!process.env['CI'] || !!process.env['BUILD_ARTIFACTSTAGINGDIRECTORY'] || !!process.env['GITHUB_WORKSPACE'];
 const useCdnSourceMapsForPackagingTasks = isCI;
 const stripSourceMapsInPackagingTasks = isCI;
@@ -76,9 +78,9 @@ task.task(task.define('core-ci', task.series(
 	task.define('esbuild-out-build', () => runEsbuildTranspile('out-build', false)),
 	// Then bundle for shipping (bundles also write NLS files to out-build)
 	task.parallel(
-		task.define('esbuild-vscode-min', () => runEsbuildBundle('out-vscode-min', true, true, 'desktop', `${sourceMappingURLBase}/core`)),
-		task.define('esbuild-vscode-reh-min', () => runEsbuildBundle('out-vscode-reh-min', true, true, 'server', `${sourceMappingURLBase}/core`)),
-		task.define('esbuild-vscode-reh-web-min', () => runEsbuildBundle('out-vscode-reh-web-min', true, true, 'server-web', `${sourceMappingURLBase}/core`)),
+		task.define('esbuild-vscode-min', () => runEsbuildBundle('out-vscode-min', true, true, 'desktop', sourceMappingURLBase ? `${sourceMappingURLBase}/core` : undefined)),
+		task.define('esbuild-vscode-reh-min', () => runEsbuildBundle('out-vscode-reh-min', true, true, 'server', sourceMappingURLBase ? `${sourceMappingURLBase}/core` : undefined)),
+		task.define('esbuild-vscode-reh-web-min', () => runEsbuildBundle('out-vscode-reh-web-min', true, true, 'server-web', sourceMappingURLBase ? `${sourceMappingURLBase}/core` : undefined)),
 	)
 )));
 
@@ -131,6 +133,7 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 	platform = platform || process.platform;
 
 	const task = () => {
+		requireCommit(commit, `${platform}-${arch}`);
 		const out = sourceFolderName;
 		const versionedResourcesFolder = util.getVersionedResourcesFolder(platform, commit!);
 
@@ -174,6 +177,15 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		if (quality && quality !== 'stable') {
 			version += '-' + quality;
 		}
+
+		// Scripts (win32 code.sh / copilot launcher) must always carry a
+		// concrete quality: a missing quality is a legitimate OSS/dev
+		// configuration (see gulpfile.vscode.win32.ts, which defaults the
+		// Inno setup quality to 'dev'), but stamping it verbatim would put
+		// the literal string "undefined" (or, via gulp-replace, ",") into
+		// the staged scripts. Keep the original `quality` untouched above
+		// so the version suffix behaviour does not change.
+		const qualityForScripts = quality ?? 'dev';
 
 		const name = product.nameShort;
 		const packageJsonUpdates: Record<string, unknown> = { name, version };
@@ -248,12 +260,18 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		const copilotRuntimePrebuilds = gulp.src(getCopilotRuntimePrebuildFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
 		ensureOSProxyResolverPlatformPackage(platform, arch);
 		const osProxyResolverPlatformPackage = gulp.src(getOSProxyResolverPlatformFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
-		const deps = es.merge(cleanedDeps, copilotRuntimePrebuilds, osProxyResolverPlatformPackage)
+		ensureClaudeAgentSdkPlatformPackage(platform, arch);
+		const claudeAgentSdkPlatformPackage = gulp.src(getClaudeAgentSdkPlatformFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
+		ensureParcelWatcherPlatformPackage(platform, arch);
+		const parcelWatcherPlatformPackage = gulp.src(getParcelWatcherPlatformFiles(platform, arch), { base: '.', dot: true, allowEmpty: true });
+		const deps = es.merge(cleanedDeps, copilotRuntimePrebuilds, osProxyResolverPlatformPackage, claudeAgentSdkPlatformPackage, parcelWatcherPlatformPackage)
 			.pipe(filter(getCopilotExcludeFilter(platform, arch)))
 			.pipe(filter(getCopilotTgrepExcludeFilter(platform, arch)))
 			.pipe(filter(getRipgrepExcludeFilter(platform, arch)))
 			.pipe(filter(getFoundryLocalExcludeFilter()))
 			.pipe(filter(getOSProxyResolverExcludeFilter(platform, arch)))
+			.pipe(filter(getClaudeAgentSdkExcludeFilter(platform, arch)))
+			.pipe(filter(getParcelWatcherExcludeFilter(platform, arch)))
 			.pipe(jsFilter)
 			.pipe(util.rewriteSourceMappingURL(sourceMappingURLBase))
 			.pipe(jsFilter.restore)
@@ -345,6 +363,7 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			const shortcut = gulp.src('resources/darwin/bin/code.sh')
 				.pipe(replace('@@APPNAME@@', product.applicationName))
 				.pipe(replace('@@NAME@@', product.nameShort))
+				.pipe(assertNoPlaceholders('darwin bin/code.sh'))
 				.pipe(rename('bin/code'));
 			const policyDest = gulp.src('.build/policies/darwin/**', { base: '.build/policies/darwin' })
 				.pipe(rename(f => f.dirname = `policies/${f.dirname}`));
@@ -374,20 +393,28 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		if (platform === 'linux') {
 			result = es.merge(result, gulp.src('resources/completions/bash/code', { base: '.' })
 				.pipe(replace('@@APPNAME@@', product.applicationName))
+				.pipe(assertNoPlaceholders('linux bash completion'))
 				.pipe(rename(function (f) { f.basename = product.applicationName; })));
 
 			result = es.merge(result, gulp.src('resources/completions/zsh/_code', { base: '.' })
 				.pipe(replace('@@APPNAME@@', product.applicationName))
+				.pipe(assertNoPlaceholders('linux zsh completion'))
 				.pipe(rename(function (f) { f.basename = '_' + product.applicationName; })));
 		}
 
 		if (platform === 'win32') {
+			const serverDataFolderName = product.serverDataFolderName;
+			if (!serverDataFolderName) {
+				throw new Error(`[packageTask] Refusing to package win32: product.json is missing "serverDataFolderName"; the WSL scripts and the copilot launcher would silently fall back to the legacy folder ".vscode-remote" instead of this product's server data folder. Add the key to product.json.`);
+			}
+
 			result = es.merge(result, gulp.src('resources/win32/bin/code.js', { base: 'resources/win32', allowEmpty: true }));
 
 			if (versionedResourcesFolder) {
 				result = es.merge(result, gulp.src('resources/win32/versioned/bin/code.cmd', { base: 'resources/win32/versioned' })
 					.pipe(replace('@@NAME@@', product.nameShort))
 					.pipe(replace('@@VERSIONFOLDER@@', versionedResourcesFolder))
+					.pipe(assertNoPlaceholders('win32 versioned code.cmd'))
 					.pipe(rename(function (f) { f.basename = product.applicationName; })));
 
 				result = es.merge(result, gulp.src('resources/win32/versioned/bin/code.sh', { base: 'resources/win32/versioned' })
@@ -397,12 +424,14 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 					.pipe(replace('@@COMMIT@@', String(commit)))
 					.pipe(replace('@@APPNAME@@', product.applicationName))
 					.pipe(replace('@@VERSIONFOLDER@@', versionedResourcesFolder))
-					.pipe(replace('@@SERVERDATAFOLDER@@', product.serverDataFolderName || '.vscode-remote'))
-					.pipe(replace('@@QUALITY@@', quality!))
+					.pipe(replace('@@SERVERDATAFOLDER@@', serverDataFolderName))
+					.pipe(replace('@@QUALITY@@', qualityForScripts))
+					.pipe(assertNoPlaceholders('win32 versioned code.sh'))
 					.pipe(rename(function (f) { f.basename = product.applicationName; f.extname = ''; })));
 			} else {
 				result = es.merge(result, gulp.src('resources/win32/bin/code.cmd', { base: 'resources/win32' })
 					.pipe(replace('@@NAME@@', product.nameShort))
+					.pipe(assertNoPlaceholders('win32 code.cmd'))
 					.pipe(rename(function (f) { f.basename = product.applicationName; })));
 
 				result = es.merge(result, gulp.src('resources/win32/bin/code.sh', { base: 'resources/win32' })
@@ -411,13 +440,15 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 					.pipe(replace('@@VERSION@@', version))
 					.pipe(replace('@@COMMIT@@', String(commit)))
 					.pipe(replace('@@APPNAME@@', product.applicationName))
-					.pipe(replace('@@SERVERDATAFOLDER@@', product.serverDataFolderName || '.vscode-remote'))
-					.pipe(replace('@@QUALITY@@', String(quality)))
+					.pipe(replace('@@SERVERDATAFOLDER@@', serverDataFolderName))
+					.pipe(replace('@@QUALITY@@', qualityForScripts))
+					.pipe(assertNoPlaceholders('win32 code.sh'))
 					.pipe(rename(function (f) { f.basename = product.applicationName; f.extname = ''; })));
 			}
 
 			result = es.merge(result, gulp.src('resources/win32/VisualElementsManifest.xml', { base: 'resources/win32' })
 				.pipe(replace('@@VERSIONFOLDER@@', versionedResourcesFolder ? `${versionedResourcesFolder}\\` : ''))
+				.pipe(assertNoPlaceholders('win32 VisualElementsManifest'))
 				.pipe(rename(product.nameShort + '.VisualElementsManifest.xml')));
 
 			// Setup publishes it next to the copilot.exe shim; see build/win32/copilot.iss.
@@ -425,10 +456,10 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 				.pipe(es.through(function (file) {
 					file.contents = Buffer.from(renderCopilotShimLauncher(file.contents.toString('utf8'), {
 						commit: String(commit),
-						quality: String(quality),
+						quality: qualityForScripts,
 						applicationName: product.applicationName,
 						dataFolderName: product.dataFolderName,
-						serverDataFolderName: product.serverDataFolderName || '.vscode-remote',
+						serverDataFolderName: serverDataFolderName,
 					}));
 					this.emit('data', file);
 				}))
@@ -437,28 +468,11 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			result = es.merge(result, gulp.src('.build/policies/win32/**', { base: '.build/policies/win32' })
 				.pipe(rename(f => f.dirname = `policies/${f.dirname}`)));
 
-			if (quality === 'stable' || quality === 'insider') {
-				result = es.merge(result, gulp.src('.build/win32/appx/**', { base: '.build/win32' }));
-				const rawVersion = version.replace(/-\w+$/, '').split('.');
-				const appxVersion = `${rawVersion[0]}.0.${rawVersion[1]}.${rawVersion[2]}`;
-				result = es.merge(result, gulp.src('resources/win32/appx/AppxManifest.xml', { base: '.' })
-					.pipe(replace('@@AppxPackageName@@', product.win32AppUserModelId))
-					.pipe(replace('@@AppxPackageVersion@@', appxVersion))
-					.pipe(replace('@@AppxPackageDisplayName@@', product.nameLong))
-					.pipe(replace('@@AppxPackageDescription@@', product.win32NameVersion))
-					.pipe(replace('@@ApplicationIdShort@@', product.win32RegValueName))
-					.pipe(replace('@@ApplicationExe@@', product.nameShort + '.exe'))
-					.pipe(replace('@@FileExplorerContextMenuID@@', quality === 'stable' ? 'OpenWithCode' : 'OpenWithCodeInsiders'))
-					// MakeAppx schema yêu cầu GUID trần KHÔNG ngoặc nhọn (C00CE169 nếu còn '{...}');
-// product.json giữ dạng có ngoặc vì WiX/Inno (đăng ký COM registry) dùng dạng đó.
-.pipe(replace('@@FileExplorerContextMenuCLSID@@', ((product as { win32ContextMenu?: Record<string, { clsid: string }> }).win32ContextMenu![arch].clsid).replace(/^\{|\}$/g, '')))
-					.pipe(replace('@@FileExplorerContextMenuDLL@@', `${quality === 'stable' ? 'code' : 'code_insider'}_explorer_command_${arch}.dll`))
-					.pipe(rename(f => f.dirname = `appx/manifest`)));
-			}
 		} else if (platform === 'linux') {
 			result = es.merge(result, gulp.src('resources/linux/bin/code.sh', { base: '.' })
 				.pipe(replace('@@PRODNAME@@', product.nameLong))
 				.pipe(replace('@@APPNAME@@', product.applicationName))
+				.pipe(assertNoPlaceholders('linux bin/code.sh'))
 				.pipe(rename('bin/' + product.applicationName)));
 		}
 
@@ -474,13 +488,37 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 	return task;
 }
 
+// Spawn errors meaning "signtool could not run at all", as opposed to a
+// verdict about the file: ENOENT (not on PATH), EACCES (present but not
+// executable — e.g. a non-executable file or a directory shadowing it on
+// PATH, or an AV/lock block) and EPERM (the Windows/libuv spelling of the
+// same permission class; cf. the EBUSY/EPERM/ENOTEMPTY file-lock family in
+// lib/nodeCompileCache.ts). All three extend the original ENOENT exemption
+// (C-P2-1): no signature can be verified or stripped, so the alpha
+// (unsigned) build proceeds and the skip is logged loudly instead of
+// failing — or silently passing — the whole build. Any other spawn error,
+// and any non-zero signtool exit (signtool ran and itself failed), still
+// rejects exactly as before.
+const signtoolUnavailableCodes: ReadonlySet<string> = new Set(['ENOENT', 'EACCES', 'EPERM']);
+
+function isSigntoolUnavailable(err: Error): boolean {
+	return signtoolUnavailableCodes.has((err as NodeJS.ErrnoException).code ?? '');
+}
+
 function hasAuthenticodeSignature(filePath: string): Promise<boolean> {
 	return new Promise((resolve, reject) => {
 		const proc = cp.spawn('signtool.exe', ['verify', '/pa', filePath]);
 		// Alpha builds ship unsigned and CI runners have no signtool.exe on
-		// PATH: treat a missing signtool as "no signature" (skip strip) so
-		// rcedit stamping still runs instead of failing the whole build.
-		proc.on('error', err => ((err as NodeJS.ErrnoException).code === 'ENOENT' ? resolve(false) : reject(err)));
+		// PATH: treat a missing or unusable signtool as "no signature" (skip
+		// strip) so rcedit stamping still runs instead of failing the build.
+		proc.on('error', err => {
+			if (isSigntoolUnavailable(err)) {
+				console.warn(`WARNING: signtool.exe unavailable (${(err as NodeJS.ErrnoException).code}); treating ${filePath} as unsigned and skipping the signature check.`);
+				resolve(false);
+			} else {
+				reject(err);
+			}
+		});
 		proc.on('exit', code => resolve(code === 0));
 	});
 }
@@ -497,7 +535,19 @@ async function stripAuthenticodeSignature(filePath: string): Promise<void> {
 		let out = '';
 		proc.stdout?.on('data', chunk => out += chunk.toString());
 		proc.stderr?.on('data', chunk => out += chunk.toString());
-		proc.on('error', reject);
+		// Same exemption as the verify spawn above: if signtool cannot run
+		// at all (ENOENT/EACCES/EPERM, e.g. PATH changed between the two
+		// spawns), skip the strip loudly instead of failing the build. A
+		// non-zero exit below — signtool ran and the remove itself failed
+		// on a file that does carry a signature — still rejects.
+		proc.on('error', err => {
+			if (isSigntoolUnavailable(err)) {
+				console.warn(`WARNING: signtool.exe unavailable (${(err as NodeJS.ErrnoException).code}); skipping the signature strip for ${filePath}, which keeps its existing signature.`);
+				resolve();
+			} else {
+				reject(err);
+			}
+		});
 		proc.on('exit', code => {
 			if (code === 0) {
 				resolve();
@@ -623,7 +673,7 @@ BUILD_TARGETS.forEach(buildTarget => {
 				!!minified,
 				true,
 				'desktop',
-				minified && useCdnSourceMapsForPackagingTasks ? `${sourceMappingURLBase}/core` : undefined
+				minified && useCdnSourceMapsForPackagingTasks && sourceMappingURLBase ? `${sourceMappingURLBase}/core` : undefined
 			)
 		);
 		const vscodeTask = task.define(`vscode${dashed(platform)}${dashed(arch)}${dashed(minified)}`, task.series(

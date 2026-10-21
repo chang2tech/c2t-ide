@@ -455,7 +455,18 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 			return;
 		}
 
-		if (!productService.defaultChatAgent) {
+		// IDE Code: this fork has no Copilot chat extension or auth provider
+		// of its own -- its agent is the independently registered ide-agent
+		// (participant `ide.agent`). product.json (V2) therefore ships
+		// `defaultChatAgent` with an empty `chatExtensionId` and an empty
+		// `provider.default.id`: the object must exist so other code can
+		// dereference it safely, but those empty identifiers mean there is
+		// no default chat agent to set up. Treat them like a missing
+		// `defaultChatAgent` and stay inert; otherwise the mere presence of
+		// the object would create the entitlement context/requests below
+		// and keep the Copilot ChatSetup flow alive, registering a setup
+		// agent whose sign-in to an empty provider can never complete.
+		if (!productService.defaultChatAgent || !productService.defaultChatAgent.chatExtensionId || !productService.defaultChatAgent.provider?.default?.id) {
 			return; // we need a default chat agent configured going forward from here
 		}
 

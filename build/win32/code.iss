@@ -5,13 +5,19 @@
       : '; LicenseFile: "' + RepoDir + '\' + RootLicenseFileName + '"'
 
 [Setup]
+; LOAD-BEARING (A2-P2-2): the AppId value from product.json MUST keep the "{{GUID}" form
+; (see the matching warning above the definitions block in build/gulpfile.vscode.win32.ts).
+; "{{" is Inno's literal-brace escape so this parses as {GUID}; the copy(..., 2, 38) call in
+; [Code] (InitializeSetup) also depends on that 39-char form. Do not "normalize" to one brace.
 AppId={#AppId}
 AppName={#NameLong}
 AppVerName={#NameVersion}
-AppPublisher=Microsoft Corporation
-AppPublisherURL=https://code.visualstudio.com/
-AppSupportURL=https://code.visualstudio.com/
-AppUpdatesURL=https://code.visualstudio.com/
+; AppPublisher and the URLs below are definitions from product.json (publisher =
+; win32AppPublisher; publisher/updates = fork repo from licenseUrl; support = reportIssueUrl).
+AppPublisher={#AppPublisher}
+AppPublisherURL={#AppPublisherUrl}
+AppSupportURL={#AppSupportUrl}
+AppUpdatesURL={#AppUpdatesUrl}
 DefaultGroupName={#NameLong}
 AllowNoIcons=yes
 OutputDir={#OutputDir}
@@ -112,10 +118,16 @@ Source: "bin\{#TunnelApplicationName}.exe"; DestDir: "{code:GetDestDir}\bin"; De
 Source: "bin\{#ApplicationName}.cmd"; DestDir: "{code:GetDestDir}\bin"; DestName: "{code:GetBinDirApplicationCmdFilename}"; Flags: ignoreversion
 Source: "bin\{#ApplicationName}"; DestDir: "{code:GetDestDir}\bin"; DestName: "{code:GetBinDirApplicationFilename}"; Flags: ignoreversion
 Source: "{#ProductJsonPath}"; DestDir: "{code:GetDestDir}\{#VersionedResourcesFolder}\resources\app"; Flags: ignoreversion
-#ifdef AppxPackageName
-Source: "appx\{#AppxPackage}"; DestDir: "{code:GetDestDir}\{#VersionedResourcesFolder}\appx"; BeforeInstall: RemoveAppxPackage; Flags: ignoreversion; Check: ShouldUseWindows11ContextMenu
-Source: "appx\{#AppxPackageDll}"; DestDir: "{code:GetDestDir}\{#VersionedResourcesFolder}\appx"; AfterInstall: AddAppxPackage; Flags: ignoreversion; Check: ShouldUseWindows11ContextMenu
-#endif
+; FIX-APPX-REMOVE (A3-P1-1): the sparse .appx and the Explorer context-menu DLL
+; are NO LONGER shipped by the installer. IDE Code is not code-signed, and
+; Windows deterministically refuses to register an unsigned sparse package
+; whose Publisher is not backed by a trusted certificate
+; (CERT_E_UNTRUSTEDROOT, 0x800B0109), so the package could never work and its
+; registration failure was previously swallowed by a Log() call. The classic
+; registry-based Explorer context menu (see [Registry] below) is now used on
+; every Windows version, including Windows 11 ("Show more options").
+; RemoveAppxPackage is still defined in [Code] (under #ifdef AppxPackageName)
+; purely to clean up registrations left behind by previous versions.
 
 [Icons]
 Name: "{group}\{#NameLong}"; Filename: "{app}\{#ExeBasename}.exe"; AppUserModelID: "{#AppUserId}"; Check: ShouldUpdateShortcut(ExpandConstant('{group}\{#NameLong}.lnk'))
@@ -1280,7 +1292,11 @@ Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\Applications\{#ExeBas
 Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\Applications\{#ExeBasename}.exe\shell\open"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\{#ExeBasename}.exe"""
 Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\Applications\{#ExeBasename}.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#ExeBasename}.exe"" ""%1"""
 
-Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\{#RegValueName}ContextMenu"; ValueType: expandsz; ValueName: "Title"; ValueData: "{cm:OpenWithCodeContextMenu,{#ShellNameShort}}"; Tasks: addcontextmenufiles; Flags: uninsdeletekey; Check: ShouldUseWindows11ContextMenu
+; FIX-APPX-REMOVE (A3-P1-1): the "Software\Classes\{#RegValueName}ContextMenu"
+; Title entry that fed the sparse package's Windows 11 verb was removed along
+; with the appx; nothing else in the installer or the app references that key.
+; The classic file context-menu entries below now install on all Windows
+; versions because ShouldUseWindows11ContextMenu() always returns False.
 Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\*\shell\{#RegValueName}"; ValueType: expandsz; ValueName: ""; ValueData: "{cm:OpenWithCodeContextMenu,{#ShellNameShort}}"; Tasks: addcontextmenufiles; Flags: uninsdeletekey; Check: not ShouldUseWindows11ContextMenu
 Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\*\shell\{#RegValueName}"; ValueType: expandsz; ValueName: "Icon"; ValueData: "{app}\{#ExeBasename}.exe"; Tasks: addcontextmenufiles; Check: not ShouldUseWindows11ContextMenu
 Root: {#SoftwareClassesRootKey}; Subkey: "Software\Classes\*\shell\{#RegValueName}\command"; ValueType: expandsz; ValueName: ""; ValueData: """{app}\{#ExeBasename}.exe"" ""%1"""; Tasks: addcontextmenufiles; Check: not ShouldUseWindows11ContextMenu
@@ -1390,7 +1406,7 @@ begin
 
   #if "user" == InstallTarget
     if not WizardSilent() and IsAdmin() then begin
-      if MsgBox('This User Installer is not meant to be run as an Administrator. If you would like to install VS Code for all users in this system, download the System Installer instead from https://code.visualstudio.com. Are you sure you want to continue?', mbError, MB_OKCANCEL) = IDCANCEL then begin
+      if MsgBox('This User Installer is not meant to be run as an Administrator. If you would like to install {#NameShort} for all users in this system, download the System Installer instead from {#AppPublisherUrl}. Are you sure you want to continue?', mbError, MB_OKCANCEL) = IDCANCEL then begin
         Result := False;
       end;
     end;
@@ -1404,6 +1420,9 @@ begin
     #endif
 
     if Result and not WizardSilent() then begin
+      // LOAD-BEARING (A2-P2-2): copy(..., 2, 38) depends on IncompatibleTargetAppId keeping
+      // the "{{GUID}" 39-char form from product.json -- it extracts exactly "{GUID}".
+      // See the matching warning at AppId in [Setup] above. Do not "normalize" to one brace.
       RegKey := 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\' + copy('{#IncompatibleTargetAppId}', 2, 38) + '_is1';
 
       if RegKeyExists({#IncompatibleArchRootKey}, RegKey) then begin
@@ -1571,10 +1590,18 @@ end;
 
 function ShouldUseWindows11ContextMenu(): Boolean;
 begin
-  // Use Windows 11 context menu only if:
-  // 1. Running on Windows 11 or later
-  // 2. User has NOT forced Windows 10 style context menus
-  Result := IsWindows11OrLater() and not IsWindows10ContextMenuForced();
+  // FIX-APPX-REMOVE (A3-P1-1): the integrated Windows 11 context menu was
+  // provided exclusively by the sparse .appx package. IDE Code is not
+  // code-signed and Windows refuses to register that unsigned package
+  // (CERT_E_UNTRUSTEDROOT, 0x800B0109), so the appx has been removed from
+  // the install path and the integrated menu is unavailable. This function
+  // therefore always returns False so that the classic registry-based
+  // context menu is installed on every Windows version; on Windows 11 it
+  // appears under "Show more options". All call sites keep going through
+  // this single decision point: if a properly signed appx is ever
+  // restored, restore the original check here:
+  //   Result := IsWindows11OrLater() and not IsWindows10ContextMenuForced();
+  Result := False;
 end;
 
 function HasLegacyFileContextMenu(): Boolean;
@@ -1591,12 +1618,13 @@ function ShouldRepairFolderContextMenu(): Boolean;
 begin
   // Repair folder context menu during updates if:
   // 1. This is a background update (not a fresh install or manual re-install)
-  // 2. Windows 11+ with forced classic context menu
+  // 2. Windows 11+ (the classic menu is now the only Explorer menu there,
+  //    FIX-APPX-REMOVE; the previous requirement that the user had forced
+  //    the Windows 10 style menu no longer applies)
   // 3. Legacy file context menu exists (user previously selected it)
   // 4. Legacy folder context menu is MISSING
   Result := IsBackgroundUpdate()
     and IsWindows11OrLater()
-    and IsWindows10ContextMenuForced()
     and HasLegacyFileContextMenu()
     and not HasLegacyFolderContextMenu();
 end;
@@ -1629,14 +1657,6 @@ begin
     + ', addcontextmenufiles=' + BoolToStr(WizardIsTaskSelected('addcontextmenufiles'))
     + ', addcontextmenufolders=' + BoolToStr(WizardIsTaskSelected('addcontextmenufolders'))
   );
-end;
-
-procedure DeleteLegacyContextMenuRegistryKeys();
-begin
-  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\*\shell\{#RegValueName}');
-  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\directory\shell\{#RegValueName}');
-  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\directory\background\shell\{#RegValueName}');
-  RegDeleteKeyIncludingSubkeys({#EnvironmentRootKey}, 'Software\Classes\Drive\shell\{#RegValueName}');
 end;
 
 function GetAppMutex(Value: string): string;
@@ -1740,6 +1760,12 @@ begin
 #endif
 end;
 
+; FIX-APPX-REMOVE (A3-P1-1): this #ifdef block no longer registers anything.
+; It only contains the lookup helper and RemoveAppxPackage, which exist to
+; clean up sparse-package registrations left behind by previous versions.
+; The AppxPackageName definition must therefore be kept in
+; build/gulpfile.vscode.win32.ts until that cleanup is no longer needed,
+; even though the package itself is no longer shipped (see [Files]).
 #ifdef AppxPackageName
 var
   AppxPackageFullname: String;
@@ -1770,43 +1796,64 @@ begin
   Log('Get-AppxPackage result: name=' + name + ', installed=' + BoolToStr(Result) + ', resultCode=' + IntToStr(ResultCode) + ', packageFullName=' + AppxPackageFullname);
 end;
 
-procedure AddAppxPackage();
-var
-  AddAppxPackageResultCode: Integer;
-  IsCurrentAppxInstalled: Boolean;
-begin
-  if SessionEndFileExists() then begin
-    Log('Skipping Add-AppxPackage because session end was detected.');
-    exit;
-  end;
+; FIX-APPX-REMOVE (A3-P1-1): the registration procedure was deleted
+; entirely. The installer must never register the sparse package again: it
+; is unsigned and Windows rejects its registration deterministically
+; (CERT_E_UNTRUSTEDROOT, 0x800B0109). There is intentionally no remaining
+; package-registration cmdlet call anywhere in this file.
+; RemoveAppxPackage is kept ONLY to clean up registrations left behind by
+; previous versions (upgrade + uninstall). Unlike the previous version, a
+; failed removal is NOT swallowed by Log(): it is reported with an error
+; MsgBox in interactive sessions (silent/background sessions cannot show UI
+; and keep the detailed Log entry). Setup is not aborted: trapping the user
+; in a failed install/uninstall over removal of an optional Explorer
+; context-menu package would be worse than continuing with a visible error.
 
-  IsCurrentAppxInstalled := AppxPackageInstalled(ExpandConstant('{#AppxPackageName}'), AddAppxPackageResultCode);
-  if not IsCurrentAppxInstalled then begin
-    Log('Installing appx ' + AppxPackageFullname + ' ...');
-#if "user" == InstallTarget
-    ShellExec('', 'powershell.exe', '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command ' + AddQuotes('Add-AppxPackage -Path ''' + ExpandConstant('{app}\{#VersionedResourcesFolder}\appx\{#AppxPackage}') + ''' -ExternalLocation ''' + ExpandConstant('{app}\{#VersionedResourcesFolder}\appx') + ''''), '', SW_HIDE, ewWaitUntilTerminated, AddAppxPackageResultCode);
-#else
-    ShellExec('', 'powershell.exe', '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command ' + AddQuotes('Add-AppxPackage -Stage ''' + ExpandConstant('{app}\{#VersionedResourcesFolder}\appx\{#AppxPackage}') + ''' -ExternalLocation ''' + ExpandConstant('{app}\{#VersionedResourcesFolder}\appx') + '''; Add-AppxProvisionedPackage -Online -SkipLicense -PackagePath ''' + ExpandConstant('{app}\{#VersionedResourcesFolder}\appx\{#AppxPackage}') + ''''), '', SW_HIDE, ewWaitUntilTerminated, AddAppxPackageResultCode);
-#endif
-    Log('Add-AppxPackage complete with result code ' + IntToStr(AddAppxPackageResultCode) + '.');
-  end else begin
-    Log('Skipping Add-AppxPackage because package is already installed.');
-  end;
+; FIX-APPX-F1 (QA-F1): RemoveAppxPackage runs in two different Inno
+; contexts -- the installer (CurStepChanged) and the uninstaller
+; (CurUninstallStepChanged) -- and each context has its own silent-mode
+; query: WizardSilent() belongs to Setup, UninstallSilent() to the
+; uninstaller. Asking the Setup query from the uninstaller can raise (or
+; answer for the wrong program), and the try/except guarding the error
+; dialog in RemoveAppxPackage would swallow that, reducing an interactive
+; uninstall failure to a Log-only entry. Branch on IsUninstaller() first
+; so only the query that belongs to the running program is ever evaluated.
+function ShouldShowAppxRemoveError(): Boolean;
+begin
+  if IsUninstaller() then
+    Result := not UninstallSilent()
+  else
+    Result := not WizardSilent();
 end;
 
 procedure RemoveAppxPackage();
 var
   RemoveAppxPackageResultCode: Integer;
+  RemoveShellExecOk: Boolean;
 begin
   KillContextMenuComSurrogate();
   if not SessionEndFileExists() and AppxPackageInstalled(ExpandConstant('{#AppxPackageName}'), RemoveAppxPackageResultCode) then begin
     Log('Removing current ' + AppxPackageFullname + ' appx installation...');
 #if "user" == InstallTarget
-    ShellExec('', 'powershell.exe', '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command ' + AddQuotes('Remove-AppxPackage -Package ''' + AppxPackageFullname + ''''), '', SW_HIDE, ewWaitUntilTerminated, RemoveAppxPackageResultCode);
+    RemoveShellExecOk := ShellExec('', 'powershell.exe', '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command ' + AddQuotes('Remove-AppxPackage -Package ''' + AppxPackageFullname + ''''), '', SW_HIDE, ewWaitUntilTerminated, RemoveAppxPackageResultCode);
 #else
-    ShellExec('', 'powershell.exe', '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command ' + AddQuotes('$packages = Get-AppxPackage ''' + ExpandConstant('{#AppxPackageName}') + '''; foreach ($package in $packages) { Remove-AppxProvisionedPackage -PackageName $package.PackageFullName -Online }; foreach ($package in $packages) { Remove-AppxPackage -Package $package.PackageFullName -AllUsers }'), '', SW_HIDE, ewWaitUntilTerminated, RemoveAppxPackageResultCode);
+    RemoveShellExecOk := ShellExec('', 'powershell.exe', '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command ' + AddQuotes('$packages = Get-AppxPackage ''' + ExpandConstant('{#AppxPackageName}') + '''; foreach ($package in $packages) { Remove-AppxProvisionedPackage -PackageName $package.PackageFullName -Online }; foreach ($package in $packages) { Remove-AppxPackage -Package $package.PackageFullName -AllUsers }'), '', SW_HIDE, ewWaitUntilTerminated, RemoveAppxPackageResultCode);
 #endif
-    Log('Remove-AppxPackage for current appx installation complete with result code ' + IntToStr(RemoveAppxPackageResultCode) + '.');
+    if (not RemoveShellExecOk) or (RemoveAppxPackageResultCode <> 0) then begin
+      Log('Remove-AppxPackage FAILED: ShellExec ok=' + BoolToStr(RemoveShellExecOk) + ', result code ' + IntToStr(RemoveAppxPackageResultCode) + ' for package ' + AppxPackageFullname + '.');
+      try
+        if ShouldShowAppxRemoveError() then
+          MsgBox('{#NameLong} could not remove the Windows 11 context-menu package (' + AppxPackageFullname + ') left behind by a previous version. Error code: ' + IntToStr(RemoveAppxPackageResultCode) + '.' + #13#10#13#10 + 'Setup will continue, but a stale Open with {#NameShort} entry may remain in the Explorer context menu.', mbError, MB_OK);
+      except
+        // Defensive: if the context-appropriate silent-state query (see
+        // ShouldShowAppxRemoveError) or the dialog itself is unavailable
+        // in this session, the detailed Log entry above remains the
+        // record and (un)install continues.
+        Log('Remove-AppxPackage: unable to display the error dialog in this session.');
+      end;
+    end else begin
+      Log('Remove-AppxPackage for current appx installation complete with result code ' + IntToStr(RemoveAppxPackageResultCode) + '.');
+    end;
   end else if not SessionEndFileExists() then begin
     Log('Skipping Remove-AppxPackage for current appx because package is not installed.');
   end;
@@ -1827,16 +1874,15 @@ begin
     LogContextMenuInstallState();
 
 #ifdef AppxPackageName
-    // Remove the appx package when user has forced Windows 10 context menus via
-    // registry. This handles the case where the user previously had the appx
-    // installed but now wants the classic context menu style.
-    if IsWindows10ContextMenuForced() then begin
-      RemoveAppxPackage();
-    end;
-    // Remove the old context menu registry keys
-    if ShouldUseWindows11ContextMenu() then begin
-      DeleteLegacyContextMenuRegistryKeys();
-    end;
+    // FIX-APPX-REMOVE (A3-P1-1): the sparse appx is no longer shipped or
+    // registered, so ALWAYS remove a registration left behind by a previous
+    // version. Previously this only ran when the user had forced Windows 10
+    // context menus, and the post-install step additionally deleted the
+    // classic context-menu registry keys on Windows 11; both behaviors
+    // would have left upgraded Windows 11 users with a broken sparse verb
+    // and no classic menu. RemoveAppxPackage is a no-op when no package is
+    // installed and reports failures loudly (see its implementation).
+    RemoveAppxPackage();
 #endif
 
     if IsBackgroundUpdate() then
