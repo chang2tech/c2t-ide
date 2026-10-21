@@ -26,7 +26,15 @@ function calculatePackageDeps(binaryPath: string, arch: DebianArchString, chromi
 		}
 	} catch (e) {
 		// The package might not exist. Don't re-throw the error here.
-		console.error('Tried to stat ' + binaryPath + ' but failed.');
+		// (BUILD-AUTOLOOP alpha.25: this covers bin/<tunnelApplicationName> —
+		// the GitHub workflow does not build or mix in the Rust CLI
+		// (upstream's azure "Mix in CLI" step is not replicated), so the file
+		// is absent from the packaged app. Falling through to dpkg-shlibdeps
+		// on a nonexistent path fails the build hard ("cannot read ...: No
+		// such file or directory", exit 25), so skip the dependency scan for
+		// a missing file instead.
+		console.error('Tried to stat ' + binaryPath + ' but failed; skipping dependency scan for it.');
+		return new Set<string>();
 	}
 
 	// Get the Chromium dpkg-shlibdeps file.

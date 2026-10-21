@@ -22,3 +22,10 @@
 # target platform of this package.
 node-pty/prebuilds/win32-*/**
 node-pty/prebuilds/darwin-*/**
+# node-pty ships a linux-arm64 prebuild in its npm tarball. It leaks into the
+# x64 Linux package and breaks the .deb build: dpkg-shlibdeps analyzes every
+# .node under node_modules.asar.unpacked and chokes on the foreign-arch binary
+# ("cannot find library" against the amd64-only sysroot; failed alpha.23).
+# NOTE: this file is arch-blind; if an arm64 Linux build is added to the
+# matrix, this exclusion must become arch-conditional.
+node-pty/prebuilds/linux-arm64/**

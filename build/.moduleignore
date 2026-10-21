@@ -141,20 +141,6 @@ node-pty/third_party/**
 !node-pty/build/Release/conpty/conpty.dll
 !node-pty/build/Release/conpty/OpenConsole.exe
 
-# node-pty ships prebuilds for all platforms in its npm tarball. Non-linux
-# prebuilds leak into the Linux package and break the .deb build:
-# dpkg-shlibdeps analyzes every .node under node_modules.asar.unpacked and
-# chokes on foreign-arch binaries (e.g. prebuilds/linux-arm64/pty.node in an
-# x64 deb — "cannot find library" against the amd64-only sysroot).
-# Mirror of build/.moduleignore.win32. NOTE: this file is arch-blind; if an
-# arm64 Linux build is added to the matrix, the linux-arm64 exclusion below
-# must become arch-conditional.
-node-pty/prebuilds/darwin-arm64/**
-node-pty/prebuilds/darwin-x64/**
-node-pty/prebuilds/linux-arm64/**
-node-pty/prebuilds/win32-arm64/**
-node-pty/prebuilds/win32-x64/**
-
 @parcel/watcher/binding.gyp
 @parcel/watcher/build/**
 @parcel/watcher/prebuilds/**
