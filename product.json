@@ -17,14 +17,14 @@
 	"win32DirName": "IDE Code",
 	"win32NameVersion": "IDE Code",
 	"win32RegValueName": "IDECode",
-	"win32x64AppId": "{53D699EC-4E31-47C5-A929-7FDFE94B2FB6}",
-	"win32arm64AppId": "{D505229D-7B0F-450C-8A93-427E180E881B}",
-	"win32x64UserAppId": "{FCBEBEFB-D2CF-4E00-A960-55C2AA72AB4F}",
+	"win32x64AppId": "{{53D699EC-4E31-47C5-A929-7FDFE94B2FB6}",
+	"win32arm64AppId": "{{D505229D-7B0F-450C-8A93-427E180E881B}",
+	"win32x64UserAppId": "{{FCBEBEFB-D2CF-4E00-A960-55C2AA72AB4F}",
 	"win32ContextMenu": {
 		"x64": { "clsid": "{9B66B446-8603-40AB-9688-56E0623BB107}" },
 		"arm64": { "clsid": "{44F2DF90-A3F4-4615-8809-A1C5F8DB2271}" }
 	},
-	"win32arm64UserAppId": "{FBDBB66C-9901-4719-8E92-CD0A647DB8F7}",
+	"win32arm64UserAppId": "{{FBDBB66C-9901-4719-8E92-CD0A647DB8F7}",
 	"win32AppUserModelId": "IDECode.IDECode",
 	"win32ShellNameShort": "I&DE Code",
 	"win32TunnelServiceMutex": "idecode-tunnelservice",
