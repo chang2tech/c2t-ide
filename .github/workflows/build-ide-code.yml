@@ -177,7 +177,13 @@ jobs:
       - name: Build .deb package
         run: |
           set -e
-          npm run gulp vscode-linux-x64-prepare-deb vscode-linux-x64-build-deb
+          # PHẢI chạy riêng từng lệnh: gulp-cli chạy nhiều task cùng 1 lệnh ở chế độ
+          # PARALLEL (mặc định; chỉ --series mới series) → build-deb spawn với cwd
+          # chưa tồn tại (prepare-deb chưa kịp tạo) gây 'spawn /bin/sh ENOENT' (build #16).
+          # Upstream (build/azure-pipelines/linux/steps/product-build-linux-package.yml)
+          # cũng chạy 2 lệnh riêng biệt.
+          npm run gulp vscode-linux-x64-prepare-deb
+          npm run gulp vscode-linux-x64-build-deb
           ls -la .build/linux/deb/amd64/deb/
 
       - name: Build AppImage
