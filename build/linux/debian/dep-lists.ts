@@ -23,6 +23,12 @@ export const recommendedDeps = [
 ];
 
 export const referenceGeneratedDepsByArch = {
+	// BUILD-AUTOLOOP alpha.26: amd64 reference regenerated without the
+	// tunnel binary's unique deps (libc6 >= 2.16, libc6 >= 2.2.5, libx11-6,
+	// libxkbfile1 >= 1:1.1.0). The GitHub workflow has no "Mix in CLI" step,
+	// so bin/<tunnelApplicationName> is never in the packaged tree and
+	// calculate-deps.ts skips it (alpha.25); its deps must not be in the
+	// .deb's Depends. Matches getDependencies() output of run 39653055992.
 	'amd64': [
 		'ca-certificates',
 		'libasound2 (>= 1.0.17)',
@@ -30,9 +36,7 @@ export const referenceGeneratedDepsByArch = {
 		'libatk1.0-0 (>= 2.11.90)',
 		'libatspi2.0-0 (>= 2.9.90)',
 		'libc6 (>= 2.15)',
-		'libc6 (>= 2.16)',
 		'libc6 (>= 2.17)',
-		'libc6 (>= 2.2.5)',
 		'libc6 (>= 2.25)',
 		'libc6 (>= 2.28)',
 		'libc6 (>= 2.4)',
@@ -51,7 +55,6 @@ export const referenceGeneratedDepsByArch = {
 		'libnss3 (>= 3.26)',
 		'libpango-1.0-0 (>= 1.14.0)',
 		'libudev1 (>= 183)',
-		'libx11-6',
 		'libx11-6 (>= 2:1.4.99.1)',
 		'libxcb1 (>= 1.9.2)',
 		'libxcomposite1 (>= 1:0.4.4-1)',
@@ -59,7 +62,6 @@ export const referenceGeneratedDepsByArch = {
 		'libxext6',
 		'libxfixes3',
 		'libxkbcommon0 (>= 0.5.0)',
-		'libxkbfile1 (>= 1:1.1.0)',
 		'libxrandr2',
 		'xdg-utils (>= 1.0.2)'
 	],
