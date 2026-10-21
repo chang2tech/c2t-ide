@@ -78,9 +78,23 @@ export async function generateNodeCompileCache(platform: string, outputDirectory
 
 	try {
 		const env = createNodeCompileCacheGenerationEnvironment(portableDirectory);
-		await runCacheGenerationWithRetry(paths.application, paths.cacheDirectory, env);
-		const totalCacheEntryCount = await validateNodeCompileCache(paths.cacheDirectory, process.arch);
-		console.log(`Generated ${totalCacheEntryCount} total Node.js compile cache entries in ${paths.cacheDirectory}.`);
+		try {
+			await runCacheGenerationWithRetry(paths.application, paths.cacheDirectory, env);
+			const totalCacheEntryCount = await validateNodeCompileCache(paths.cacheDirectory, process.arch);
+			console.log(`Generated ${totalCacheEntryCount} total Node.js compile cache entries in ${paths.cacheDirectory}.`);
+		} catch (error) {
+			// The pre-generated compile cache is a startup-speed optimization only:
+			// without it the packaged app still enables and populates the cache at
+			// runtime (enableNodeCompileCache warns and continues when not
+			// generating). Builds #14 and #15 both timed out here on GitHub-hosted
+			// Windows runners (300s x 2 attempts, markers for main /
+			// extension-host / shared-process never written) even though the app
+			// itself started and initialized fine. Do not block the release on
+			// this optimization: drop any partial cache output and package
+			// without a pre-generated cache.
+			console.warn(`WARNING: Node.js compile cache generation failed (${(error as Error).message.split('\n')[0]}); packaging without a pre-generated compile cache. First launches may be slower while the runtime cache warms up.`);
+			await fs.promises.rm(paths.cacheDirectory, { recursive: true, force: true });
+		}
 	} finally {
 		await removeDirectoryWithRetries(portableDirectory);
 	}
