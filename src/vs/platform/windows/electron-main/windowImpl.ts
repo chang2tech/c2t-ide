@@ -999,6 +999,13 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 				break;
 		}
 
+		// If the window has not signalled ready yet, a failed load or a gone
+		// renderer means it will never become ready: surface that explicitly
+		// so the failure is visible in the main process output (e.g. smoke runs)
+		if (!this.isReady && (type === WindowError.LOAD || type === WindowError.PROCESS_GONE)) {
+			this.logService.error(`window#ready: renderer failed before ready (type: ${type}, reason: ${details?.reason || '<unknown>'}, exitCode: ${details?.exitCode || '<unknown>'})`);
+		}
+
 		// Telemetry
 		type WindowErrorClassification = {
 			type: { classification: 'SystemMetaData'; purpose: 'PerformanceAndHealth'; comment: 'The type of window error to understand the nature of the error better.' };

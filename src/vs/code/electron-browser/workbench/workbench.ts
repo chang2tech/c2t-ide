@@ -750,5 +750,5 @@ import { getPartsSplashColors, getPartsSplashLayoutMetrics } from './partsSplash
 	performance.mark('code/didLoadWorkbenchMain');
 
 	// Load workbench
-	result.main(configuration);
+	result.main(configuration).catch(err => onUnexpectedError(err, false));
 }());

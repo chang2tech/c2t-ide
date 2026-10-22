@@ -106,6 +106,9 @@ export async function generateNodeCompileCache(platform: string, outputDirectory
 		try {
 			await runCacheGenerationWithRetry(paths.application, paths.cacheDirectory, env);
 		} catch (error) {
+			if (portableDirectory) {
+				dumpPackagedAppLogs(portableDirectory, 'compile cache generation');
+			}
 			const classification = classifyCacheGenerationFailure(error);
 			if (classification.fatal) {
 				// The app is broken, not the runner: keep the build red. This
@@ -365,6 +368,77 @@ async function runCacheGenerationWithRetry(application: string, cacheDirectory: 
 const SMOKE_VERSION_TIMEOUT_MS = 30_000;
 const SMOKE_MAIN_MARKER_TIMEOUT_MS = 120_000;
 
+/**
+ * Launch args for every GUI launch of the packaged app in this file (cache
+ * generation + Tier-2 smoke). These launches only need the app's processes
+ * to boot and write readiness markers on CI runners that have no real GPU
+ * (GitHub-hosted Windows = Windows Server with a basic render driver).
+ * Electron's GPU process initialization can stall there, leaving the
+ * workbench renderer unable to ever signal ready — the alpha.24–alpha.26
+ * pattern (pty-host/agent-host markers written in ~5s, main/extension-host/
+ * shared-process markers never written, main log silent after ~0.9s).
+ * `--disable-gpu` forces software rendering for these build-only launches;
+ * it is never passed to the shipped app or its launchers.
+ */
+const PACKAGED_APP_CI_LAUNCH_ARGS: readonly string[] = ['--disable-gpu'];
+
+/**
+ * Best-effort dump of the packaged app's own log files (main + renderer)
+ * from the portable user-data directory into the build output. The child
+ * stdout/stderr captured by the spawns above does NOT include the app's
+ * file logs, so a renderer that stalls before signalling ready is
+ * otherwise invisible in CI (builds alpha.24–alpha.26 failed with a
+ * ~0.9s main log and no renderer evidence at all). Synchronous on
+ * purpose: it is called from timeout callbacks and failure paths where
+ * the process tree is about to be killed and the portable directory is
+ * about to be removed. Never throws.
+ */
+function dumpPackagedAppLogs(portableDirectory: string, context: string): void {
+	try {
+		const logsRoot = path.join(portableDirectory, 'user-data', 'logs');
+		if (!fs.existsSync(logsRoot)) {
+			console.log(`[node-compile-cache] No app log directory found for ${context} at ${logsRoot}.`);
+			return;
+		}
+		const wanted = new Set(['main.log', 'renderer.log', 'sharedprocess.log']);
+		const files: string[] = [];
+		const collect = (dir: string, depth: number): void => {
+			if (depth > 3 || files.length > 12) {
+				return;
+			}
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				const full = path.join(dir, entry.name);
+				if (entry.isDirectory()) {
+					collect(full, depth + 1);
+				} else if (entry.isFile() && wanted.has(entry.name)) {
+					files.push(full);
+				}
+			}
+		};
+		collect(logsRoot, 0);
+		if (files.length === 0) {
+			console.log(`[node-compile-cache] No app log files found for ${context} under ${logsRoot}.`);
+			return;
+		}
+		let budget = 40_000;
+		for (const file of files) {
+			if (budget <= 0) {
+				break;
+			}
+			try {
+				const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+				const tail = lines.slice(-120).join('\n').slice(-budget);
+				budget -= tail.length;
+				console.log(`[node-compile-cache] ----- app log (${context}): ${path.relative(portableDirectory, file)} (last ${Math.min(120, lines.length)} lines) -----\n${tail}`);
+			} catch {
+				// A locked or vanished log file must not fail the dump.
+			}
+		}
+	} catch {
+		// Diagnostics only: never let the dump replace the real failure.
+	}
+}
+
 async function runPackagedAppSmokeCheck(application: string, cliEntry: string, portableDirectory: string): Promise<void> {
 	console.log('Running packaged-app smoke check before packaging without a compile cache...');
 	// Tier 1: --version through the packaged CLI entry, exactly like the
@@ -402,7 +476,7 @@ async function runPackagedAppSmokeCheck(application: string, cliEntry: string, p
 		env.VSCODE_NODE_COMPILE_CACHE_ROOT = smokeRoot;
 		await new Promise<void>((resolve, reject) => {
 			// detached on POSIX so killProcessTree can signal the whole process group (B-W1-F05).
-			const child = cp.spawn(application, [], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+			const child = cp.spawn(application, [...PACKAGED_APP_CI_LAUNCH_ARGS], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
 			let output = '';
 			child.stdout.on('data', chunk => output += chunk.toString());
 			child.stderr.on('data', chunk => output += chunk.toString());
@@ -420,6 +494,7 @@ async function runPackagedAppSmokeCheck(application: string, cliEntry: string, p
 			timeout = setTimeout(() => {
 				stopWatching();
 				killProcessTree(child, 'the packaged-app smoke check process tree');
+				dumpPackagedAppLogs(portableDirectory, 'packaged-app smoke check');
 				reject(new Error(`Packaged-app smoke check failed: main readiness marker not written within ${SMOKE_MAIN_MARKER_TIMEOUT_MS / 1000}s — the app did not reach the Eventually phase.\n${output}`));
 			}, SMOKE_MAIN_MARKER_TIMEOUT_MS);
 			child.on('error', error => { stopWatching(); reject(new Error(`Packaged-app smoke check could not spawn the application: ${error.message}`)); });
@@ -521,7 +596,7 @@ function runCacheGeneration(application: string, cacheDirectory: string, env: No
 				}
 			}
 		}, 5_000);
-		const child = cp.spawn(application, [], {
+		const child = cp.spawn(application, [...PACKAGED_APP_CI_LAUNCH_ARGS], {
 			env,
 			stdio: ['ignore', 'pipe', 'pipe'],
 			// detached on POSIX so killProcessTree can signal the whole process group (B-W1-F05).
