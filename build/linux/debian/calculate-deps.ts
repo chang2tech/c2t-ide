@@ -20,6 +20,11 @@ import type { DebianArchString } from './types.ts';
 // trusts curl's exit code alone (DC-5): it reads the real HTTP status and
 // Retry-After from the dumped headers on every attempt (DC-1), validates the
 // downloaded content (DC-2) and verifies a pinned SHA-256 (DC-3).
+// alpha.34: the script is fetched from the GitHub contents API
+// (api.github.com, Accept: application/vnd.github.raw) instead of the
+// previous raw host, which rate-limited (HTTP 429) the alpha.33 CI
+// run; the contents API serves byte-identical content (verified
+// against the pin below).
 const DPKG_SHLIBDEPS_SHA256 = '71b61bee790bf06797c901334f60b916c41f8346f9f8c333f9fa378d7e3b05bd';
 // ^ SHA-256 of dpkg-shlibdeps.pl at the Chromium pin in cgmanifest.json
 // (version 150.0.7871.250, commitHash f916f1b7136907af19d96b95b891533d091d932a;
@@ -29,6 +34,26 @@ const DPKG_SHLIBDEPS_MIN_SIZE = 4096; // real script: 31,983 bytes; captured HTT
 const DOWNLOAD_MAX_ATTEMPTS = 5;
 const DOWNLOAD_BASE_BACKOFF_MS = [5000, 10000, 20000, 40000];
 const DOWNLOAD_BACKOFF_CAP_MS = 60000;
+
+// Headers for the contents-API download (alpha.34, AD-1): Bearer auth
+// only, and only when GITHUB_TOKEN is set; anonymous otherwise. The
+// token is passed to curl as an argument and is never logged.
+const ghContentsHeaders: Record<string, string> = {
+	Accept: 'application/vnd.github.raw',
+	'User-Agent': 'VSCode Build',
+};
+
+if (process.env.GITHUB_TOKEN) {
+	ghContentsHeaders.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+}
+
+function curlHeaderArgs(headers: Record<string, string>): string[] {
+	const args: string[] = [];
+	for (const [name, value] of Object.entries(headers)) {
+		args.push('-H', `${name}: ${value}`);
+	}
+	return args;
+}
 
 const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 function sleepSync(ms: number): void {
@@ -75,7 +100,7 @@ function downloadDpkgShlibdeps(url: string, scriptLocation: string): void {
 	const headerFile = `${scriptLocation}.headers`;
 	let lastProblem = 'unknown';
 	for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
-		const result = spawnSync('curl', ['--fail', '--silent', '--show-error', '-D', headerFile, url, '-o', scriptLocation]);
+		const result = spawnSync('curl', ['--fail', '--silent', '--show-error', '-D', headerFile, ...curlHeaderArgs(ghContentsHeaders), url, '-o', scriptLocation]);
 		const headers = readHeaderDump(headerFile);
 		const status = parseHttpStatus(headers);
 		if (result.status === 0) {
@@ -106,7 +131,7 @@ export function generatePackageDeps(files: string[], arch: DebianArchString, chr
 	const chromiumManifest = manifests.registrations.filter(registration => {
 		return registration.component.type === 'git' && registration.component.git!.name === 'chromium';
 	});
-	const dpkgShlibdepsUrl = `https://raw.githubusercontent.com/chromium/chromium/${chromiumManifest[0].version}/third_party/dpkg-shlibdeps/dpkg-shlibdeps.pl`;
+	const dpkgShlibdepsUrl = `https://api.github.com/repos/chromium/chromium/contents/third_party/dpkg-shlibdeps/dpkg-shlibdeps.pl?ref=${chromiumManifest[0].version}`;
 	const dpkgShlibdepsScriptLocation = `${tmpdir()}/dpkg-shlibdeps.pl`;
 	downloadDpkgShlibdeps(dpkgShlibdepsUrl, dpkgShlibdepsScriptLocation);
 	const dependencies: Set<string>[] = files.map(file => calculatePackageDeps(file, arch, chromiumSysroot, vscodeSysroot, dpkgShlibdepsScriptLocation));

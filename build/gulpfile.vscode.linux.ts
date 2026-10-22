@@ -138,11 +138,12 @@ function getDebPackageArch(arch: string): string {
 // getDependencies -> build/linux/debian/install-sysroot.ts and
 // build/linux/debian/calculate-deps.ts. The egress hosts are:
 //   - api.github.com — VS Code sysroot release metadata + asset
-//     (Microsoft/vscode-linux-build-agent); the Authorization header is
-//     attached only when GITHUB_TOKEN is set, otherwise the calls are
-//     anonymous and hit the much lower GitHub rate limit.
-//   - raw.githubusercontent.com — Chromium sysroots.json (electron
-//     repo) and dpkg-shlibdeps.pl (chromium repo), both via curl.
+//     (Microsoft/vscode-linux-build-agent), plus Chromium
+//     sysroots.json (electron repo) and dpkg-shlibdeps.pl (chromium
+//     repo) via the contents API, both via curl; the Authorization
+//     header is attached only when GITHUB_TOKEN is set, otherwise
+//     the calls are anonymous and hit the much lower GitHub rate
+//     limit.
 //   - msftelectronbuild.z5.web.core.windows.net — Chromium sysroot
 //     tarball hosting.
 // A machine without egress to these hosts will FAIL in prepare-deb;
@@ -157,7 +158,7 @@ function prepareDebPackage(arch: string) {
 	const destination = path.join(root, '.build/linux/deb/' + debArch + '/' + product.applicationName + '-' + debArch);
 
 	return async function () {
-		console.log(`[prepare-deb] NETWORK DEPENDENCY (W3-08): this task downloads from api.github.com (VS Code sysroot release + asset; GITHUB_TOKEN used when set, anonymous otherwise), raw.githubusercontent.com (Chromium sysroots.json + dpkg-shlibdeps.pl via curl) and msftelectronbuild.z5.web.core.windows.net (Chromium sysroot tarball) — see build/linux/debian/install-sysroot.ts and build/linux/debian/calculate-deps.ts. No egress to these hosts will fail this task.`);
+		console.log(`[prepare-deb] NETWORK DEPENDENCY (W3-08): this task downloads from api.github.com (VS Code sysroot release + asset, plus Chromium sysroots.json + dpkg-shlibdeps.pl via the contents API using curl; GITHUB_TOKEN used when set, anonymous otherwise) and msftelectronbuild.z5.web.core.windows.net (Chromium sysroot tarball) — see build/linux/debian/install-sysroot.ts and build/linux/debian/calculate-deps.ts. No egress to these hosts will fail this task.`);
 		assertDebTools('prepare-deb', debPrepareTools);
 		// Fail-fast for the build stage too (W27 (d) item 3 / W39): check
 		// the build-deb tools now, at the head of prepare-deb, instead of

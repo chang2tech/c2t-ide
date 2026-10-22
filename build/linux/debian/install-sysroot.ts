@@ -32,6 +32,29 @@ const ghDownloadHeaders = {
 	Accept: 'application/octet-stream',
 };
 
+// Headers for the contents-API download of sysroots.json (alpha.34,
+// AD-1). Built fresh — NOT spread from ghApiHeaders — so the release-API
+// Authorization can never leak into the contents request: the contents
+// API gets Accept: application/vnd.github.raw and, when GITHUB_TOKEN
+// is set, Authorization: Bearer <token>; anonymous otherwise. The
+// token is passed to curl as an argument and is never logged.
+const ghContentsHeaders: Record<string, string> = {
+	Accept: 'application/vnd.github.raw',
+	'User-Agent': 'VSCode Build',
+};
+
+if (process.env.GITHUB_TOKEN) {
+	ghContentsHeaders.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+}
+
+function curlHeaderArgs(headers: Record<string, string>): string[] {
+	const args: string[] = [];
+	for (const [name, value] of Object.entries(headers)) {
+		args.push('-H', `${name}: ${value}`);
+	}
+	return args;
+}
+
 interface IFetchOptions {
 	assetName: string;
 	checksumSha256?: string;
@@ -165,6 +188,10 @@ export async function getVSCodeSysroot(arch: DebianArchString, isMusl: boolean =
 // object (first non-whitespace character '{', parses as JSON, top level
 // is a non-null object). No SHA-256 pin is applied because no verified
 // hash for sysroots.json exists in evidence (unlike dpkg-shlibdeps.pl).
+// alpha.34: sysroots.json is fetched from the GitHub contents API
+// (api.github.com) instead of the previous raw host, which
+// rate-limited (HTTP 429) the alpha.33 CI run; the contents API serves
+// byte-identical JSON.
 const SYSROOT_DICT_MAX_ATTEMPTS = 5;
 const SYSROOT_DICT_BASE_BACKOFF_MS = [5000, 10000, 20000, 40000];
 const SYSROOT_DICT_BACKOFF_CAP_MS = 60000;
@@ -205,7 +232,7 @@ function downloadSysrootsDict(url: string, dictLocation: string): void {
 	const headerFile = `${dictLocation}.headers`;
 	let lastProblem = 'unknown';
 	for (let attempt = 1; attempt <= SYSROOT_DICT_MAX_ATTEMPTS; attempt++) {
-		const result = spawnSync('curl', ['--fail', '--silent', '--show-error', '-D', headerFile, url, '-o', dictLocation]);
+		const result = spawnSync('curl', ['--fail', '--silent', '--show-error', '-D', headerFile, ...curlHeaderArgs(ghContentsHeaders), url, '-o', dictLocation]);
 		const headers = fs.existsSync(headerFile) ? fs.readFileSync(headerFile, 'utf8') : '';
 		const status = parseHttpStatus(headers);
 		if (result.status === 0) {
@@ -227,7 +254,7 @@ function downloadSysrootsDict(url: string, dictLocation: string): void {
 }
 
 export async function getChromiumSysroot(arch: DebianArchString): Promise<string> {
-	const sysrootJSONUrl = `https://raw.githubusercontent.com/electron/electron/v${getElectronVersion().electronVersion}/script/sysroots.json`;
+	const sysrootJSONUrl = `https://api.github.com/repos/electron/electron/contents/script/sysroots.json?ref=v${getElectronVersion().electronVersion}`;
 	const sysrootDictLocation = `${tmpdir()}/sysroots.json`;
 	downloadSysrootsDict(sysrootJSONUrl, sysrootDictLocation);
 	const sysrootInfo = JSON.parse(fs.readFileSync(sysrootDictLocation, 'utf8'));

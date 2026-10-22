@@ -270,6 +270,8 @@ jobs:
 
 
       - name: Build .deb package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -e
