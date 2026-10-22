@@ -121,7 +121,15 @@ const inlineDiffsWeight500 = 500 as KeybindingWeight;
 const inlineDiffsWeight600 = 600 as KeybindingWeight;
 
 function getCoreInlineEditService(accessor: ServicesAccessor): IInlineEditService | undefined {
-	return accessor.get(IInlineEditService) as IInlineEditService | undefined;
+	// TEMP-GUARD (GAPS-663): như helper cùng tên ở composerActions.ts —
+	// strict DI ném cho service chưa đăng ký (instantiationService.ts:104);
+	// try/catch trả undefined để 5 action rơi về fallback `ide.*` đã viết
+	// sẵn cho web/aux (xem docblock :76-79). Bỏ khi khôi phục :161.
+	try {
+		return accessor.get(IInlineEditService);
+	} catch {
+		return undefined; // IInlineEditService not registered in this layer
+	}
 }
 
 /**

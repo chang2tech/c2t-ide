@@ -329,19 +329,26 @@ class ComposerWorkbenchContribution extends Disposable implements IWorkbenchCont
 	 * supports swapping the source without touching the Tab contrib.
 	 */
 	private tabEngineAdapter: IIdeCodeEngineAdapter | undefined;
+	// TEMP-GUARD (GAPS-663, biến thể B của lát cắt :161): factory KHÔNG còn
+	// được tiêm qua ctor — implementation của nó nằm ở electron-browser,
+	// bị cắt khỏi graph khi boot-fix :161 áp dụng; tiêm cứng làm strict DI
+	// ném trong createInstance và safeCreateContribution nuốt cả ctor.
+	// Resolve lazy qua IInstantiationService (xem resolveEngineAdapterFactory).
+	private engineAdapterFactory: IIdeCodeEngineAdapterFactory | undefined;
+	private engineAdapterFactoryResolved = false;
+	private engineAdapterFactoryMissingLogged = false;
 
 	constructor(
-		// NOTE (F2-A cleanup): plain parameter, not a property — the service
-		// is only used inside the constructor body (parameter properties
-		// unused via `this.` trip TS6138 under noUnusedLocals).
-		@IInstantiationService instantiationService: IInstantiationService,
+		// Property (không còn plain parameter như NOTE F2-A cũ): resolve lazy
+		// của factory cần giữ instantiationService sau ctor. Các call-site
+		// trong thân ctor giữ nguyên dạng tham số.
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ILanguageFeaturesService languageFeaturesService: ILanguageFeaturesService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IEditorResolverService private readonly editorResolverService: IEditorResolverService,
 		@IOutputService private readonly outputService: IOutputService,
-		@IIdeCodeEngineAdapterFactory private readonly engineAdapterFactory: IIdeCodeEngineAdapterFactory,
 		@ITextModelService textModelService: ITextModelService,
 		@IModelService modelService: IModelService,
 	) {
@@ -455,6 +462,38 @@ class ComposerWorkbenchContribution extends Disposable implements IWorkbenchCont
 	}
 
 	/**
+	 * TEMP-GUARD (GAPS-663): resolve khoan dung IIdeCodeEngineAdapterFactory.
+	 * Service này chỉ được đăng ký bởi electron-browser contribution
+	 * (electron-browser/composer.contribution.ts:44) — vắng mặt khi lát cắt
+	 * :161 (hoặc bản web/aux) loại contribution đó khỏi graph. Strict DI làm
+	 * accessor.get NÉM cho service chưa đăng ký
+	 * (instantiationService.ts:104), nên try/catch ở đây là cơ chế "optional"
+	 * duy nhất codebase hỗ trợ — cùng idiom với createRuleActions.ts:99-104,
+	 * composerPlanBridge.ts:55-61, composerChangesTab.ts:237-251.
+	 * Thử 1 lần duy nhất: tập singleton được chốt vào ServiceCollection
+	 * trước khi workbench tạo instantiation service (workbench.ts:187-192),
+	 * không có đăng ký động về sau. Vắng mặt → log 1 lần + trả undefined,
+	 * Tab backend im lặng trung thực như stub mode (không bịa adapter).
+	 * BỎ guard này khi port IPC xong và factory (hoặc proxy của nó) lại
+	 * được đăng ký vô điều kiện — khi đó khôi phục tiêm ctor như cũ.
+	 */
+	private resolveEngineAdapterFactory(): IIdeCodeEngineAdapterFactory | undefined {
+		if (!this.engineAdapterFactoryResolved) {
+			this.engineAdapterFactoryResolved = true;
+			try {
+				this.engineAdapterFactory = this.instantiationService.invokeFunction(accessor => accessor.get(IIdeCodeEngineAdapterFactory));
+			} catch (err) {
+				if (!this.engineAdapterFactoryMissingLogged) {
+					this.engineAdapterFactoryMissingLogged = true;
+					console.error(`[composer] Tab engine unavailable: IIdeCodeEngineAdapterFactory is not registered (electron-browser contribution not loaded). Tab completions stay silent. Resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				this.engineAdapterFactory = undefined;
+			}
+		}
+		return this.engineAdapterFactory;
+	}
+
+	/**
 	 * TAB-BACKEND: resolves the engine adapter Tab completions run against,
 	 * live on every call (EngineTabBackend invokes the resolver per request,
 	 * so a runtime `ide.agent.engineMode` switch is honored without reload).
@@ -472,9 +511,15 @@ class ComposerWorkbenchContribution extends Disposable implements IWorkbenchCont
 			// lives in electron-browser/ (node:child_process); this browser/
 			// contribution creates it through the DI factory seam so the web
 			// bundle never imports node builtins. Same options as before.
-			this.tabEngineAdapter = this.engineAdapterFactory.create(
-				this.createTabEngineOptions(),
-			);
+			// TEMP-GUARD (GAPS-663): factory vắng mặt (sau lát cắt :161) →
+			// undefined, Tab im lặng như stub mode; factory có mặt → hành
+			// vi y nguyên trước cắt. Thứ tự giữ nguyên: mode check trước,
+			// nên stub mode không bao giờ chạm resolve/log thừa.
+			const factory = this.resolveEngineAdapterFactory();
+			if (!factory) {
+				return undefined;
+			}
+			this.tabEngineAdapter = factory.create(this.createTabEngineOptions());
 		}
 		return this.tabEngineAdapter;
 	}

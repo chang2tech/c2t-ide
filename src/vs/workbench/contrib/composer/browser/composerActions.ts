@@ -333,11 +333,34 @@ export class ComposerNewAgentChatAction extends Action2 {
 // accept/reject/follow-up/escalate. The `composer.*` actions below drive it
 // directly instead of delegating to the extension's `ide.*` quick-input flow.
 //
-// `accessor.get` returns undefined (no throw) when the electron-browser
-// contribution is not loaded (web/aux builds); only then do we fall back to
-// the extension runtime's legacy `ide.*` commands.
+// TEMP-GUARD (GAPS-663, biến thể B của lát cắt :161) + đính chính comment
+// cũ: trên desktop workbench (instantiation strict, workbench.ts:192),
+// `accessor.get` cho service chưa đăng ký NÉM (instantiationService.ts:104)
+// thay vì trả undefined. try/catch dưới đây biến "service vắng" thành
+// undefined đúng như các call-site giả định — cùng idiom với
+// createRuleActions.ts:99-104 và getPlanService (composerPlanBridge.ts:55-61).
+// Khi đó các action rơi về fallback legacy `ide.*` của extension như thiết
+// kế web/aux. Bỏ try/catch khi IInlineEditService lại được đăng ký vô điều
+// kiện (port IPC xong, khôi phục :161).
 function getCoreInlineEditService(accessor: ServicesAccessor): IInlineEditService | undefined {
-	return accessor.get(IInlineEditService) as IInlineEditService | undefined;
+	try {
+		return accessor.get(IInlineEditService);
+	} catch {
+		return undefined; // IInlineEditService not registered in this layer (electron-browser contribution not loaded)
+	}
+}
+
+/** TEMP-GUARD (GAPS-663): như getCoreInlineEditService — IInlinePromptSelectionService
+ *  (electron-browser/composer.contribution.ts:56) có thể vắng mặt độc lập với
+ *  IInlineEditService trong giai đoạn port IPC từng phần; strict DI ném thay
+ *  vì trả undefined như call-site của ComposerAddSelectionToInlinePromptAction
+ *  giả định qua `?.`. */
+function getInlinePromptSelectionService(accessor: ServicesAccessor): IInlinePromptSelectionService | undefined {
+	try {
+		return accessor.get(IInlinePromptSelectionService);
+	} catch {
+		return undefined; // IInlinePromptSelectionService not registered in this layer
+	}
 }
 
 export class ComposerOpenInlinePromptAction extends Action2 {
@@ -5098,7 +5121,7 @@ export class ComposerAddSelectionToInlinePromptAction extends Action2 {
 		// extension, the prompt only opens when a selection was attached.
 		const core = getCoreInlineEditService(accessor);
 		if (core) {
-			const selectionService = accessor.get(IInlinePromptSelectionService) as IInlinePromptSelectionService | undefined;
+			const selectionService = getInlinePromptSelectionService(accessor);
 			if (selectionService?.attachPendingSelection()) {
 				await core.openPrompt();
 			}

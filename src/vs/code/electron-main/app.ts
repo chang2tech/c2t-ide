@@ -122,7 +122,7 @@ import { IExtensionsScannerService } from '../../platform/extensionManagement/co
 import { ExtensionsScannerService } from '../../platform/extensionManagement/node/extensionsScannerService.js';
 import { UserDataProfilesHandler } from '../../platform/userDataProfile/electron-main/userDataProfilesHandler.js';
 import { ProfileStorageChangesListenerChannel } from '../../platform/userDataProfile/electron-main/userDataProfileStorageIpc.js';
-import { Promises, RunOnceScheduler, runWhenGlobalIdle } from '../../base/common/async.js';
+import { Promises, raceTimeout, RunOnceScheduler, runWhenGlobalIdle } from '../../base/common/async.js';
 import { CancellationToken } from '../../base/common/cancellation.js';
 import { resolveMachineId, resolveSqmId, resolveDevDeviceId, validateDevDeviceId } from '../../platform/telemetry/electron-main/telemetryUtils.js';
 import { ExtensionsProfileScannerService } from '../../platform/extensionManagement/node/extensionsProfileScannerService.js';
@@ -817,12 +817,24 @@ export class CodeApplication extends Disposable {
 		const isGeneratingNodeCompileCache = process.env['VSCODE_GENERATE_NODE_COMPILE_CACHE'] === '1';
 		const shouldStartCriticalNodeProcesses = isGeneratingNodeCompileCache || process.env['VSCODE_MEASURE_NODE_COMPILE_CACHE'] === '1';
 		if (shouldStartCriticalNodeProcesses) {
+			this.logService.info('[startup] waiting for critical node processes (window ready, shared process, pty host, agent host)');
 			await Promise.all([
 				...windows.map(window => window.ready()),
 				sharedProcessReady,
-				appInstantiationService.invokeFunction(accessor => accessor.get(ILocalPtyService).getLatency()),
+				// Hardening for node compile cache generation/measurement only: the
+				// latency result is a probe that is discarded, so bound the wait and
+				// log failures instead of hanging or failing startup. Normal launches
+				// never enter this block. On timeout, the underlying IPC request
+				// remains pending in the channel client until the connection is disposed.
+				appInstantiationService.invokeFunction(accessor => raceTimeout(accessor.get(ILocalPtyService).getLatency(), 10000, () => {
+					this.logService.warn('[startup] ILocalPtyService.getLatency() did not complete within 10000ms; continuing towards Eventually without the pty host latency result');
+				}).catch(error => {
+					this.logService.warn('[startup] ILocalPtyService.getLatency() failed; continuing towards Eventually without the pty host latency result', error);
+					return undefined;
+				})),
 				agentHostProcessManager.start()
 			]);
+			this.logService.info('[startup] critical node processes ready');
 		}
 
 		// Set lifecycle phase to `Eventually` after a short delay and when idle (min 2.5sec, max 5sec)

@@ -158,7 +158,18 @@ import './contrib/terminal/electron-browser/terminal.contribution.js';
 // implementations wired to their node-free contracts in common/ (P0
 // node-free common/ layer split). Browser-safe parts load from
 // workbench.common.main.ts; this file is desktop-only.
-import './contrib/composer/electron-browser/composer.contribution.js';
+// TEMP-CUT (GAPS-660, boot Windows alpha.27): contribution này kéo 9 module
+// node-dependent (node:*/bare path) vào renderer graph; esbuild
+// packages:'external' (build/next/bundle.ts:18) giữ nguyên các specifier đó
+// thành import ESM external → loader packaged không resolve được → boot chết.
+// Khôi phục (bỏ comment dòng dưới) khi các implementation đã port sang
+// shared/utility-process qua IPC và renderer chỉ còn contract ở common/.
+// Đánh đổi đã chấp nhận ở mức alpha (biến thể B, GAPS-663): mất 6 singleton
+// Delayed + lệnh glass/ndjson/deeplink + Tab engine thật cho mọi lần chạy — guard
+// TEMP-GUARD (GAPS-663) ở contrib/composer/browser/ chỉ giữ lại các bề mặt
+// không phụ thuộc chúng. Đảo ngược được khi sửa đúng tầng bundle / port IPC
+// xong: khôi phục dòng import dưới đây là đủ để hành vi quay về tiền-cắt.
+// import './contrib/composer/electron-browser/composer.contribution.js';
 
 // IDE-CODE: Agent system pressure (heavy-load warning + Manage Processes modal) —
 // Cursor glass-bundle surface; desktop-only because it is driven by the
