@@ -8,15 +8,23 @@
 //   `IConfigurationService.getValue("ide.agent.enginePath")`
 //   (config keys keep the `ide.` prefix — see common/composerConfiguration.ts)
 // - `vscode.workspace.workspaceFolders` → injected `IWorkspaceContextService`
-// - `defaultEnginePath()` was a 4-line pure helper on ComposerDataService
-//   (not yet migrated) — inlined here with its origin noted.
+// - ENGINE PACKAGING: the old inlined `defaultEnginePath()` copy is gone;
+//   engine resolution now goes through the single D2 resolver in
+//   `./enginePath.ts` (setting → bundled → dev), same as every other
+//   workbench call site.
 
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import {
+	ENGINE_INDEX_ENTRY_REL,
+	resolveBunPath,
+	resolveEnginePath,
+} from './enginePath.js';
 import {
 	CodebaseHit,
 	ICodebaseIndexService,
@@ -29,15 +37,6 @@ interface CliSearchResult {
 	kind: 'text' | 'symbols';
 	matches?: { path: string; line: number; text: string }[];
 	hits?: { path: string; name: string; kind: string; line: number; signature: string }[];
-}
-
-/**
- * Best-effort default for the engine checkout: ~/workspace/ide-code.
- * Inlined from ComposerDataService.defaultEnginePath (services/composerDataService.ts).
- */
-function defaultEnginePath(): string {
-	const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
-	return path.join(home, 'workspace', 'ide-code');
 }
 
 /**
@@ -77,6 +76,7 @@ export class CodebaseIndexService extends Disposable implements ICodebaseIndexSe
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@INativeEnvironmentService private readonly nativeEnvironmentService: INativeEnvironmentService,
 	) {
 		super();
 		// ext-global-ignore: mirror `ide.general.globalCursorIgnoreList` into
@@ -106,14 +106,25 @@ export class CodebaseIndexService extends Disposable implements ICodebaseIndexSe
 		}
 	}
 
-	private engineCliEntry(): string | undefined {
-		const enginePath = this.configurationService.getValue<string>('ide.agent.enginePath') || defaultEnginePath();
-		if (!enginePath) {
+	private engineCliInvocation(): { entry: string; bunPath: string } | undefined {
+		// Resolved per call (as before): a settings change takes effect on
+		// the next query without restarting the service.
+		const resolved = resolveEnginePath(
+			this.configurationService.getValue<string>('ide.agent.enginePath') ?? '',
+			this.nativeEnvironmentService,
+		);
+		if (!resolved.enginePath || resolved.source === 'none') {
+			// "none" = broken bundled engine: degrade to [] like every
+			// other unavailable-engine case (the adapter surfaces the
+			// diagnostic).
 			return undefined;
 		}
 		// Slim one-shot indexing CLI (see class docstring): avoids the ~5s
 		// import cost of the full packages/cli entry per query.
-		return path.join(enginePath, 'packages', 'core', 'src', 'indexing', 'cli.ts');
+		return {
+			entry: path.join(resolved.enginePath, ENGINE_INDEX_ENTRY_REL),
+			bunPath: resolveBunPath(resolved),
+		};
 	}
 
 	private workspaceRoot(): string | undefined {
@@ -147,15 +158,15 @@ export class CodebaseIndexService extends Disposable implements ICodebaseIndexSe
 	}
 
 	private async runCli(args: string[], timeoutMs: number): Promise<string | undefined> {
-		const entry = this.engineCliEntry();
+		const invocation = this.engineCliInvocation();
 		const root = this.workspaceRoot();
-		if (!entry || !root) {
+		if (!invocation || !root) {
 			return undefined;
 		}
 		try {
 			// --root must precede the `--` query separator or the parser would
 			// swallow it into the query string.
-			const { stdout } = await execFileAsync('bun', [entry, args[0], '--root', root, ...args.slice(1)], {
+			const { stdout } = await execFileAsync(invocation.bunPath, [invocation.entry, args[0], '--root', root, ...args.slice(1)], {
 				timeout: timeoutMs,
 				maxBuffer: 8 * 1024 * 1024,
 				env: { ...process.env, IDE_CODE_SPAWNED_BY: 'indexing-cli' },

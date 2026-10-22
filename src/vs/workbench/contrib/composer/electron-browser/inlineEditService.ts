@@ -106,7 +106,13 @@ import { IOutputService } from "../../../../workbench/services/output/common/out
 import { IUntitledTextEditorService } from "../../../../workbench/services/untitled/common/untitledTextEditorService.js";
 import { IdeCodeEngineAdapter } from "./ideCodeEngineAdapter.js";
 import type { IComposerOutputChannel } from "../common/ideCodeEngineAdapter.js";
-import { defaultEnginePath } from "../common/composerDataService.js";
+import { INativeEnvironmentService } from "../../../../platform/environment/common/environment.js";
+import {
+  bundledIncompleteDiagnostic,
+  resolveBunPath,
+  resolveEnginePath,
+  resolveEngineSpawnCwd,
+} from "./enginePath.js";
 import { IInlinePromptSelectionService } from "../common/inlinePromptSelection.js";
 import { IInlineEditPromptBar, IPromptBarDataSelection, IPromptBarModelRef, resolveSameUriOverrideTarget, selectNewestPromptBarIdForUri } from "../common/inlineEditPromptBar.js";
 import { filterModelsEligibleForCmdK } from "../common/cmdkModelEligibility.js";
@@ -501,6 +507,8 @@ export class InlineEditService extends Disposable implements IInlineEditService 
     // callback is now the injectable IInlineEditChatBridge seam (implemented
     // in browser/, routed through the extension's chat surface).
     @IInlineEditChatBridge private readonly chatBridge: IInlineEditChatBridge,
+    @INativeEnvironmentService
+    private readonly nativeEnvironmentService: INativeEnvironmentService,
   ) {
     super();
     this.inlineEditPendingKey = this.contextKeyService.createKey(INLINE_EDIT_CONTEXT_KEY, false);
@@ -1408,9 +1416,23 @@ export class InlineEditService extends Disposable implements IInlineEditService 
         append: (value: string) => console.log(`[ide-agent-inline-edit] ${value}`),
         appendLine: (value: string) => console.log(`[ide-agent-inline-edit] ${value}`),
       };
+    const resolvedEngine = resolveEnginePath(
+      this.configurationService.getValue<string>("ide.agent.enginePath") ?? "",
+      this.nativeEnvironmentService,
+    );
     const adapter = new IdeCodeEngineAdapter(
       {
-        enginePath: this.configurationService.getValue<string>("ide.agent.enginePath") || defaultEnginePath(),
+        enginePath: resolvedEngine.enginePath,
+        bunPath: resolveBunPath(resolvedEngine, undefined, (candidate) =>
+          output.appendLine(
+            `[ide-agent] bundled bun missing at ${candidate}; falling back to bun on PATH`,
+          ),
+        ),
+        engineSource: resolvedEngine.source,
+        engineCwd: resolveEngineSpawnCwd(resolvedEngine, this.nativeEnvironmentService),
+        enginePathDiagnostic: resolvedEngine.bundledBroken
+          ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)
+          : undefined,
         output,
         // Inline edits are single-shot code rewrites; the prompt forbids tool
         // use, so any approval request is auto-skipped rather than blocking.

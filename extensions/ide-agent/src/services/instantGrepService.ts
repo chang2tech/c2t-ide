@@ -21,7 +21,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { defaultEnginePath } from "./enginePath";
+import { ENGINE_INDEX_ENTRY_REL, resolveBunPath, resolveEnginePath } from "./enginePath";
 import { filterGloballyIgnored } from "./globalIgnore";
 
 const execFileAsync = promisify(execFile);
@@ -50,13 +50,23 @@ interface CliGrepResult {
   matches?: { path: string; line: number; text: string }[];
 }
 
-function engineCliEntry(): string | undefined {
+interface EngineCliInvocation {
+  entry: string;
+  bunPath: string;
+}
+
+function engineCliInvocation(): EngineCliInvocation | undefined {
   const cfg = vscode.workspace.getConfiguration("ide.agent");
-  const enginePath = cfg.get<string>("enginePath", "") || defaultEnginePath();
-  if (!enginePath) {
+  const resolved = resolveEnginePath(cfg.get<string>("enginePath", ""));
+  if (!resolved.enginePath || resolved.source === "none") {
+    // "none" = broken bundled engine: degrade to [] like every other
+    // unavailable-engine case (the adapter surfaces the diagnostic).
     return undefined;
   }
-  return path.join(enginePath, "packages", "core", "src", "indexing", "cli.ts");
+  return {
+    entry: path.join(resolved.enginePath, ENGINE_INDEX_ENTRY_REL),
+    bunPath: resolveBunPath(resolved),
+  };
 }
 
 function workspaceRoot(): string | undefined {
@@ -110,15 +120,15 @@ function cacheSet(key: string, matches: InstantGrepMatch[]): void {
 export type CliRunner = (args: string[], timeoutMs: number) => Promise<string | undefined>;
 
 async function defaultRunner(args: string[], timeoutMs: number): Promise<string | undefined> {
-  const entry = engineCliEntry();
+  const invocation = engineCliInvocation();
   const root = workspaceRoot();
-  if (!entry || !root) {
+  if (!invocation || !root) {
     return undefined;
   }
   try {
     // --root must precede the `--` pattern separator or the parser would
     // swallow it into the pattern string.
-    const { stdout } = await execFileAsync("bun", [entry, args[0], "--root", root, ...args.slice(1)], {
+    const { stdout } = await execFileAsync(invocation.bunPath, [invocation.entry, args[0], "--root", root, ...args.slice(1)], {
       timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
       env: { ...process.env, IDE_CODE_SPAWNED_BY: "indexing-cli" },

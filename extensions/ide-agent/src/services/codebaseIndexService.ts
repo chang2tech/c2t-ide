@@ -21,7 +21,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { defaultEnginePath } from "./composerDataService";
+import { ENGINE_INDEX_ENTRY_REL, resolveBunPath, resolveEnginePath } from "./enginePath";
 import { filterGloballyIgnored } from "./globalIgnore";
 
 const execFileAsync = promisify(execFile);
@@ -50,15 +50,25 @@ interface CliSearchResult {
   hits?: { path: string; name: string; kind: string; line: number; signature: string }[];
 }
 
-function engineCliEntry(): string | undefined {
+interface EngineCliInvocation {
+  entry: string;
+  bunPath: string;
+}
+
+function engineCliInvocation(): EngineCliInvocation | undefined {
   const cfg = vscode.workspace.getConfiguration("ide.agent");
-  const enginePath = cfg.get<string>("enginePath", "") || defaultEnginePath();
-  if (!enginePath) {
+  const resolved = resolveEnginePath(cfg.get<string>("enginePath", ""));
+  if (!resolved.enginePath || resolved.source === "none") {
+    // "none" = broken bundled engine: degrade to [] like every other
+    // unavailable-engine case (the adapter surfaces the diagnostic).
     return undefined;
   }
   // Slim one-shot indexing CLI (see module docstring): avoids the ~5s
   // import cost of the full packages/cli entry per query.
-  return path.join(enginePath, "packages", "core", "src", "indexing", "cli.ts");
+  return {
+    entry: path.join(resolved.enginePath, ENGINE_INDEX_ENTRY_REL),
+    bunPath: resolveBunPath(resolved),
+  };
 }
 
 function workspaceRoot(): string | undefined {
@@ -103,15 +113,15 @@ function cacheSet(key: string, hits: CodebaseHit[]): void {
 }
 
 async function runCli(args: string[], timeoutMs: number): Promise<string | undefined> {
-  const entry = engineCliEntry();
+  const invocation = engineCliInvocation();
   const root = workspaceRoot();
-  if (!entry || !root) {
+  if (!invocation || !root) {
     return undefined;
   }
   try {
     // --root must precede the `--` query separator or the parser would
     // swallow it into the query string.
-    const { stdout } = await execFileAsync("bun", [entry, args[0], "--root", root, ...args.slice(1)], {
+    const { stdout } = await execFileAsync(invocation.bunPath, [invocation.entry, args[0], "--root", root, ...args.slice(1)], {
       timeout: timeoutMs,
       maxBuffer: 8 * 1024 * 1024,
       env: { ...process.env, IDE_CODE_SPAWNED_BY: "indexing-cli" },

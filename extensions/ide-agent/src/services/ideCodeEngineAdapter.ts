@@ -7,6 +7,7 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { EngineAdapter, EngineModelInfo, ModelRef, TurnContext } from "./agentService";
+import { bundledServePreloadPath } from "./enginePath";
 import { contextTokenLimitFromEngineModel } from "./modelService";
 import { ApprovalResult, ApprovalDetails } from "./humanReviewService";
 import { TERMINAL_ACTIONS } from "./permissionsFileService";
@@ -157,6 +158,26 @@ export interface IdeCodeEngineOptions {
    * DEFAULT_BACKGROUND_SUMMARY_CONTEXT_WINDOW_TOKENS.
    */
   backgroundSummaryContextWindowTokens?: number;
+  /**
+   * ENGINE PACKAGING (spec §5.3): absolute path to the bun binary resolved
+   * by the caller from the resolved enginePath (bundled `bin/bun[.exe]`
+   * first, `bun` on PATH as fallback). Default: "bun" (PATH lookup).
+   */
+  bunPath?: string;
+  /** ENGINE PACKAGING: where enginePath came from (diagnostics + cwd branch). */
+  engineSource?: "setting" | "bundled" | "dev" | "none";
+  /**
+   * ENGINE PACKAGING (spec §4, BRANCH B): writable spawn-cwd override for
+   * bundled engines (user-data `engine-runtime` dir). Undefined = spawn
+   * with cwd = enginePath, as before.
+   */
+  engineCwd?: string;
+  /**
+   * ENGINE PACKAGING (spec §5.1): when set, startServer throws this
+   * diagnostic instead of the generic Invalid enginePath error (broken
+   * bundled engine — see services/enginePath.ts resolveEnginePath).
+   */
+  enginePathDiagnostic?: string;
 }
 
 /** Engine tool id → Cursor-style tool_call name for the UI cards. */
@@ -1423,6 +1444,11 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
   }
 
   private async startServer(): Promise<void> {
+    // ENGINE PACKAGING: a broken bundled engine gets its specific
+    // diagnostic, not the generic setting-oriented message below.
+    if (this.opts.enginePathDiagnostic) {
+      throw new Error(this.opts.enginePathDiagnostic);
+    }
     const enginePath = this.opts.enginePath;
     // P0 (QA-03): validate enginePath before spawning — must exist and contain
     // the expected engine entry point. Defense in depth alongside machine-scoped config.
@@ -1449,7 +1475,7 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
     // P1 (QA-03): generate a random token; the sidecar requires it via
     // OPENCODE_PASSWORD (HTTP Basic auth, username "opencode").
     this.authToken = crypto.randomBytes(32).toString("hex");
-    this.opts.output.appendLine(`[ide-agent] starting engine: bun ${entry} serve --port ${this.port}`);
+    this.opts.output.appendLine(`[ide-agent] starting engine: ${this.opts.bunPath ?? "bun"} ${entry} serve --port ${this.port}`);
     // DEV-GAPS-40 (subagent-nested): Cursor allows one nested subagent
     // level (main → subagent → sub-subagent); the engine's default
     // (experimental.subagent_depth = 1) forbids it. Inject the Cursor-parity
@@ -1480,10 +1506,48 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
         `[ide-agent] engine default: experimental.subagent_depth=2 (Cursor one-level nesting)`,
       );
     }
-    this.serverProc = childProcess.spawn("bun", [entry, "serve", "--port", String(this.port), "--hostname", "127.0.0.1"], {
-      cwd: enginePath,
+    // ENGINE PACKAGING (spec §4, BRANCH B): bundled engines spawn from a
+    // writable user-data dir (install tree may be read-only); the dir is
+    // created here, immediately before spawn.
+    if (this.opts.engineCwd) {
+      fs.mkdirSync(this.opts.engineCwd, { recursive: true });
+    }
+    // ENGINE PACKAGING — F-W4-1 delta (adjudication N1,
+    // w6-f-w4-1-experiment.md §6.1): Bun only loads bunfig.toml at the
+    // exact spawn cwd, so the relative Solid preload in the engine root
+    // bunfig never fires when a bundled engine spawns from the user-data
+    // cwd above — serve dies with "Cannot find module
+    // 'react/jsx-dev-runtime'". Bundled spawns therefore pass the
+    // closure's preload script as an absolute `--preload` argument
+    // BEFORE the entry. Dev/setting spawns keep the plain argv (they run
+    // inside the monorepo, where bunfig/hoisting applies). A bundled
+    // tree without the preload file is a broken package: throw the
+    // bundled-incomplete diagnostic instead of spawning blind.
+    const serveArgs = [entry, "serve", "--port", String(this.port), "--hostname", "127.0.0.1"];
+    if (this.opts.engineSource === "bundled") {
+      const preloadPath = bundledServePreloadPath(enginePath);
+      if (!fs.existsSync(preloadPath)) {
+        throw new Error(
+          `[ide-agent] Bundled engine is incomplete: ${enginePath} exists but ` +
+            `packages/cli/node_modules/@opentui/solid/scripts/preload.js is missing. ` +
+            `Reinstall the app, or set the ide.agent.enginePath setting (machine scope) to a valid engine checkout.`,
+        );
+      }
+      serveArgs.unshift("--preload", preloadPath);
+      this.opts.output.appendLine(`[ide-agent] bundled engine: bun --preload ${preloadPath} (F-W4-1/N1)`);
+    }
+    this.serverProc = childProcess.spawn(this.opts.bunPath ?? "bun", serveArgs, {
+      cwd: this.opts.engineCwd ?? enginePath,
       stdio: ["ignore", "pipe", "pipe"],
       env: spawnEnv,
+    });
+    this.serverProc.on("error", (err) => {
+      const bunPath = this.opts.bunPath ?? "bun";
+      this.opts.output.appendLine(
+        path.isAbsolute(bunPath)
+          ? `[ide-agent] failed to spawn bundled bun at ${bunPath}: ${err.message}`
+          : `[ide-agent] failed to spawn bun (${err.message}) — check that bun is installed and on PATH`,
+      );
     });
     this.serverProc.stdout?.on("data", (d: Buffer) => this.opts.output.append(`[engine] ${d.toString()}`));
     this.serverProc.stderr?.on("data", (d: Buffer) => this.opts.output.append(`[engine:err] ${d.toString()}`));

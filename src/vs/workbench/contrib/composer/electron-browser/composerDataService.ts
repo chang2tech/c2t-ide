@@ -59,7 +59,7 @@ import { IStorageService, StorageScope, StorageTarget } from "../../../../platfo
 import { IWorkspaceContextService } from "../../../../platform/workspace/common/workspace.js";
 import { IWorkspaceTrustManagementService } from "../../../../platform/workspace/common/workspaceTrust.js";
 import { IFileService } from "../../../../platform/files/common/files.js";
-import { IEnvironmentService } from "../../../../platform/environment/common/environment.js";
+import { IEnvironmentService, INativeEnvironmentService } from "../../../../platform/environment/common/environment.js";
 import { ISearchService } from "../../../../workbench/services/search/common/search.js";
 import { ModeName, TurnEvent } from "../common/model.js";
 import { ComposerBubbleSetStore } from "../common/bubbleStore.js";
@@ -72,12 +72,17 @@ import { MessageQueueService, QueuedMessage } from "../common/messageQueueServic
 import { EngineAdapter, StubEngineAdapter } from "../../agents/common/agentService.js";
 import { FileAttachment } from "../common/mentionService.js";
 import {
-	defaultEnginePath,
 	IComposerDataService,
 	PendingPlan,
 	SubmitOptions,
 	ComposerEvent,
 } from "../common/composerDataService.js";
+import {
+	bundledIncompleteDiagnostic,
+	resolveBunPath,
+	resolveEnginePath,
+	resolveEngineSpawnCwd,
+} from "./enginePath.js";
 import { IdeCodeEngineAdapter } from "./ideCodeEngineAdapter.js";
 import type { IComposerOutputChannel } from "../common/ideCodeEngineAdapter.js";
 import { ModelSelection, ModelSelectionStore, ModelService } from "../common/modelService.js";
@@ -234,6 +239,8 @@ export class ComposerDataService extends Disposable implements IComposerDataServ
     private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
     @IFileService private readonly fileService: IFileService,
     @IEnvironmentService private readonly environmentService: IEnvironmentService,
+    @INativeEnvironmentService
+    private readonly nativeEnvironmentService: INativeEnvironmentService,
     @ISearchService private readonly searchService: ISearchService,
     /**
      * W65B (composer-plan-accept follow-up): the core plan service
@@ -306,10 +313,23 @@ export class ComposerDataService extends Disposable implements IComposerDataServ
       );
     }
     if (mode === "sidecar") {
-      const enginePath = configurationService.getValue<string>("ide.agent.enginePath") || defaultEnginePath();
+      const resolvedEngine = resolveEnginePath(
+        configurationService.getValue<string>("ide.agent.enginePath") ?? "",
+        this.nativeEnvironmentService,
+      );
       const adapter = new IdeCodeEngineAdapter(
         {
-          enginePath,
+          enginePath: resolvedEngine.enginePath,
+          bunPath: resolveBunPath(resolvedEngine, undefined, (candidate) =>
+            output.appendLine(
+              `[ide-agent] bundled bun missing at ${candidate}; falling back to bun on PATH`,
+            ),
+          ),
+          engineSource: resolvedEngine.source,
+          engineCwd: resolveEngineSpawnCwd(resolvedEngine, this.nativeEnvironmentService),
+          enginePathDiagnostic: resolvedEngine.bundledBroken
+            ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)
+            : undefined,
           output,
           requestApproval,
           // P2 (QA-FILE-04): feeds the chat-mode read-only gate in handleApproval.

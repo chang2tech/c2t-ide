@@ -4,7 +4,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as childProcess from "node:child_process";
 import { ModeName } from "./model";
-import { ComposerDataService, ComposerEvent, defaultEnginePath } from "./services/composerDataService";
+import { ComposerDataService, ComposerEvent } from "./services/composerDataService";
+import {
+  bundledIncompleteDiagnostic,
+  resolveBunPath,
+  resolveEngineCwd,
+  resolveEnginePath,
+} from "./services/enginePath";
 import { buildPromptQualityPanelHtml, scorePrompt } from "./services/promptQualityService";
 import { forkInfoMessage, forkTabFromBubble } from "./services/chatForkFromBubble";
 import {
@@ -3891,8 +3897,19 @@ export function activate(context: vscode.ExtensionContext): { cursor: CursorApi 
         return;
       }
       const output = vscode.window.createOutputChannel("IDE Agent Chat Participant");
+      const resolvedEngine = resolveEnginePath(engineCfg.get<string>("enginePath", ""));
       const adapter = new IdeCodeEngineAdapter({
-        enginePath: engineCfg.get<string>("enginePath", "") || defaultEnginePath(),
+        enginePath: resolvedEngine.enginePath,
+        bunPath: resolveBunPath(resolvedEngine, undefined, (candidate) =>
+          output.appendLine(
+            `[ide-agent] bundled bun missing at ${candidate}; falling back to bun on PATH`,
+          ),
+        ),
+        engineSource: resolvedEngine.source,
+        engineCwd: resolveEngineCwd(resolvedEngine, context.globalStorageUri.fsPath),
+        enginePathDiagnostic: resolvedEngine.bundledBroken
+          ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)
+          : undefined,
         output,
         // The chat-participant surface has no approval UI: tool calls that
         // need approval are rejected ("skip"), reads still run. @ide answers

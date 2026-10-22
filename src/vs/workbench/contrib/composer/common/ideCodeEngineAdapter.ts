@@ -84,6 +84,34 @@ export interface IComposerOutputChannel {
  */
 export interface IdeCodeEngineOptions {
   enginePath: string;
+  /**
+   * ENGINE PACKAGING (spec §5.3): absolute path to the bun binary resolved
+   * by the caller from the resolved enginePath (bundled `bin/bun[.exe]`
+   * first, `bun` on PATH as fallback). Default: "bun" (PATH lookup).
+   */
+  bunPath?: string;
+  /** ENGINE PACKAGING: where enginePath came from (diagnostics + cwd branch). */
+  engineSource?: "setting" | "bundled" | "dev" | "none";
+  /**
+   * ENGINE PACKAGING (spec §4, BRANCH B): writable spawn-cwd override for
+   * bundled engines (user-data `engine-runtime` dir). Undefined = spawn
+   * with cwd = enginePath, as before.
+   */
+  engineCwd?: string;
+  /**
+   * ENGINE PACKAGING (spec §5.1): when set, the adapter throws this
+   * diagnostic instead of the generic Invalid enginePath error (broken
+   * bundled engine — see electron-browser/enginePath.ts resolveEnginePath).
+   */
+  enginePathDiagnostic?: string;
+  /**
+   * ENGINE PACKAGING: true when `enginePath` is still the RAW
+   * `ide.agent.enginePath` setting value (possibly ''), because the
+   * creating layer (browser/) cannot resolve it. The electron-browser
+   * adapter factory resolves it (setting → bundled → dev) before
+   * constructing the adapter and clears this flag.
+   */
+  enginePathUnresolved?: boolean;
   output: IComposerOutputChannel;
   requestApproval: (
     toolCallId: string,

@@ -511,7 +511,7 @@ configurationRegistry.registerConfiguration({
 		'ide.agent.enginePath': {
 			type: 'string',
 			default: '',
-			description: localize('composer.configuration.ide.agent.enginePath', 'Path to the ide-code engine checkout (empty = auto-detect ~/workspace/ide-code). Used when ide.agent.engineMode is \'sidecar\'.'),
+			description: localize('composer.configuration.ide.agent.enginePath', 'Path to the ide-code engine checkout (empty = use the engine bundled with the app; development builds fall back to ~/workspace/ide-code). Used when ide.agent.engineMode is \'sidecar\'.'),
 			scope: ConfigurationScope.MACHINE
 		},
 		// DEV-GAPS-9B: backing store for the `cursor.selectBackend` switcher.

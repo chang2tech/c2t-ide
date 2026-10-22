@@ -19,7 +19,15 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as path from "node:path";
 import { IConfigurationService } from "../../../../platform/configuration/common/configuration.js";
+import { INativeEnvironmentService } from "../../../../platform/environment/common/environment.js";
 import { IInstantiationService } from "../../../../platform/instantiation/common/instantiation.js";
+import {
+  bundledIncompleteDiagnostic,
+  bundledServePreloadPath,
+  resolveBunPath,
+  resolveEnginePath,
+  resolveEngineSpawnCwd,
+} from "./enginePath.js";
 import { URI } from "../../../../base/common/uri.js";
 import { imageFilesXmlBlockFor } from "../common/imageAttachments.js";
 import { EngineAdapter, EngineModelInfo, ModelRef, TurnContext } from "../../agents/common/agentService.js";
@@ -1054,6 +1062,11 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
   }
 
   private async startServer(): Promise<void> {
+    // ENGINE PACKAGING: a broken bundled engine gets its specific
+    // diagnostic, not the generic setting-oriented message below.
+    if (this.opts.enginePathDiagnostic) {
+      throw new Error(this.opts.enginePathDiagnostic);
+    }
     const enginePath = this.opts.enginePath;
     // P0 (QA-03): validate enginePath before spawning — must exist and contain
     // the expected engine entry point. Defense in depth alongside machine-scoped config.
@@ -1069,11 +1082,49 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
     // P1 (QA-03): generate a random token; the sidecar requires it via
     // OPENCODE_PASSWORD (HTTP Basic auth, username "opencode").
     this.authToken = crypto.randomBytes(32).toString("hex");
-    this.opts.output.appendLine(`[ide-agent] starting engine: bun ${entry} serve --port ${this.port}`);
-    this.serverProc = childProcess.spawn("bun", [entry, "serve", "--port", String(this.port), "--hostname", "127.0.0.1"], {
-      cwd: enginePath,
+    this.opts.output.appendLine(`[ide-agent] starting engine: ${this.opts.bunPath ?? "bun"} ${entry} serve --port ${this.port}`);
+    // ENGINE PACKAGING (spec §4, BRANCH B): bundled engines spawn from a
+    // writable user-data dir (install tree may be read-only); the dir is
+    // created here, immediately before spawn.
+    if (this.opts.engineCwd) {
+      fs.mkdirSync(this.opts.engineCwd, { recursive: true });
+    }
+    // ENGINE PACKAGING — F-W4-1 delta (adjudication N1,
+    // w6-f-w4-1-experiment.md §6.1): Bun only loads bunfig.toml at the
+    // exact spawn cwd, so the relative Solid preload in the engine root
+    // bunfig never fires when a bundled engine spawns from the user-data
+    // cwd above — serve dies with "Cannot find module
+    // 'react/jsx-dev-runtime'". Bundled spawns therefore pass the
+    // closure's preload script as an absolute `--preload` argument
+    // BEFORE the entry. Dev/setting spawns keep the plain argv (they run
+    // inside the monorepo, where bunfig/hoisting applies). A bundled
+    // tree without the preload file is a broken package: throw the
+    // bundled-incomplete diagnostic instead of spawning blind.
+    const serveArgs = [entry, "serve", "--port", String(this.port), "--hostname", "127.0.0.1"];
+    if (this.opts.engineSource === "bundled") {
+      const preloadPath = bundledServePreloadPath(enginePath);
+      if (!fs.existsSync(preloadPath)) {
+        throw new Error(
+          `[ide-agent] Bundled engine is incomplete: ${enginePath} exists but ` +
+            `packages/cli/node_modules/@opentui/solid/scripts/preload.js is missing. ` +
+            `Reinstall the app, or set the ide.agent.enginePath setting (machine scope) to a valid engine checkout.`,
+        );
+      }
+      serveArgs.unshift("--preload", preloadPath);
+      this.opts.output.appendLine(`[ide-agent] bundled engine: bun --preload ${preloadPath} (F-W4-1/N1)`);
+    }
+    this.serverProc = childProcess.spawn(this.opts.bunPath ?? "bun", serveArgs, {
+      cwd: this.opts.engineCwd ?? enginePath,
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, NO_COLOR: "1", OPENCODE_PASSWORD: this.authToken },
+    });
+    this.serverProc.on("error", (err) => {
+      const bunPath = this.opts.bunPath ?? "bun";
+      this.opts.output.appendLine(
+        path.isAbsolute(bunPath)
+          ? `[ide-agent] failed to spawn bundled bun at ${bunPath}: ${err.message}`
+          : `[ide-agent] failed to spawn bun (${err.message}) — check that bun is installed and on PATH`,
+      );
     });
     this.serverProc.stdout?.on("data", (d: Buffer) => this.opts.output.append(`[engine] ${d.toString()}`));
     this.serverProc.stderr?.on("data", (d: Buffer) => this.opts.output.append(`[engine:err] ${d.toString()}`));
@@ -2740,9 +2791,29 @@ export class IdeCodeEngineAdapterFactory implements IIdeCodeEngineAdapterFactory
 
 	constructor(
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@INativeEnvironmentService private readonly nativeEnvironmentService: INativeEnvironmentService,
 	) { }
 
 	create(options: IdeCodeEngineOptions): IIdeCodeEngineAdapter {
-		return this.instantiationService.createInstance(IdeCodeEngineAdapter, options);
+		// ENGINE PACKAGING: browser-layer callers cannot resolve the
+		// engine path (no appRoot / fs there), so they hand over the raw
+		// setting value flagged `enginePathUnresolved`; the resolution
+		// (setting → bundled → dev) happens here, at the desktop DI seam.
+		let resolvedOptions = options;
+		if (options.enginePathUnresolved) {
+			const resolved = resolveEnginePath(options.enginePath, this.nativeEnvironmentService);
+			resolvedOptions = {
+				...options,
+				enginePath: resolved.enginePath,
+				bunPath: resolveBunPath(resolved),
+				engineSource: resolved.source,
+				engineCwd: resolveEngineSpawnCwd(resolved, this.nativeEnvironmentService),
+				enginePathDiagnostic: resolved.bundledBroken
+					? bundledIncompleteDiagnostic(resolved.bundledBroken)
+					: undefined,
+				enginePathUnresolved: false,
+			};
+		}
+		return this.instantiationService.createInstance(IdeCodeEngineAdapter, resolvedOptions);
 	}
 }

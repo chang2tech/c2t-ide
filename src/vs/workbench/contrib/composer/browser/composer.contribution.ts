@@ -46,7 +46,6 @@ import { IWorkbenchContribution, IWorkbenchContributionsRegistry, Extensions as 
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IOutputService } from '../../../services/output/common/output.js';
 import { IComposerOutputChannel, IdeCodeEngineOptions, IIdeCodeEngineAdapter, IIdeCodeEngineAdapterFactory } from '../common/ideCodeEngineAdapter.js';
-import { defaultEnginePath } from '../common/composerDataService.js';
 // IDE-CODE: side-effect import — registers all `ide.*` configuration sections
 // (7 sections, 40 properties) into the ConfigurationRegistry. Without this,
 // `common/composerConfiguration.ts` is never loaded and every `config.ide.*`
@@ -538,9 +537,14 @@ class ComposerWorkbenchContribution extends Disposable implements IWorkbenchCont
 				append: (value: string) => console.log(`[ide-agent] ${value}`),
 				appendLine: (value: string) => console.log(`[ide-agent] ${value}`),
 			};
-		const enginePath = this.configurationService.getValue<string>('ide.agent.enginePath') || defaultEnginePath();
+		// ENGINE PACKAGING: this browser layer cannot resolve the engine
+		// path (no appRoot / fs here) — hand the RAW setting value to the
+		// electron-browser adapter factory, which resolves it
+		// (setting → bundled → dev) at the desktop DI seam.
+		const enginePath = this.configurationService.getValue<string>('ide.agent.enginePath') ?? '';
 		return {
 			enginePath,
+			enginePathUnresolved: true,
 			output,
 			// Tab completions are tool-free (session.generate is a single LLM
 			// call); approvals can never legitimately arise on this path.

@@ -1,7 +1,12 @@
 import * as path from "path";
 import * as vscode from "vscode";
 import { IdeCodeEngineAdapter } from "./ideCodeEngineAdapter";
-import { defaultEnginePath } from "./composerDataService";
+import {
+  bundledIncompleteDiagnostic,
+  resolveBunPath,
+  resolveEngineCwd,
+  resolveEnginePath,
+} from "./enginePath";
 import { takePendingSelection } from "./inlinePromptSelection";
 import { tryGetAiCodeTracking } from "./aiCodeTracking";
 
@@ -1135,8 +1140,19 @@ export class InlineEditService implements vscode.Disposable {
       return undefined;
     }
     const output = vscode.window.createOutputChannel("IDE Agent Inline Edit");
+    const resolvedEngine = resolveEnginePath(cfg.get<string>("enginePath", ""));
     const adapter = new IdeCodeEngineAdapter({
-      enginePath: cfg.get<string>("enginePath", "") || defaultEnginePath(),
+      enginePath: resolvedEngine.enginePath,
+      bunPath: resolveBunPath(resolvedEngine, undefined, (candidate) =>
+        output.appendLine(
+          `[ide-agent] bundled bun missing at ${candidate}; falling back to bun on PATH`,
+        ),
+      ),
+      engineSource: resolvedEngine.source,
+      engineCwd: resolveEngineCwd(resolvedEngine, this.context.globalStorageUri.fsPath),
+      enginePathDiagnostic: resolvedEngine.bundledBroken
+        ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)
+        : undefined,
       output,
       // Inline edits are single-shot code rewrites; the prompt forbids tool
       // use, so any approval request is auto-skipped rather than blocking.

@@ -174,3 +174,30 @@ export function defaultEnginePath(): string {
 	const sep = platform === 'win32' ? '\\' : '/';
 	return home + sep + ['workspace', 'ide-code'].join(sep);
 }
+
+/**
+ * ENGINE PACKAGING (spec engine-packaging-spec-v1 §1/§5): directory name
+ * of the engine bundled with the packaged app. The bundled engine lives
+ * INSIDE the app root: `resources/app/engine`. MUST match the extension
+ * constant of the same name in
+ * `extensions/ide-agent/src/services/enginePath.ts`.
+ */
+export const BUNDLED_ENGINE_DIR_NAME = 'engine';
+
+/** Bundled bun binary, relative to a resolved engine root. */
+export const BUNDLED_BUN_RELATIVE = platform === 'win32' ? 'bin\\bun.exe' : 'bin/bun';
+
+/**
+ * Candidate bundled-engine path derived purely from the app root
+ * (`path.join(appRoot, "engine")` per spec §1); '' when appRoot is ''.
+ * Pure string work only — this module is node-free; the existence checks
+ * live in `electron-browser/enginePath.ts` (`resolveEnginePath`).
+ */
+export function bundledEnginePathFromAppRoot(appRoot: string): string {
+	if (!appRoot) {
+		return '';
+	}
+	const sep = platform === 'win32' ? '\\' : '/';
+	const trimmed = appRoot.endsWith(sep) ? appRoot.slice(0, -1) : appRoot;
+	return trimmed + sep + BUNDLED_ENGINE_DIR_NAME;
+}

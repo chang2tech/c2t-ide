@@ -55,7 +55,13 @@ import {
   resolvePlanFilePath,
 } from "./planFileService";
 import { scanPromptForSecrets } from "./leakDetection";
-import { defaultEnginePath } from "./enginePath";
+import {
+  bundledIncompleteDiagnostic,
+  defaultEnginePath,
+  resolveBunPath,
+  resolveEngineCwd,
+  resolveEnginePath,
+} from "./enginePath";
 import { AsyncAskQuestionStepLog } from "./asyncAskSettle";
 // Re-exported so existing `import { defaultEnginePath } from "./composerDataService"` sites keep working.
 export { defaultEnginePath };
@@ -494,10 +500,20 @@ export class ComposerDataService {
       );
     }
     if (mode === "sidecar") {
-      const enginePath = cfg.get<string>("enginePath", "") || defaultEnginePath();
+      const resolvedEngine = resolveEnginePath(cfg.get<string>("enginePath", ""));
       const output = vscode.window.createOutputChannel("IDE Agent");
       const adapter = new IdeCodeEngineAdapter({
-        enginePath,
+        enginePath: resolvedEngine.enginePath,
+        bunPath: resolveBunPath(resolvedEngine, undefined, (candidate) =>
+          output.appendLine(
+            `[ide-agent] bundled bun missing at ${candidate}; falling back to bun on PATH`,
+          ),
+        ),
+        engineSource: resolvedEngine.source,
+        engineCwd: resolveEngineCwd(resolvedEngine, context?.globalStorageUri?.fsPath),
+        enginePathDiagnostic: resolvedEngine.bundledBroken
+          ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)
+          : undefined,
         output,
         requestApproval,
         // P2 (QA-FILE-04): feeds the chat-mode read-only gate in handleApproval.
