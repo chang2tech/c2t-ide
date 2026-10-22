@@ -23,22 +23,27 @@ export const recommendedDeps = [
 ];
 
 export const referenceGeneratedDepsByArch = {
-	// BUILD-AUTOLOOP alpha.26: amd64 reference regenerated without the
-	// tunnel binary's unique deps (libc6 >= 2.16, libc6 >= 2.2.5, libx11-6,
-	// libxkbfile1 >= 1:1.1.0). The GitHub workflow has no "Mix in CLI" step,
-	// so bin/<tunnelApplicationName> is never in the packaged tree and
-	// calculate-deps.ts skips it (alpha.25); its deps must not be in the
-	// .deb's Depends. Matches getDependencies() output of run 39653055992.
+	// BUILD-AUTOLOOP alpha.29: amd64 reference regenerated from run 39711465366
+	// (tag v0.1.0-alpha.28). The alpha.28 "Rebuild native modules for Electron"
+	// workflow step now compiles spdlog/sqlite3/native-watchdog/kerberos/
+	// native-keymap in CI, so dpkg-shlibdeps legitimately resolves 6 more
+	// deps from the freshly built .node bindings: libc6 >= 2.14, libc6 >= 2.29,
+	// libstdc++6 >= 5, libstdc++6 >= 9, libx11-6, libxkbfile1 >= 1:1.1.0.
+	// Matches getDependencies() "New" output of run 39711465366 exactly.
+	// (alpha.26 note, still true: tunnel binary's deps are excluded because
+	// the workflow has no "Mix in CLI" step; calculate-deps.ts skips it.)
 	'amd64': [
 		'ca-certificates',
 		'libasound2 (>= 1.0.17)',
 		'libatk-bridge2.0-0 (>= 2.5.3)',
 		'libatk1.0-0 (>= 2.11.90)',
 		'libatspi2.0-0 (>= 2.9.90)',
+		'libc6 (>= 2.14)',
 		'libc6 (>= 2.15)',
 		'libc6 (>= 2.17)',
 		'libc6 (>= 2.25)',
 		'libc6 (>= 2.28)',
+		'libc6 (>= 2.29)',
 		'libc6 (>= 2.4)',
 		'libcairo2 (>= 1.6.0)',
 		'libcups2 (>= 1.6.0)',
@@ -54,7 +59,10 @@ export const referenceGeneratedDepsByArch = {
 		'libnss3 (>= 2:3.30)',
 		'libnss3 (>= 3.26)',
 		'libpango-1.0-0 (>= 1.14.0)',
+		'libstdc++6 (>= 5)',
+		'libstdc++6 (>= 9)',
 		'libudev1 (>= 183)',
+		'libx11-6',
 		'libx11-6 (>= 2:1.4.99.1)',
 		'libxcb1 (>= 1.9.2)',
 		'libxcomposite1 (>= 1:0.4.4-1)',
@@ -62,6 +70,7 @@ export const referenceGeneratedDepsByArch = {
 		'libxext6',
 		'libxfixes3',
 		'libxkbcommon0 (>= 0.5.0)',
+		'libxkbfile1 (>= 1:1.1.0)',
 		'libxrandr2',
 		'xdg-utils (>= 1.0.2)'
 	],
