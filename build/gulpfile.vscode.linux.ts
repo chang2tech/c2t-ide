@@ -349,7 +349,17 @@ function prepareDebPackage(arch: string) {
 
 		const all = es.merge(control, postinst, postrm, prerm, countedDesktops, countedAppdata, countedWorkspaceMime, countedIcon, countedBashCompletion, countedZshCompletion, countedCopyright, countedChangelog, countedCode);
 
-		return all.pipe(vfs.dest(destination));
+		const out = all.pipe(vfs.dest(destination));
+		// BUILD-QA B-W3-11/W76: _doExecute (build/lib/gulp/task.ts:107-137) chỉ
+		// `await` promise của async task — resolve ngay khi promise xong, KHÔNG
+		// chờ stream 'end'. await stream ở đây để DEBIAN/control (sinh trong
+		// end-handler sau await Promise.all(payloadStreamEnds)) được ghi đĩa
+		// trước khi task "Finished".
+		await new Promise<void>((resolve, reject) => {
+			out.on('end', () => resolve());
+			out.on('finish', () => resolve());
+			out.on('error', (err: unknown) => reject(err));
+		});
 	};
 }
 
@@ -451,7 +461,13 @@ function buildDebPackage(arch: string) {
 			// runtime on dlopen. Require a non-empty file, and name the
 			// actual size in the throw so the empty-binding case is
 			// distinguishable from the missing-binding case above.
-			const bindingSize = fs.statSync(binding.stagedPath).size;
+			// Type hardening (BUILD-QA W83): statSync follows symlinks, so a symlink
+			// to a real file passes; a directory (non-zero size) was missed by size alone.
+			const bindingStat = fs.statSync(binding.stagedPath);
+			if (!bindingStat.isFile()) {
+				throw new Error(`build-deb: native binding is not a regular file in staging for package '${binding.packageName}': '${binding.stagedPath}' — refusing to package. The Linux native rebuild step must produce this .node file before packaging.`);
+			}
+			const bindingSize = bindingStat.size;
 			if (bindingSize === 0) {
 				throw new Error(`build-deb: native binding is empty (actual size: ${bindingSize} bytes) in staging for package '${binding.packageName}': '${binding.stagedPath}' — refusing to package. The Linux native rebuild step must produce a non-empty .node file before packaging.`);
 			}
@@ -673,7 +689,16 @@ function prepareRpmPackage(arch: string) {
 
 		const all = es.merge(code, desktops, appdata, workspaceMime, icon, bash_completion, zsh_completion, spec, specIcon);
 
-		return all.pipe(vfs.dest(getRpmBuildPath(rpmArch)));
+		const out = all.pipe(vfs.dest(getRpmBuildPath(rpmArch)));
+		// BUILD-QA B-W3-11/W76: cùng race với prepare-deb — _doExecute
+		// (build/lib/gulp/task.ts:107-137) resolve promise của async task mà
+		// không chờ stream 'end'. await stream ở đây để .spec và các file
+		// SOURCES/SPECS được ghi đĩa trước khi task "Finished".
+		await new Promise<void>((resolve, reject) => {
+			out.on('end', () => resolve());
+			out.on('finish', () => resolve());
+			out.on('error', (err: unknown) => reject(err));
+		});
 	};
 }
 
@@ -935,7 +960,13 @@ function buildRpmPackage(arch: string) {
 			// runtime on dlopen. Require a non-empty file, and name the
 			// actual size in the throw so the empty-binding case is
 			// distinguishable from the missing-binding case above.
-			const bindingSize = fs.statSync(binding.stagedPath).size;
+			// Type hardening (BUILD-QA W83): statSync follows symlinks, so a symlink
+			// to a real file passes; a directory (non-zero size) was missed by size alone.
+			const bindingStat = fs.statSync(binding.stagedPath);
+			if (!bindingStat.isFile()) {
+				throw new Error(`build-rpm: native binding is not a regular file in staging for package '${binding.packageName}': '${binding.stagedPath}' — refusing to package. The Linux native rebuild step must produce this .node file before packaging.`);
+			}
+			const bindingSize = bindingStat.size;
 			if (bindingSize === 0) {
 				throw new Error(`build-rpm: native binding is empty (actual size: ${bindingSize} bytes) in staging for package '${binding.packageName}': '${binding.stagedPath}' — refusing to package. The Linux native rebuild step must produce a non-empty .node file before packaging.`);
 			}
@@ -1076,14 +1107,325 @@ function buildSnapPackage(arch: string) {
 			// Require a non-empty file, and name the actual size in
 			// the throw so the empty-binding case is distinguishable
 			// from the missing-binding case above.
-			const bindingSize = fs.statSync(binding.stagedPath).size;
+			// Type hardening (BUILD-QA W83): statSync follows symlinks, so a symlink
+			// to a real file passes; a directory (non-zero size) was missed by size alone.
+			const bindingStat = fs.statSync(binding.stagedPath);
+			if (!bindingStat.isFile()) {
+				throw new Error(`build-snap: native binding is not a regular file in staging for package '${binding.packageName}': '${binding.stagedPath}' — refusing to package. The Linux native rebuild step must produce this .node file before packaging.`);
+			}
+			const bindingSize = bindingStat.size;
 			if (bindingSize === 0) {
 				throw new Error(`build-snap: native binding is empty (actual size: ${bindingSize} bytes) in staging for package '${binding.packageName}': '${binding.stagedPath}' — refusing to package. The Linux native rebuild step must produce a non-empty .node file before packaging.`);
 			}
 		}
 
 		await exec('snapcraft', { cwd });
+		// Verify the artifact snapcraft just produced, in place
+		// (W88/W139): exactly one .snap in this build dir, size > 0,
+		// squashfs magic, the expected file name, and the staged
+		// snapcraft.yaml re-scanned for @@…@@ — see verifySnapArtifact
+		// below. The field/payload asserts on the compiled
+		// meta/snap.yaml join it once the Parse layer is calibrated
+		// (W88 §4.2 C1).
+		await verifySnapArtifact(cwd, arch);
 	};
+}
+
+// Snap artifact verification (BUILD-QA W88 design, implemented W139).
+//
+// Before this block, the snap path ended at the `snapcraft` exec in
+// buildSnapPackage: no copy, no count, no metadata read, no payload
+// listing — if snapcraft exited 0 but left no .snap behind (or left
+// it somewhere unexpected), the task still reported success (W88
+// §1.3). Per W88 §3.1 the verification is split into a Parse layer
+// (the only place that would invoke the format's own tool —
+// `unsquashfs` for snap, as dpkg-deb does for deb) and a pure Assert
+// layer (functions over the parsed data, no tool calls), so the
+// asserts are fixture-testable on a machine without the tool.
+//
+// TODO (CHỜ-DỮ-KIỆN — W88 §4.2 item C1): the Parse layer,
+// readSnapArtifact(snapFilePath), is deliberately NOT implemented
+// here and has NO call site on today's run path — this comment is
+// its only presence in the code. Its unlock conditions are data,
+// not code: (i) the `unsquashfs` binary present on the machine that
+// runs the verify, and (ii) one real .snap produced by
+// buildSnapPackage, to calibrate the actual output of
+// `unsquashfs -stat` / `-lls` / `-cat meta/snap.yaml` once (the
+// listing's path prefix and size/mode columns, whether `-cat`
+// exists in that squashfs-tools version, and the real shape of the
+// compiled meta/snap.yaml — the raw shape of `architectures`,
+// whether `confinement`/`base` are present at all for V-S9, and how
+// app commands are rewritten for V-S10). Writing an invocation
+// before that calibration would be inventing unverified output
+// syntax, so none is written — and no `unsquashfs` preflight is
+// added either: per W88 §2.4 the preflight lands together with the
+// Parse layer that actually calls the tool. Once calibrated,
+// readSnapArtifact returns the SnapArtifactInfo struct below and
+// verifySnapArtifact additionally runs assertSnapArtifactFields +
+// assertSnapArtifactPayload on it: the asserts are already written
+// and fixture-tested (W139), only their data source is missing.
+//
+// Every expectation is derived in ONE place
+// (getSnapArtifactExpectations below) from the values prepare-snap
+// stamps into the snapcraft.yaml template in prepareSnapPackage:
+// Name ← product.applicationName (@@NAME@@), Version ←
+// commit!.substr(0, 8) (@@VERSION@@ — NOT packageJson.version;
+// comparing against it would fail every good artifact, W88 §4.3
+// D6), snap arch ← `arch === 'x64' ? 'amd64' : arch`
+// (@@ARCHITECTURE@@). The artifact location (the snap build dir
+// itself) and the `<name>_<version>_<arch>.snap` file-name shape
+// are snapcraft conventions NOT yet observed on a real artifact of
+// this repo (W88 §1.3; W95 tension recorded as W101 ĐC-3): the
+// checks are implemented at the logic level now and locked hard
+// only after calibration C2 — if C2 shows a different location or
+// name shape, only getSnapArtifactExpectations and the search
+// directory in verifySnapArtifact change.
+
+// Intermediate struct for the Assert layer (post-freeze queue item
+// M1): an independent interface in the style of RpmArtifactInfo
+// above — deliberately NOT typed as
+// `Awaited<ReturnType<typeof readSnapArtifact>>`, because that Parse
+// function does not exist yet (TODO above). `name`, `version`,
+// `confinement` and `base` are optional because whether each field
+// is present at all in the compiled meta/snap.yaml is only known
+// after C1 (W88 V-S9): the asserts throw on a present-but-wrong
+// value, never on mere absence. `architectures` is the NORMALIZED
+// string array — the raw compiled shape is the Parse layer's
+// problem after C1 (queue item M3) — and the `files` map keys are
+// paths relative to the snap root, listing prefix already stripped.
+export interface SnapArtifactInfo {
+	name?: string;
+	version?: string;
+	architectures: string[];
+	confinement?: string;
+	base?: string;
+	apps: Readonly<Record<string, { command?: string }>>;
+	metaText: string;
+	files: ReadonlyMap<string, { size: number; mode: string }>;
+}
+
+interface SnapArtifactExpectations {
+	name: string;
+	version: string;
+	snapArch: string;
+	fileName: string;
+}
+
+function getSnapArtifactExpectations(arch: string): SnapArtifactExpectations {
+	const name = product.applicationName;
+	const version = commit!.substr(0, 8);
+	const snapArch = arch === 'x64' ? 'amd64' : arch;
+	return { name, version, snapArch, fileName: `${name}_${version}_${snapArch}.snap` };
+}
+
+// Pure Assert layer, metadata fields (W88 V-S6…V-S10, V-S13a).
+// Exported for fixture tests, like assertRpmArtifactFields; nothing
+// here calls any external tool — `info` is data already parsed by
+// the (future) Parse layer.
+export function assertSnapArtifactFields(info: SnapArtifactInfo, arch: string, snapFile: string): void {
+	const expected = getSnapArtifactExpectations(arch);
+	// V-S6: Name is the artifact's identity key (install / store
+	// metadata); prepare-snap stamps it from product.applicationName
+	// as @@NAME@@ in the snapcraft.yaml template.
+	if (info.name !== expected.name) {
+		throw new Error(`build-snap: packaged '${snapFile}' has name '${info.name}' in its meta/snap.yaml — expected '${expected.name}' (product.applicationName, stamped as @@NAME@@ by prepare-snap) — refusing to accept this artifact.`);
+	}
+	// V-S7: Version is matched EXACTLY, and it is the commit-derived
+	// version prepare-snap stamps as @@VERSION@@ — the first 8
+	// characters of the commit hash. It is NOT packageJson.version
+	// (W88 D6): no line stamps packageJson.version into the snap, so
+	// comparing against it would fail every good artifact. Unlike
+	// deb — where Version embeds a lazily resolved revision and can
+	// only be shape-matched — `commit` is a module-level const and
+	// build-snap is a prepare+build series in one gulp process, so
+	// the stamped value and this expectation cannot drift apart.
+	if (info.version !== expected.version || !/^[0-9a-f]{8}$/i.test(info.version ?? '')) {
+		throw new Error(`build-snap: packaged '${snapFile}' has version '${info.version}' in its meta/snap.yaml — expected exactly '${expected.version}' (commit.substr(0, 8), stamped as @@VERSION@@ by prepare-snap — NOT packageJson.version) — refusing to accept this artifact.`);
+	}
+	// V-S8: Architectures (the normalized array — see the interface
+	// comment) must hold exactly the one snap arch this build
+	// targeted. snapcraft is invoked with no --target-arch in
+	// buildSnapPackage, so the arch comes entirely from the yaml
+	// @@ARCHITECTURE@@ stamp; a wrong arch means a snap that will
+	// not install on its target. (V-S4 already checks the arch via
+	// the file name — this checks it again in the metadata, a
+	// surface that cannot be renamed by hand.)
+	if (info.architectures.length !== 1 || info.architectures[0] !== expected.snapArch) {
+		throw new Error(`build-snap: packaged '${snapFile}' has architectures [${info.architectures.join(', ')}] in its meta/snap.yaml — expected exactly ['${expected.snapArch}'] (the snap arch for gulp arch '${arch}', stamped as @@ARCHITECTURE@@ by prepare-snap) — refusing to accept this artifact.`);
+	}
+	// V-S9: confinement/base are snap's runtime contract (classic
+	// confinement is what lets the app reach the system like a
+	// desktop IDE; base selects the runtime environment). Only a
+	// PRESENT-but-wrong value throws: whether these fields are
+	// present at all in the compiled meta/snap.yaml is unknown until
+	// C1 (W88 V-S9), so absence is not asserted here.
+	if (info.confinement !== undefined && info.confinement !== 'classic') {
+		throw new Error(`build-snap: packaged '${snapFile}' has confinement '${info.confinement}' in its meta/snap.yaml — expected 'classic' (the confinement field of resources/linux/snap/snapcraft.yaml) — refusing to accept this artifact.`);
+	}
+	if (info.base !== undefined && info.base !== 'core20') {
+		throw new Error(`build-snap: packaged '${snapFile}' has base '${info.base}' in its meta/snap.yaml — expected 'core20' (the base field of resources/linux/snap/snapcraft.yaml) — refusing to accept this artifact.`);
+	}
+	// V-S10: both apps from the template must survive compilation —
+	// the main app and the url-handler are the entries snapd runs.
+	// The main app's command is checked by CONTAINED PATH only, not
+	// by absolute string equality: snapcraft may rewrite the
+	// electron-launch / $SNAP prefix when compiling the yaml, and
+	// the rewritten shape is only known after C1 (queue item M3).
+	const appNames = Object.keys(info.apps);
+	if (!appNames.includes(product.applicationName)) {
+		throw new Error(`build-snap: packaged '${snapFile}' has no app named '${product.applicationName}' in its meta/snap.yaml apps (found: ${appNames.join(', ') || 'none'}) — expected the apps '${product.applicationName}' and 'url-handler' from resources/linux/snap/snapcraft.yaml — refusing to accept this artifact.`);
+	}
+	if (!appNames.includes('url-handler')) {
+		throw new Error(`build-snap: packaged '${snapFile}' has no app named 'url-handler' in its meta/snap.yaml apps (found: ${appNames.join(', ') || 'none'}) — expected the apps '${product.applicationName}' and 'url-handler' from resources/linux/snap/snapcraft.yaml — refusing to accept this artifact.`);
+	}
+	const mainCommand = info.apps[product.applicationName]?.command ?? '';
+	const expectedCommandPath = `usr/share/${product.applicationName}/bin/${product.applicationName}`;
+	if (!mainCommand.includes(expectedCommandPath)) {
+		throw new Error(`build-snap: packaged '${snapFile}' app '${product.applicationName}' has command '${mainCommand}' in its meta/snap.yaml — expected the command to reference '${expectedCommandPath}' (template command 'electron-launch $SNAP/usr/share/@@NAME@@/bin/@@NAME@@ …' in resources/linux/snap/snapcraft.yaml; the full string is not compared because snapcraft may rewrite its prefix — W88 V-S10) — refusing to accept this artifact.`);
+	}
+	// V-S13a: no @@…@@ placeholder may survive in the compiled
+	// meta/snap.yaml. Staging already passed assertNoPlaceholders
+	// ('snap snapcraft') in prepare-snap, but meta/snap.yaml is a
+	// NEW text generated by snapcraft at pack time — a surface no
+	// existing guard has ever scanned.
+	const leakedTokens = [...findUnreplacedPlaceholders(info.metaText)];
+	if (leakedTokens.length > 0) {
+		throw new Error(`build-snap: packaged '${snapFile}' still contains unreplaced placeholder(s) ${leakedTokens.join(', ')} in its meta/snap.yaml — a replace step in prepare-snap was missed or its source value is missing — refusing to accept this artifact.`);
+	}
+}
+
+// Pure Assert layer, payload (W88 V-S11, V-S12, V-S14, V-S13b).
+// Payload paths inside a .snap are relative to the snap root. The
+// .node check (V-S12) runs on the artifact itself — the staging
+// guard in buildSnapPackage cannot see anything snapcraft does
+// after staging, and this Assert layer is the last check on the
+// very artifact that will be released (reason as corrected by
+// W101 ĐC-1).
+export function assertSnapArtifactPayload(files: ReadonlyMap<string, { size: number; mode: string }>, snapFile: string): void {
+	const appDir = `usr/share/${product.applicationName}`;
+	const mainBinary = `${appDir}/${product.applicationName}`;
+	// V-S11: the payload must contain the main binary, at least one
+	// file under resources/app/, and the compiled meta/snap.yaml —
+	// an empty-shelled artifact is the failure mode artifact
+	// verification exists to catch.
+	if (!files.has(mainBinary)) {
+		throw new Error(`build-snap: packaged '${snapFile}' is missing the main binary '${mainBinary}' in its payload listing — refusing to accept this artifact.`);
+	}
+	if (![...files.keys()].some(file => file.startsWith(`${appDir}/resources/app/`))) {
+		throw new Error(`build-snap: packaged '${snapFile}' has no payload under '${appDir}/resources/app/' in its payload listing — refusing to accept this artifact.`);
+	}
+	if (!files.has('meta/snap.yaml')) {
+		throw new Error(`build-snap: packaged '${snapFile}' is missing 'meta/snap.yaml' in its payload listing — refusing to accept this artifact.`);
+	}
+	// V-S12: all five native bindings, present AND non-empty — the
+	// same package/file list as the staging guard in
+	// buildSnapPackage, with the staging prefix replaced by the
+	// in-artifact path. Missing and empty are distinct throws, and
+	// the empty throw names the actual size, mirroring the staging
+	// guard's messages.
+	const artifactNativeBindings: ReadonlyArray<{ packageName: string; artifactPath: string }> = [
+		{ packageName: '@vscode/sqlite3', artifactPath: `${appDir}/resources/app/node_modules.asar.unpacked/@vscode/sqlite3/build/Release/vscode-sqlite3.node` },
+		{ packageName: '@vscode/spdlog', artifactPath: `${appDir}/resources/app/node_modules.asar.unpacked/@vscode/spdlog/build/Release/spdlog.node` },
+		{ packageName: 'native-keymap', artifactPath: `${appDir}/resources/app/node_modules.asar.unpacked/native-keymap/build/Release/keymapping.node` },
+		{ packageName: 'kerberos', artifactPath: `${appDir}/resources/app/node_modules.asar.unpacked/kerberos/build/Release/kerberos.node` },
+		{ packageName: '@vscode/native-watchdog', artifactPath: `${appDir}/resources/app/node_modules.asar.unpacked/@vscode/native-watchdog/build/Release/watchdog.node` },
+	];
+	for (const binding of artifactNativeBindings) {
+		if (!files.has(binding.artifactPath)) {
+			throw new Error(`build-snap: native binding missing from artifact for package '${binding.packageName}': '${binding.artifactPath}' in packaged '${snapFile}' — refusing to accept this artifact. The binding was present in staging (guarded in buildSnapPackage), so it was lost while snapcraft packed the artifact.`);
+		}
+		const bindingSize = files.get(binding.artifactPath)!.size;
+		if (bindingSize === 0) {
+			throw new Error(`build-snap: native binding is empty (actual size: ${bindingSize} bytes) in artifact for package '${binding.packageName}': '${binding.artifactPath}' in packaged '${snapFile}' — refusing to accept this artifact.`);
+		}
+	}
+	// V-S14: the desktop file prepare-snap staged under snap/gui
+	// lands in the artifact as meta/gui (placed there verbatim —
+	// see prepareSnapPackage), and electron-launch sits at the snap
+	// root as the first program every app command invokes. Losing
+	// either still installs "successfully" but breaks desktop
+	// integration / startup.
+	if (!files.has(`meta/gui/${product.applicationName}.desktop`)) {
+		throw new Error(`build-snap: packaged '${snapFile}' is missing 'meta/gui/${product.applicationName}.desktop' in its payload listing — the desktop file staged under snap/gui by prepare-snap did not reach the artifact — refusing to accept this artifact.`);
+	}
+	if (!files.has('electron-launch')) {
+		throw new Error(`build-snap: packaged '${snapFile}' is missing 'electron-launch' at its root in its payload listing — every app command in meta/snap.yaml invokes it — refusing to accept this artifact.`);
+	}
+	// V-S13b: no @@…@@ placeholder may survive in any payload file
+	// name (the second surface of V-S13; snap has no scriptlet
+	// surface comparable to rpm's, so meta text + file names are
+	// the two surfaces).
+	const leakedFileTokens: string[] = [];
+	for (const fileName of files.keys()) {
+		for (const token of findUnreplacedPlaceholders(fileName)) {
+			if (!leakedFileTokens.includes(token)) {
+				leakedFileTokens.push(token);
+			}
+		}
+	}
+	if (leakedFileTokens.length > 0) {
+		throw new Error(`build-snap: packaged '${snapFile}' still contains unreplaced placeholder(s) ${leakedFileTokens.join(', ')} in its payload file names — a replace step in prepare-snap was missed or its source value is missing — refusing to accept this artifact.`);
+	}
+}
+
+// L3 (W88 §4.1): re-read the staged snapcraft.yaml in build-snap
+// and re-scan it for @@…@@, instead of trusting that the copy
+// prepare-snap scanned (assertNoPlaceholders('snap snapcraft')) is
+// still the copy snapcraft consumed — this runs after snapcraft, so
+// it also closes the gap where the staged file is touched between
+// prepare and pack. This is a STAGING re-check, not artifact
+// verification (W88 §4.3 D7): the artifact's own compiled
+// meta/snap.yaml is V-S5's surface and belongs to the Parse layer.
+function assertSnapStagedYamlHasNoPlaceholders(stagedYamlPath: string): void {
+	if (!fs.existsSync(stagedYamlPath)) {
+		throw new Error(`build-snap: staged snapcraft.yaml not found: '${stagedYamlPath}' — run the prepare-snap task first.`);
+	}
+	const tokens = findUnreplacedPlaceholders(fs.readFileSync(stagedYamlPath, 'utf8'));
+	if (tokens.length > 0) {
+		throw new Error(`build-snap: staged snapcraft.yaml '${stagedYamlPath}' still contains unreplaced placeholder(s) ${tokens.join(', ')} — a replace step in prepare-snap was missed or its source value is missing — refusing to accept an artifact built from it.`);
+	}
+}
+
+// Coordinator for the artifact checks that run TODAY (called by
+// buildSnapPackage after snapcraft, mirroring the position of the
+// rpm verify at the end of buildRpmPackage): L3 (staged
+// snapcraft.yaml re-scan — the staged file survives snapcraft, so
+// it is re-read here, after packing) and V-S1…V-S4 — exactly one
+// .snap in the snap build dir, size > 0, the squashfs magic `hsqs`
+// (V-S3 is a SHALLOW check only, at the evidence level of an
+// experiment plus this machine's magic database — W101 ĐC-2; it
+// does not replace the Parse layer's `unsquashfs -stat`), and the
+// expected file name. The field/payload asserts above join this
+// function once the Parse layer exists (TODO at the head of this
+// block) — they need data only that layer can provide.
+async function verifySnapArtifact(snapDir: string, arch: string): Promise<void> {
+	assertSnapStagedYamlHasNoPlaceholders(path.join(snapDir, 'snap', 'snapcraft.yaml'));
+	const snapFiles = fs.readdirSync(snapDir).filter(file => file.endsWith('.snap'));
+	if (snapFiles.length !== 1) {
+		throw new Error(`build-snap: expected exactly 1 .snap in '${snapDir}' after packaging, found ${snapFiles.length} (${snapFiles.join(', ')}).`);
+	}
+	const snapFile = snapFiles[0];
+	const snapFilePath = path.join(snapDir, snapFile);
+	const snapSize = fs.statSync(snapFilePath).size;
+	if (snapSize === 0) {
+		throw new Error(`build-snap: packaged '${snapFile}' in '${snapDir}' is empty (actual size: ${snapSize} bytes) — refusing to accept this artifact.`);
+	}
+	const magicBuffer = Buffer.alloc(4);
+	const magicFd = fs.openSync(snapFilePath, 'r');
+	let magicBytesRead: number;
+	try {
+		magicBytesRead = fs.readSync(magicFd, magicBuffer, 0, 4, 0);
+	} finally {
+		fs.closeSync(magicFd);
+	}
+	const magic = magicBuffer.toString('ascii', 0, magicBytesRead);
+	if (magic !== 'hsqs') {
+		throw new Error(`build-snap: packaged '${snapFile}' in '${snapDir}' does not start with the squashfs magic 'hsqs' (first ${magicBytesRead} byte(s) read as '${magic}') — the file snapcraft left behind is not a squashfs image — refusing to accept this artifact.`);
+	}
+	const expected = getSnapArtifactExpectations(arch);
+	if (snapFile !== expected.fileName) {
+		throw new Error(`build-snap: packaged file name '${snapFile}' in '${snapDir}' does not match the expected snap artifact name '${expected.fileName}' (<Name>_<Version>_<Arch>.snap built from product.applicationName, commit.substr(0, 8) and the snap arch for gulp arch '${arch}') — refusing to accept this artifact.`);
+	}
 }
 
 const BUILD_TARGETS = [
