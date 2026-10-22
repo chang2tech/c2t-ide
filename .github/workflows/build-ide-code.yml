@@ -102,7 +102,9 @@ jobs:
             fakeroot \
             dpkg-dev \
             file \
-            wget
+            wget \
+            libx11-dev \
+            libxkbfile-dev
 
       - name: Install build/ dependencies
         if: steps.nm-cache.outputs.cache-hit != 'true'
@@ -164,6 +166,54 @@ jobs:
           }; done
         env:
           npm_command: 'ci --ignore-scripts'
+          VSCODE_FORCE_INSTALL: '1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebuild native modules for Electron
+        shell: bash
+        run: |
+          set -e
+          # Mirror of the Windows job's rebuild step. The Linux installs above
+          # also use --ignore-scripts (native-keymap fails against Node 24
+          # headers), so the native bindings the deb guard (BUILD-QA A4-P1 in
+          # build/gulpfile.vscode.linux.ts) asserts in staging are never
+          # produced without this step -- alpha.27 failed at
+          # 'Build .deb package' with "native binding missing from staging
+          # for package '@vscode/sqlite3'". Only the cross-platform packages
+          # the Linux payload needs are rebuilt here; the Windows-only ones
+          # (policy-watcher, windows-*, deviceid, windows-foreground-love)
+          # have no Linux binding and are skipped.
+          node build/npm/preinstall.ts
+          NODE_GYP="$PWD/build/npm/gyp/node_modules/.bin/node-gyp"
+          # tr -d '\r': .npmrc may be checked out with CRLF on Windows
+          # (.gitattributes has no eol rule for it); a trailing \r would
+          # make the sed $ anchor miss and leave TARGET empty.
+          TARGET="$(tr -d '\r' < .npmrc | sed -n 's/^target="\(.*\)"$/\1/p')"
+          [ -n "$TARGET" ] || { echo "failed to read Electron target from .npmrc" >&2; exit 1; }
+          for pkg in spdlog sqlite3 native-watchdog; do
+            ( cd "node_modules/@vscode/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --arch="$VSCODE_ARCH" --dist-url=https://electronjs.org/headers )
+          done
+          # native-keymap goes LAST on purpose: it is the package
+          # --ignore-scripts was introduced for; building it against the
+          # Electron headers pinned in .npmrc (not plain Node headers) is
+          # unverified -- if it fails, the step fails fast here and only this
+          # entry needs to be dropped, the bindings above are already built.
+          # (libx11-dev + libxkbfile-dev are installed in the system-deps
+          # step for its X11 pkg-config lookup.)
+          for pkg in kerberos native-keymap; do
+            ( cd "node_modules/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --arch="$VSCODE_ARCH" --dist-url=https://electronjs.org/headers )
+          done
+          # Fail fast with a clear message if any binding is missing, instead
+          # of a refusal 45 minutes later in the deb build.
+          for f in \
+            node_modules/@vscode/spdlog/build/Release/spdlog.node \
+            node_modules/@vscode/sqlite3/build/Release/vscode-sqlite3.node \
+            node_modules/@vscode/native-watchdog/build/Release/watchdog.node \
+            node_modules/kerberos/build/Release/kerberos.node \
+            node_modules/native-keymap/build/Release/keymapping.node ; do
+            [ -f "$f" ] || { echo "missing native binding: $f" >&2; exit 1; }
+          done
+        env:
           VSCODE_FORCE_INSTALL: '1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
