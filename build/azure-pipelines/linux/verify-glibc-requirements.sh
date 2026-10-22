@@ -11,12 +11,19 @@ fi
 
 # Get all files with .node extension from server folder
 files=$(find $SEARCH_PATH -name "*.node" -not -path "*prebuilds*" -not -path "*extensions/node_modules/@parcel/watcher*" -o -type f -executable -name "node")
+[ -n "$files" ] || { echo "Error: no files to verify under $SEARCH_PATH" >&2; exit 1; }
 
 echo "Verifying requirements for files: $files"
 
 for file in $files; do
   glibc_version="$EXPECTED_GLIBC_VERSION"
   glibcxx_version="$EXPECTED_GLIBCXX_VERSION"
+  objdump_out=$(mktemp)
+  if ! "$VSCODE_SYSROOT_DIR/$TRIPLE/$TRIPLE/bin/objdump" -T "$file" > "$objdump_out"; then
+    echo "Error: objdump failed for $file; refusing to pass this file unchecked" >&2
+    rm -f "$objdump_out"
+    exit 1
+  fi
   while IFS= read -r line; do
     if [[ $line == *"GLIBC_"* ]]; then
       version=$(echo "$line" | awk '{if ($5 ~ /^[0-9a-fA-F]+$/) print $6; else print $5}' | tr -d '()')
@@ -31,7 +38,8 @@ for file in $files; do
         glibcxx_version=$version
       fi
     fi
-  done < <("$VSCODE_SYSROOT_DIR/$TRIPLE/$TRIPLE/bin/objdump" -T "$file")
+  done < "$objdump_out"
+  rm -f "$objdump_out"
 
   if [[ "$glibc_version" != "$EXPECTED_GLIBC_VERSION" ]]; then
     echo "Error: File $file has dependency on GLIBC > $EXPECTED_GLIBC_VERSION, found $glibc_version"
@@ -39,5 +47,6 @@ for file in $files; do
   fi
   if [[ "$glibcxx_version" != "$EXPECTED_GLIBCXX_VERSION" ]]; then
     echo "Error: File $file has dependency on GLIBCXX > $EXPECTED_GLIBCXX_VERSION, found $glibcxx_version"
+    exit 1
   fi
 done

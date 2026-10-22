@@ -114,6 +114,12 @@ steps:
           # verify glibc requirement
           if [ -n "$SYSROOT_ARCH" ] && [ -n "$OBJDUMP" ]; then
             glibc_version="2.28"
+            objdump_out=$(mktemp)
+            if ! "$OBJDUMP" -T "$PWD/target/${{ parameters.VSCODE_CLI_TARGET }}/release/code" > "$objdump_out"; then
+              echo "Error: objdump failed for $PWD/target/${{ parameters.VSCODE_CLI_TARGET }}/release/code; refusing to pass this binary unchecked" >&2
+              rm -f "$objdump_out"
+              exit 1
+            fi
             while IFS= read -r line; do
               if [[ $line == *"GLIBC_"* ]]; then
                 version=$(echo "$line" | awk '{print $5}' | tr -d '()')
@@ -122,7 +128,8 @@ steps:
                   glibc_version=$version
                 fi
               fi
-            done < <("$OBJDUMP" -T "$PWD/target/${{ parameters.VSCODE_CLI_TARGET }}/release/code")
+            done < "$objdump_out"
+            rm -f "$objdump_out"
             if [[ "$glibc_version" != "2.28" ]]; then
               echo "Error: binary has dependency on GLIBC > 2.28, found $glibc_version"
               exit 1

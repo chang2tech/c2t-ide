@@ -56,6 +56,12 @@ steps:
 
         if [ "$VERIFY_GLIBC" = "1" ]; then
           maximum_glibc_version="2.28"
+          objdump_out=$(mktemp)
+          if ! "$OBJDUMP" -T "$PWD/target/${{ parameters.COPILOT_SHIM_TARGET }}/release/copilot" > "$objdump_out"; then
+            echo "Error: objdump failed for $PWD/target/${{ parameters.COPILOT_SHIM_TARGET }}/release/copilot; refusing to pass this binary unchecked" >&2
+            rm -f "$objdump_out"
+            exit 1
+          fi
           while IFS= read -r line; do
             if [[ "$line" == *"GLIBC_"* ]]; then
               version=$(echo "$line" | awk '{print $5}' | tr -d '()')
@@ -64,7 +70,8 @@ steps:
                 maximum_glibc_version=$version
               fi
             fi
-          done < <("$OBJDUMP" -T "$PWD/target/${{ parameters.COPILOT_SHIM_TARGET }}/release/copilot")
+          done < "$objdump_out"
+          rm -f "$objdump_out"
           if [ "$maximum_glibc_version" != "2.28" ]; then
             echo "Error: Copilot shim has dependency on GLIBC > 2.28, found $maximum_glibc_version"
             exit 1
