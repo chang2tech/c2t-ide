@@ -379,8 +379,14 @@ const SMOKE_MAIN_MARKER_TIMEOUT_MS = 120_000;
  * shared-process markers never written, main log silent after ~0.9s).
  * `--disable-gpu` forces software rendering for these build-only launches;
  * it is never passed to the shipped app or its launchers.
+ * `--log trace` raises the log level of these build-only launches to
+ * trace: the level propagates from the main process to the renderer
+ * (window configuration) and the shared process, so their file logs
+ * (renderer.log, sharedprocess.log) record where a startup stall
+ * actually stops instead of staying silent at the default info level.
+ * Like `--disable-gpu`, it applies only to launches from this file.
  */
-const PACKAGED_APP_CI_LAUNCH_ARGS: readonly string[] = ['--disable-gpu'];
+const PACKAGED_APP_CI_LAUNCH_ARGS: readonly string[] = ['--disable-gpu', '--log', 'trace'];
 
 /**
  * Best-effort dump of the packaged app's own log files (main + renderer)
@@ -400,17 +406,27 @@ function dumpPackagedAppLogs(portableDirectory: string, context: string): void {
 			console.log(`[node-compile-cache] No app log directory found for ${context} at ${logsRoot}.`);
 			return;
 		}
-		const wanted = new Set(['main.log', 'renderer.log', 'sharedprocess.log']);
+		// renderer.log and sharedprocess.log carry the decisive evidence
+		// for a renderer startup stall: they are dumped IN FULL below —
+		// no 120-line tail and no share of the character budget. Both
+		// loggers are spdlog rotating loggers (up to 6 files each: the
+		// current file plus .1.log (newest) ... .5.log (oldest), ~5 MB
+		// per file), so the full dump covers the whole file FAMILY —
+		// the startup segment sits in the oldest rotated file once
+		// rotation has happened. Every other file keeps the previous
+		// tail+budget behaviour.
+		const rotatedLogName = /^(renderer|sharedprocess)\.(\d+)\.log$/;
+		const isFullDumpFile = (name: string): boolean => name === 'renderer.log' || name === 'sharedprocess.log' || rotatedLogName.test(name);
 		const files: string[] = [];
 		const collect = (dir: string, depth: number): void => {
-			if (depth > 3 || files.length > 12) {
+			if (depth > 3 || files.length > 48) {
 				return;
 			}
 			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
 				const full = path.join(dir, entry.name);
 				if (entry.isDirectory()) {
 					collect(full, depth + 1);
-				} else if (entry.isFile() && wanted.has(entry.name)) {
+				} else if (entry.isFile() && (entry.name === 'main.log' || isFullDumpFile(entry.name))) {
 					files.push(full);
 				}
 			}
@@ -420,18 +436,75 @@ function dumpPackagedAppLogs(portableDirectory: string, context: string): void {
 			console.log(`[node-compile-cache] No app log files found for ${context} under ${logsRoot}.`);
 			return;
 		}
+		// Full-dump files first, so the decisive content reaches the
+		// build log before any tail-budgeted file. Within one family,
+		// oldest first: rotated index descending (.5 = oldest) with
+		// the current file (index 0) last, so a family's content reads
+		// in chronological order.
+		const rotationIndex = (name: string): number => {
+			const match = rotatedLogName.exec(name);
+			return match ? parseInt(match[2], 10) : 0;
+		};
+		const familyStem = (name: string): string => name.replace(/(\.\d+)?\.log$/, '');
+		files.sort((a, b) => {
+			const aName = path.basename(a);
+			const bName = path.basename(b);
+			const aFull = isFullDumpFile(aName);
+			const bFull = isFullDumpFile(bName);
+			if (aFull !== bFull) {
+				return aFull ? -1 : 1;
+			}
+			if (!aFull) {
+				return 0;
+			}
+			const byDirectory = path.dirname(a).localeCompare(path.dirname(b));
+			if (byDirectory !== 0) {
+				return byDirectory;
+			}
+			const byFamily = familyStem(aName).localeCompare(familyStem(bName));
+			if (byFamily !== 0) {
+				return byFamily;
+			}
+			return rotationIndex(bName) - rotationIndex(aName);
+		});
+		// Manifest: declare up front how many full-dump files exist
+		// and how large each is (bytes on disk), so a reader can tell
+		// whether rotation happened and whether every declared file
+		// actually appears below.
+		const fullDumpFiles = files.filter(file => isFullDumpFile(path.basename(file)));
+		if (fullDumpFiles.length > 0) {
+			const listing = fullDumpFiles.map(file => {
+				let size = '?';
+				try {
+					size = `${fs.statSync(file).size}B`;
+				} catch {
+					// Size unknown; the per-file dump below reports more.
+				}
+				return `${path.relative(portableDirectory, file)}=${size}`;
+			}).join(', ');
+			console.log(`[node-compile-cache] ----- app log dump manifest (${context}): ${fullDumpFiles.length} full-dump file(s) [${listing}] -----`);
+		}
 		let budget = 40_000;
 		for (const file of files) {
-			if (budget <= 0) {
+			const isFullDump = isFullDumpFile(path.basename(file));
+			if (!isFullDump && budget <= 0) {
 				break;
 			}
 			try {
-				const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-				const tail = lines.slice(-120).join('\n').slice(-budget);
-				budget -= tail.length;
-				console.log(`[node-compile-cache] ----- app log (${context}): ${path.relative(portableDirectory, file)} (last ${Math.min(120, lines.length)} lines) -----\n${tail}`);
-			} catch {
-				// A locked or vanished log file must not fail the dump.
+				const content = fs.readFileSync(file, 'utf8');
+				if (isFullDump) {
+					const lineCount = content.split(/\r?\n/).length;
+					console.log(`[node-compile-cache] ----- app log (${context}): ${path.relative(portableDirectory, file)} (FULL dump, ${content.length} chars, ${lineCount} lines) -----\n${content}`);
+				} else {
+					const lines = content.split(/\r?\n/);
+					const tail = lines.slice(-120).join('\n').slice(-budget);
+					budget -= tail.length;
+					console.log(`[node-compile-cache] ----- app log (${context}): ${path.relative(portableDirectory, file)} (last ${Math.min(120, lines.length)} lines) -----\n${tail}`);
+				}
+			} catch (error) {
+				// A locked or vanished log file must not fail the dump —
+				// but the loss is reported, not silent.
+				console.log(`[node-compile-cache] Could not read app log file ${path.relative(portableDirectory, file)} for ${context} (${(error as Error).message.split('\n')[0]}); skipping.`);
 			}
 		}
 	} catch {
@@ -484,6 +557,18 @@ async function runPackagedAppSmokeCheck(application: string, cliEntry: string, p
 			let poll: ReturnType<typeof setInterval>;
 			let timeout: ReturnType<typeof setTimeout>;
 			const stopWatching = () => { clearInterval(poll); clearTimeout(timeout); };
+			// At most one log dump per smoke run: the timeout handler
+			// dumps and then the process tree dies, which still fires
+			// 'close' — without this guard the close handler would
+			// dump the same logs a second time.
+			let logsDumped = false;
+			const dumpLogsOnce = () => {
+				if (logsDumped) {
+					return;
+				}
+				logsDumped = true;
+				dumpPackagedAppLogs(portableDirectory, 'packaged-app smoke check');
+			};
 			poll = setInterval(() => {
 				if (fs.existsSync(mainMarker)) {
 					stopWatching();
@@ -494,15 +579,19 @@ async function runPackagedAppSmokeCheck(application: string, cliEntry: string, p
 			timeout = setTimeout(() => {
 				stopWatching();
 				killProcessTree(child, 'the packaged-app smoke check process tree');
-				dumpPackagedAppLogs(portableDirectory, 'packaged-app smoke check');
+				dumpLogsOnce();
 				reject(new Error(`Packaged-app smoke check failed: main readiness marker not written within ${SMOKE_MAIN_MARKER_TIMEOUT_MS / 1000}s — the app did not reach the Eventually phase.\n${output}`));
 			}, SMOKE_MAIN_MARKER_TIMEOUT_MS);
-			child.on('error', error => { stopWatching(); reject(new Error(`Packaged-app smoke check could not spawn the application: ${error.message}`)); });
+			// Spawn failure: this launch never ran, so there are no new
+			// logs to dump — and setting the flag stops a 'close' event
+			// fired after this 'error' from dumping older sessions.
+			child.on('error', error => { stopWatching(); logsDumped = true; reject(new Error(`Packaged-app smoke check could not spawn the application: ${error.message}`)); });
 			child.on('close', (code, signal) => {
 				stopWatching();
 				if (fs.existsSync(mainMarker)) {
 					resolve();
 				} else {
+					dumpLogsOnce();
 					reject(new Error(`Packaged-app smoke check failed: application exited with code ${code} and signal ${signal ?? 'none'} before the main readiness marker.\n${output}`));
 				}
 			});
