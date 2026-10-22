@@ -39,7 +39,9 @@ EOF
 
 if [ "$npm_config_arch" == "x64" ]; then
   # Download clang based on chromium revision used by vscode
-  curl -s https://raw.githubusercontent.com/chromium/chromium/150.0.7871.250/tools/clang/scripts/update.py | python - --output-dir=$PWD/.build/CR_Clang --host-os=linux
+  CLANG_UPDATE_PY=$(mktemp)
+  curl -fsSL -o "$CLANG_UPDATE_PY" https://raw.githubusercontent.com/chromium/chromium/150.0.7871.250/tools/clang/scripts/update.py
+  python "$CLANG_UPDATE_PY" --output-dir=$PWD/.build/CR_Clang --host-os=linux
 
   # Download libcxx headers and objects from upstream electron releases
   DEBUG=libcxx-fetcher \
