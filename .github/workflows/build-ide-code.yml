@@ -51,7 +51,7 @@ env:
   # moved into @opencode/core dependencies) — a SHA without them produces
   # an engine closure that does not boot. Never put a branch or tag here:
   # the pin must be a full 40-char commit SHA so builds are reproducible.
-  ENGINE_REF: 'b2d9f88258fc6fded77674880588bac61101b0fe'
+  ENGINE_REF: '95381c4a2c311c978aed922144b222fbf789e1e3'
 
 jobs:
   build-linux-x64:
