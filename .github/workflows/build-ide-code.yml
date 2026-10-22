@@ -419,10 +419,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $limit = 230
-          $longest = Get-ChildItem -LiteralPath (Get-Location).Path -Recurse -Force -ErrorAction SilentlyContinue |
+          $scanErrors = $null
+          $longest = Get-ChildItem -LiteralPath (Get-Location).Path -Recurse -Force -ErrorAction Continue -ErrorVariable +scanErrors |
             ForEach-Object { $_.FullName } |
             Sort-Object { $_.Length } -Descending |
             Select-Object -First 1
+          if ($scanErrors) { throw "path guard: workspace scan incomplete ($($scanErrors.Count) enumeration errors) - longest-path result is not trustworthy" }
           if (-not $longest) { throw "path guard: workspace is empty after checkout" }
           Write-Host "Longest checkout path: $($longest.Length) chars (limit $limit, MAX_PATH 260)"
           Write-Host $longest
