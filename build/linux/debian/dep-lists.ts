@@ -32,6 +32,16 @@ export const referenceGeneratedDepsByArch = {
 	// Matches getDependencies() "New" output of run 39711465366 exactly.
 	// (alpha.26 note, still true: tunnel binary's deps are excluded because
 	// the workflow has no "Mix in CLI" step; calculate-deps.ts skips it.)
+	// ALPHA.36 (GĐ1 run 39777351052, workflow_dispatch on the Q5 commit):
+	// with install scripts enabled, node-pty compiles from source in CI —
+	// the repo .npmrc sets build_from_source="true", so its prebuild.js
+	// deletes the bundled prebuilds and install falls back to node-gyp
+	// rebuild of src/unix/pty.cc. The resulting build/Release/pty.node is
+	// dependency-scanned (the alpha.28-era prebuild specimen was skipped:
+	// no executable bit) and legitimately resolves one more dep:
+	// libstdc++6 >= 6 (std::thread symbols @GLIBCXX_3.4.22). Per-file
+	// verification: lane BUILD-QA-B vòng 23, phiếu
+	// gd1-perfile-verification-v23.md.
 	'amd64': [
 		'ca-certificates',
 		'libasound2 (>= 1.0.17)',
@@ -60,6 +70,7 @@ export const referenceGeneratedDepsByArch = {
 		'libnss3 (>= 3.26)',
 		'libpango-1.0-0 (>= 1.14.0)',
 		'libstdc++6 (>= 5)',
+		'libstdc++6 (>= 6)',
 		'libstdc++6 (>= 9)',
 		'libudev1 (>= 183)',
 		'libx11-6',
