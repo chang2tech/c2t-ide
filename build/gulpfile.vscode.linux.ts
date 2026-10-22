@@ -511,10 +511,14 @@ function buildDebPackage(arch: string) {
 		if (!artifactVersion || !artifactVersion.startsWith(expectedVersionPrefix) || !/^\d+$/.test(artifactRevision)) {
 			throw new Error(`build-deb: packaged '${debFile}' has a missing or malformed Version field according to dpkg-deb: '${artifactVersion}' — expected '${expectedVersionPrefix}<revision>' (debVersion format from prepare-deb: packageJson.version + '-' + getLinuxPackageRevision()) — refusing to accept this artifact.`);
 		}
-		try {
-			await exec(`dpkg-deb --contents ${debFile} | grep -q 'usr/share/${product.applicationName}/${product.applicationName}$'`, { cwd: debDir });
-			await exec(`dpkg-deb --contents ${debFile} | grep -q 'usr/share/${product.applicationName}/resources/app/'`, { cwd: debDir });
-		} catch {
+		// No shell pipe into grep -q: capture the listing and test it in JS so
+		// this check cannot become a pipefail/SIGPIPE false-negative if the
+		// exec shell ever changes (the workflow copy of this check did — alpha.29).
+		const { stdout: debContents } = await exec(`dpkg-deb --contents ${debFile}`, { cwd: debDir, maxBuffer: 64 * 1024 * 1024 });
+		const debContentLines = debContents.split('\n');
+		const hasMainBinary = debContentLines.some(line => line.endsWith(`usr/share/${product.applicationName}/${product.applicationName}`));
+		const hasResourcesApp = debContentLines.some(line => line.includes(`usr/share/${product.applicationName}/resources/app/`));
+		if (!hasMainBinary || !hasResourcesApp) {
 			throw new Error(`build-deb: packaged '${debFile}' is missing the main binary or resources/app in its contents listing — refusing to accept this artifact.`);
 		}
 	};
