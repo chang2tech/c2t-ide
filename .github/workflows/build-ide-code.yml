@@ -372,9 +372,12 @@ jobs:
 
       - name: Resolve package version
         id: ver
+        shell: bash
         run: |
           set -e
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          VERSION=$(node -p "require('./package.json').version")
+          [ -n "$VERSION" ] || { echo "failed to read version from package.json" >&2; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
@@ -713,7 +716,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          VERSION=$(node -p "require('./package.json').version")
+          [ -n "$VERSION" ] || { echo "failed to read version from package.json" >&2; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Rename installer with version
         shell: bash
