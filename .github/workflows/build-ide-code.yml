@@ -1,14 +1,20 @@
 # Build IDE Code — desktop packages (Linux AppImage + .deb, Windows installer)
 #
 # Strategy (VSCodium-style, adapted to this fork):
-#   1. npm ci (root + build/) with the exact Node version from .nvmrc
-#      (--ignore-scripts to skip native-keymap vs Node 24 build failure),
-#      then an explicit run of build/npm/postinstall.ts with
-#      npm_command="ci --ignore-scripts" to install the per-directory
-#      dependencies (extensions/*, remote/, ...) that the script-free
-#      root install skipped — the packaging typecheck needs them
-#      (extension tsconfigs resolve @types/node from their OWN
-#      node_modules via "typeRoots", not from the root install).
+#   1. npm ci (root + build/) with the exact Node version from .nvmrc,
+#      scripts ENABLED (Q5): install scripts build every native module
+#      for the Electron target pinned in .npmrc, exactly like upstream
+#      (build/azure-pipelines/linux/steps/product-build-linux-setup.yml:
+#      preinstall first, then plain npm ci). build/npm/preinstall.ts is
+#      run explicitly before the root install so the Electron headers
+#      (incl. the repo's custom V8 header overlay) are in place before
+#      any native module compiles. The root postinstall
+#      (build/npm/postinstall.ts) then runs as part of npm ci and
+#      installs the per-directory dependencies (extensions/*, remote/,
+#      ...) — the packaging typecheck needs them (extension tsconfigs
+#      resolve @types/node from their OWN node_modules via "typeRoots",
+#      not from the root install). The explicit postinstall step below
+#      is kept only as a no-fast-path safety net.
 #   2. Compile our built-in extension extensions/ide-agent with its own tsc
 #      (the build's hardcoded extension-compilation list does NOT include it;
 #      packaging scans extensions/*/package.json via glob, so the compiled
@@ -83,9 +89,14 @@ jobs:
             extensions/html-language-features/server/node_modules
             extensions/json-language-features/server/node_modules
             .build/typings
-          key: ide-code-nm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json', 'extensions/package-lock.json', 'extensions/css-language-features/server/package-lock.json', 'extensions/html-language-features/server/package-lock.json', 'extensions/json-language-features/server/package-lock.json', 'remote/web/package-lock.json', 'build/rspack/package-lock.json', 'build/vite/package-lock.json', '.nvmrc', '.npmrc') }}
+          # Prefix "nm-s1" (scripts-enabled generation 1, Q5): caches saved
+          # by the old script-free policy contain no .node bindings
+          # and the key does NOT hash this workflow file, so the prefix
+          # bump is what forces a full script-ful install on the first
+          # run after Q5 and keeps script-free caches out of this job.
+          key: ide-code-nm-s1-${{ runner.os }}-${{ hashFiles('package-lock.json', 'build/package-lock.json', 'remote/package-lock.json', 'extensions/*/package-lock.json', 'extensions/package-lock.json', 'extensions/css-language-features/server/package-lock.json', 'extensions/html-language-features/server/package-lock.json', 'extensions/json-language-features/server/package-lock.json', 'remote/web/package-lock.json', 'build/rspack/package-lock.json', 'build/vite/package-lock.json', '.nvmrc', '.npmrc') }}
           restore-keys: |
-            ide-code-nm-${{ runner.os }}-
+            ide-code-nm-s1-${{ runner.os }}-
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
@@ -100,6 +111,7 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             pkg-config \
+            libsecret-1-dev \
             libkrb5-dev \
             fakeroot \
             dpkg-dev \
@@ -114,14 +126,31 @@ jobs:
         shell: bash
         run: |
           set -e
-          # --ignore-scripts: skip native module builds (e.g. native-keymap
-          # fails against Node 24 headers); they are rebuilt for Electron
-          # during packaging.
-          for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
+          # Scripts enabled (Q5): build/ native deps (keytar, tree-sitter)
+          # build here against build/.npmrc (Node target), like upstream's
+          # plain `npm ci` in build/ (product-build-linux-setup.yml).
+          # keytar's source fallback needs libsecret-1-dev (apt step above);
+          # it first tries a prebuild download.
+          for i in 1 2 3 4 5; do npm ci && break || {
             [ "$i" -eq 5 ] && { echo "npm ci (build) failed 5 times" >&2; exit 1; }
             echo "npm ci (build) failed, retry $i/5"; sleep 10;
           }; done
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run preinstall (Electron headers + pinned node-gyp)
+        if: steps.nm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -e
+          # Mirror upstream (product-build-linux-setup.yml: "Run preinstall
+          # script before root dependencies are installed so that v8 headers
+          # are patched correctly for native modules"). npm ci would run the
+          # root preinstall itself, but not necessarily before dependency
+          # install scripts compile native modules against those headers.
+          node build/npm/preinstall.ts
+        env:
+          VSCODE_FORCE_INSTALL: '1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install root dependencies
@@ -129,11 +158,14 @@ jobs:
         shell: bash
         run: |
           set -e
-          # --ignore-scripts: skip native module builds (e.g. native-keymap
-          # fails against Node 24 headers); they are rebuilt for Electron
-          # during packaging. NOTE: this also skips the root postinstall —
-          # it is re-run explicitly in the next step.
-          for i in 1 2 3 4 5; do npm ci --ignore-scripts && break || {
+          # Scripts enabled (Q5): every native module builds for the
+          # Electron target from .npmrc via its install script (or npm's
+          # default node-gyp hook for binding.gyp packages), and the root
+          # postinstall (build/npm/postinstall.ts) runs as part of this
+          # install, fanning out to build/, remote/ and extensions/*.
+          # The download-skip envs below mirror upstream's install step so
+          # dependency scripts do not fetch browser/ML binaries mid-CI.
+          for i in 1 2 3 4 5; do npm ci && break || {
             [ "$i" -eq 5 ] && { echo "npm ci (root) failed 5 times" >&2; exit 1; }
             echo "npm ci (root) failed, retry $i/5"; sleep 10;
           }; done
@@ -141,6 +173,9 @@ jobs:
           npm_config_arch: ${{ env.NPM_ARCH }}
           VSCODE_ARCH: ${{ env.VSCODE_ARCH }}
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          ONNXRUNTIME_NODE_INSTALL: skip
+          FOUNDRY_LOCAL_SKIP_INSTALL: '1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install workspace dependencies (postinstall)
@@ -148,76 +183,52 @@ jobs:
         shell: bash
         run: |
           set -e
-          # The script-free root install above also skipped the root
-          # postinstall (build/npm/postinstall.ts), which is what installs
+          # Safety net only (Q5): the root npm ci above already ran this
+          # postinstall (build/npm/postinstall.ts), which installs
           # node_modules into build/, remote/ and every extensions/* dir
           # listed in build/npm/dirs.ts, and downloads
-          # .build/typings/electron.d.ts (needed by the src compile).
-          # Without it the packaging typecheck (tsgo) fails with TS2688:
-          # built-in extension tsconfigs pin
-          # "typeRoots": ["./node_modules/@types"] (extension-local), so
-          # the root @types/node cannot satisfy their "types": ["node"].
-          # Re-run postinstall manually. npm_command is the env var
-          # postinstall reads to pick its sub-install command (it is the
-          # var npm itself sets during a normal install), so every
-          # sub-install stays deterministic (ci) and script-free,
-          # matching the root install policy.
+          # .build/typings/electron.d.ts (needed by the src compile;
+          # without it the packaging typecheck (tsgo) fails with TS2688).
+          # VSCODE_FORCE_INSTALL is intentionally NOT set here, so when
+          # the ci-run postinstall completed, this re-run exits via its
+          # own up-to-date fast path; it only does real work if the
+          # ci-run postinstall did not finish. npm_command stays 'ci' so
+          # any sub-install it does perform is deterministic and
+          # script-ful, matching the root install policy.
           for i in 1 2 3; do node build/npm/postinstall.ts && break || {
             [ "$i" -eq 3 ] && { echo "postinstall failed 3 times" >&2; exit 1; }
             echo "postinstall failed, retry $i/3"; sleep 10;
           }; done
         env:
-          npm_command: 'ci --ignore-scripts'
-          VSCODE_FORCE_INSTALL: '1'
+          npm_command: 'ci'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          ONNXRUNTIME_NODE_INSTALL: skip
+          FOUNDRY_LOCAL_SKIP_INSTALL: '1'
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Rebuild native modules for Electron
+      - name: Verify native modules (built by install scripts)
         shell: bash
         run: |
           set -e
-          # Mirror of the Windows job's rebuild step. The Linux installs above
-          # also use --ignore-scripts (native-keymap fails against Node 24
-          # headers), so the native bindings the deb guard (BUILD-QA A4-P1 in
-          # build/gulpfile.vscode.linux.ts) asserts in staging are never
-          # produced without this step -- alpha.27 failed at
-          # 'Build .deb package' with "native binding missing from staging
-          # for package '@vscode/sqlite3'". Only the cross-platform packages
-          # the Linux payload needs are rebuilt here; the Windows-only ones
-          # (policy-watcher, windows-*, deviceid, windows-foreground-love)
-          # have no Linux binding and are skipped.
-          node build/npm/preinstall.ts
-          NODE_GYP="$PWD/build/npm/gyp/node_modules/.bin/node-gyp"
-          # tr -d '\r': .npmrc may be checked out with CRLF on Windows
-          # (.gitattributes has no eol rule for it); a trailing \r would
-          # make the sed $ anchor miss and leave TARGET empty.
-          TARGET="$(tr -d '\r' < .npmrc | sed -n 's/^target="\(.*\)"$/\1/p')"
-          [ -n "$TARGET" ] || { echo "failed to read Electron target from .npmrc" >&2; exit 1; }
-          for pkg in spdlog sqlite3 native-watchdog; do
-            ( cd "node_modules/@vscode/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --arch="$VSCODE_ARCH" --dist-url=https://electronjs.org/headers )
-          done
-          # native-keymap goes LAST on purpose: it is the package
-          # --ignore-scripts was introduced for; building it against the
-          # Electron headers pinned in .npmrc (not plain Node headers) is
-          # unverified -- if it fails, the step fails fast here and only this
-          # entry needs to be dropped, the bindings above are already built.
-          # (libx11-dev + libxkbfile-dev are installed in the system-deps
-          # step for its X11 pkg-config lookup.)
-          for pkg in kerberos native-keymap; do
-            ( cd "node_modules/$pkg" && "$NODE_GYP" rebuild --target="$TARGET" --arch="$VSCODE_ARCH" --dist-url=https://electronjs.org/headers )
-          done
-          # Fail fast with a clear message if any binding is missing, instead
-          # of a refusal 45 minutes later in the deb build.
+          # Assertion-only (Q5). Install scripts now build EVERY native
+          # module (see the install steps above), so the hand-maintained
+          # node-gyp rebuild list is gone. This step keeps the fail-fast
+          # contract the rebuild step had: the 5 bindings the deb guard
+          # (BUILD-QA A4-P1 in build/gulpfile.vscode.linux.ts) asserts in
+          # staging must already exist here, minutes after install,
+          # instead of failing ~45 minutes later in the deb build
+          # (alpha.27 failure mode). It deliberately has NO cache-hit
+          # guard: it must run on every run, including cache hits, so a
+          # stale or script-free cache can never slip through silently.
+          # -s (not -f): also reject zero-byte bindings.
           for f in \
             node_modules/@vscode/spdlog/build/Release/spdlog.node \
             node_modules/@vscode/sqlite3/build/Release/vscode-sqlite3.node \
             node_modules/@vscode/native-watchdog/build/Release/watchdog.node \
             node_modules/kerberos/build/Release/kerberos.node \
             node_modules/native-keymap/build/Release/keymapping.node ; do
-            [ -f "$f" ] || { echo "missing native binding: $f" >&2; exit 1; }
+            [ -s "$f" ] || { echo "missing native binding: $f" >&2; exit 1; }
           done
-        env:
-          VSCODE_FORCE_INSTALL: '1'
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run copilot extension postinstall
         shell: bash
