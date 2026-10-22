@@ -14,10 +14,13 @@ function getNpmProductionDependencies(folder: string): string[] {
 	try {
 		raw = cp.execSync('npm ls --all --omit=dev --parseable', { cwd: folder, encoding: 'utf8', env: { ...process.env, NODE_ENV: 'production' }, stdio: [null, null, null] });
 	} catch (err) {
-		const regex = /^npm ERR! .*$/gm;
+		// npm >= 10 prints "npm error ...", older npm prints "npm ERR! ...".
+		const regex = /^npm (?:ERR!|error) .*$/gm;
 		let match: RegExpExecArray | null;
+		let sawErrorLine = false;
 
 		while (match = regex.exec(err.message)) {
+			sawErrorLine = true;
 			if (/ELSPROBLEMS/.test(match[0])) {
 				continue;
 			} else if (/invalid: xterm/.test(match[0])) {
@@ -27,6 +30,10 @@ function getNpmProductionDependencies(folder: string): string[] {
 			} else {
 				throw err;
 			}
+		}
+		if (!sawErrorLine) {
+			// Unrecognized failure shape: never adopt stdout silently.
+			throw err;
 		}
 
 		raw = err.stdout;
