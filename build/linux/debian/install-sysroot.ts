@@ -10,7 +10,6 @@ import https from 'https';
 import path from 'path';
 import { createHash } from 'crypto';
 import { download } from '../../lib/download.ts';
-import { getElectronVersion } from '../../lib/electronVersion.ts';
 import type { DebianArchString } from './types.ts';
 
 // Based on https://source.chromium.org/chromium/chromium/src/+/main:build/linux/sysroot_scripts/install-sysroot.py.
@@ -31,29 +30,6 @@ const ghDownloadHeaders = {
 	...ghApiHeaders,
 	Accept: 'application/octet-stream',
 };
-
-// Headers for the contents-API download of sysroots.json (alpha.34,
-// AD-1). Built fresh — NOT spread from ghApiHeaders — so the release-API
-// Authorization can never leak into the contents request: the contents
-// API gets Accept: application/vnd.github.raw and, when GITHUB_TOKEN
-// is set, Authorization: Bearer <token>; anonymous otherwise. The
-// token is passed to curl as an argument and is never logged.
-const ghContentsHeaders: Record<string, string> = {
-	Accept: 'application/vnd.github.raw',
-	'User-Agent': 'VSCode Build',
-};
-
-if (process.env.GITHUB_TOKEN) {
-	ghContentsHeaders.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-}
-
-function curlHeaderArgs(headers: Record<string, string>): string[] {
-	const args: string[] = [];
-	for (const [name, value] of Object.entries(headers)) {
-		args.push('-H', `${name}: ${value}`);
-	}
-	return args;
-}
 
 interface IFetchOptions {
 	assetName: string;
@@ -172,44 +148,33 @@ export async function getVSCodeSysroot(arch: DebianArchString, isMusl: boolean =
 	return result;
 }
 
-// Download hardening for sysroots.json (alpha.33; z3 §4 item 5, same class
-// as the dpkg-shlibdeps.pl fix in calculate-deps.ts). The previous bare
-// `curl` had no `--fail`, so it exited 0 on an HTTP error page and a 429
-// page would only surface later as a misleading JSON.parse error. The
-// download below never trusts curl's exit code alone: it reads the real
-// HTTP status and Retry-After from the dumped headers on every attempt
-// (outer retry loop, max 5 attempts, Retry-After wins over the base
-// backoff) and validates the content before the caller parses it.
+// Vendored sysroots.json (alpha.35, vendor B1; same class as the
+// dpkg-shlibdeps.pl vendor in calculate-deps.ts). The dict is NOT
+// downloaded at build time: it lives in vendor/sysroots.json next
+// to this file and is validated before the caller parses it. The
+// download path was removed after the GitHub contents API
+// rate-limited (HTTP 429) the alpha.34 CI run (SIG-B34-01); the
+// earlier alpha.33 download from the raw host hit the same limit.
 //
-// Magic-check decision for the JSON dict: the 4,096-byte floor used for
-// the perl script is NOT applied here — the real size of sysroots.json is
-// not pinned in evidence and a hard floor could reject a valid dict.
-// Instead the structural equivalent is used: the content must be a JSON
-// object (first non-whitespace character '{', parses as JSON, top level
-// is a non-null object). No SHA-256 pin is applied because no verified
-// hash for sysroots.json exists in evidence (unlike dpkg-shlibdeps.pl).
-// alpha.34: sysroots.json is fetched from the GitHub contents API
-// (api.github.com) instead of the previous raw host, which
-// rate-limited (HTTP 429) the alpha.33 CI run; the contents API serves
-// byte-identical JSON.
-const SYSROOT_DICT_MAX_ATTEMPTS = 5;
-const SYSROOT_DICT_BASE_BACKOFF_MS = [5000, 10000, 20000, 40000];
-const SYSROOT_DICT_BACKOFF_CAP_MS = 60000;
+// Validation decision for the JSON dict: the 4,096-byte floor used
+// for the perl script is NOT applied here. Instead the structural
+// equivalent is used: the content must be a JSON object (first
+// non-whitespace character '{', parses as JSON, top level is a
+// non-null object). The file is additionally pinned by SHA-256
+// (SYSROOTS_JSON_SHA256 below): the vendored copy is
+// byte-identical to script/sysroots.json of electron/electron at
+// the pinned Electron version, so a stale vendored file after an
+// Electron bump fails the build loudly instead of silently
+// selecting an old sysroot. See vendor/README.md.
+const SYSROOTS_JSON_SHA256 = '2fcdb40d559e8e5334618afca7da27f7e3b40321780372f3fed4e40585805e6c';
+// ^ SHA-256 of the vendored sysroots.json in vendor/ next to this
+// file, byte-identical to script/sysroots.json of electron/electron
+// at the pinned Electron version (v43.7.7 — .npmrc target, registered
+// in cgmanifest.json). When the Electron version moves, replace the
+// vendored file AND update this pin in the same commit — see
+// vendor/README.md.
 
-const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
-function sleepSync(ms: number): void {
-	Atomics.wait(sleepBuffer, 0, 0, ms);
-}
-
-function parseHttpStatus(headers: string): number | undefined {
-	const match = headers.match(/^HTTP\/[\d.]+ (\d+)/m);
-	return match ? Number(match[1]) : undefined;
-}
-
-function parseRetryAfterMs(headers: string): number {
-	const match = headers.match(/^Retry-After:\s*(\d+)/im);
-	return match ? Number(match[1]) * 1000 : 0;
-}
+const SYSROOTS_JSON_VENDOR_PATH = path.join(import.meta.dirname, 'vendor', 'sysroots.json');
 
 // Returns a problem description, or undefined when the file is acceptable.
 function validateSysrootsDict(dictLocation: string): string | undefined {
@@ -225,38 +190,31 @@ function validateSysrootsDict(dictLocation: string): string | undefined {
 	} catch (e) {
 		return `content is not valid JSON: ${e instanceof Error ? e.message : String(e)}`;
 	}
+	const sha256 = createHash('sha256').update(fs.readFileSync(dictLocation)).digest('hex');
+	if (sha256 !== SYSROOTS_JSON_SHA256) {
+		return `SHA-256 mismatch: expected ${SYSROOTS_JSON_SHA256}, actual ${sha256}`;
+	}
 	return undefined;
 }
 
-function downloadSysrootsDict(url: string, dictLocation: string): void {
-	const headerFile = `${dictLocation}.headers`;
-	let lastProblem = 'unknown';
-	for (let attempt = 1; attempt <= SYSROOT_DICT_MAX_ATTEMPTS; attempt++) {
-		const result = spawnSync('curl', ['--fail', '--silent', '--show-error', '-D', headerFile, ...curlHeaderArgs(ghContentsHeaders), url, '-o', dictLocation]);
-		const headers = fs.existsSync(headerFile) ? fs.readFileSync(headerFile, 'utf8') : '';
-		const status = parseHttpStatus(headers);
-		if (result.status === 0) {
-			const problem = validateSysrootsDict(dictLocation);
-			if (!problem) {
-				return;
-			}
-			lastProblem = `downloaded content from ${url} failed magic check: ${problem}`;
-		} else {
-			lastProblem = `HTTP ${status ?? '?'} from ${url} (curl exit ${result.status})`;
-		}
-		if (attempt < SYSROOT_DICT_MAX_ATTEMPTS) {
-			const retryAfterMs = parseRetryAfterMs(headers);
-			const wait = Math.min(SYSROOT_DICT_BACKOFF_CAP_MS, Math.max(SYSROOT_DICT_BASE_BACKOFF_MS[attempt - 1] ?? 40000, retryAfterMs));
-			sleepSync(wait);
-		}
+// alpha.35 (vendor B1): sysroots.json is vendored in this repo at
+// vendor/sysroots.json next to this file — it is NOT downloaded. The
+// download path was removed after the contents API rate-limited the
+// alpha.34 CI run (SIG-B34-01). The vendored file goes through the
+// same validateSysrootsDict() structural check a downloaded file did.
+function loadVendoredSysrootsDict(): string {
+	if (!fs.existsSync(SYSROOTS_JSON_VENDOR_PATH)) {
+		throw new Error(`Vendored sysroots.json not found at ${SYSROOTS_JSON_VENDOR_PATH} — expected build/linux/debian/vendor/sysroots.json in the repository (alpha.35 vendor B1; there is no network fallback). Restore the vendored file and re-run.`);
 	}
-	throw new Error(`Cannot retrieve sysroots.json after ${SYSROOT_DICT_MAX_ATTEMPTS} attempts: ${lastProblem}`);
+	const problem = validateSysrootsDict(SYSROOTS_JSON_VENDOR_PATH);
+	if (problem) {
+		throw new Error(`Vendored sysroots.json at ${SYSROOTS_JSON_VENDOR_PATH} failed validation: ${problem}`);
+	}
+	return SYSROOTS_JSON_VENDOR_PATH;
 }
 
 export async function getChromiumSysroot(arch: DebianArchString): Promise<string> {
-	const sysrootJSONUrl = `https://api.github.com/repos/electron/electron/contents/script/sysroots.json?ref=v${getElectronVersion().electronVersion}`;
-	const sysrootDictLocation = `${tmpdir()}/sysroots.json`;
-	downloadSysrootsDict(sysrootJSONUrl, sysrootDictLocation);
+	const sysrootDictLocation = loadVendoredSysrootsDict();
 	const sysrootInfo = JSON.parse(fs.readFileSync(sysrootDictLocation, 'utf8'));
 	const sysrootArch = `bullseye_${arch}`;
 	const sysrootDict: SysrootDictEntry = sysrootInfo[sysrootArch];

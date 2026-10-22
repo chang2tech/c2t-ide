@@ -89,8 +89,7 @@ function installedSizeKiBForFile(f: { isDirectory(): boolean; contents: Buffer |
 // Preflight for external tools (BUILD-QA B-W3-07, hardened W27 (d)
 // item 3 / W39): the deb path shells out
 // to tools that are not part of Node. Through getDependencies, prepare-deb
-// reaches `curl` (build/linux/debian/calculate-deps.ts,
-// build/linux/debian/install-sysroot.ts), `perl`
+// reaches `perl`
 // (build/linux/debian/calculate-deps.ts), `find`
 // (build/linux/dependencies-generator.ts) and `tar`
 // (build/linux/debian/install-sysroot.ts); build-deb calls `chmod`,
@@ -106,7 +105,7 @@ function installedSizeKiBForFile(f: { isDirectory(): boolean; contents: Buffer |
 // notes it was checked early in prepare-deb (see `checkedEarlyIn` below).
 // buildDebPackage keeps its own identical build-list assert at its head
 // as a second layer, so running build-deb on its own still self-checks.
-const debPrepareTools = ['curl', 'perl', 'find', 'tar'] as const;
+const debPrepareTools = ['perl', 'find', 'tar'] as const;
 const debBuildTools = ['fakeroot', 'dpkg-deb', 'chmod', 'mkdir', 'grep'] as const;
 
 function assertDebTools(stage: 'prepare-deb' | 'build-deb', tools: readonly string[], checkedEarlyIn?: 'prepare-deb'): void {
@@ -135,17 +134,19 @@ function getDebPackageArch(arch: string): string {
 }
 
 // Network dependency (W3-08): prepare-deb reaches the network through
-// getDependencies -> build/linux/debian/install-sysroot.ts and
-// build/linux/debian/calculate-deps.ts. The egress hosts are:
+// getDependencies -> build/linux/debian/install-sysroot.ts. The
+// egress hosts are:
 //   - api.github.com — VS Code sysroot release metadata + asset
-//     (Microsoft/vscode-linux-build-agent), plus Chromium
-//     sysroots.json (electron repo) and dpkg-shlibdeps.pl (chromium
-//     repo) via the contents API, both via curl; the Authorization
+//     (Microsoft/vscode-linux-build-agent) only; the Authorization
 //     header is attached only when GITHUB_TOKEN is set, otherwise
 //     the calls are anonymous and hit the much lower GitHub rate
 //     limit.
 //   - msftelectronbuild.z5.web.core.windows.net — Chromium sysroot
 //     tarball hosting.
+// sysroots.json (electron repo) and dpkg-shlibdeps.pl (chromium
+// repo) are NOT downloaded: both are vendored under
+// build/linux/debian/vendor/ (alpha.35, vendor B1) and are
+// validated against pinned SHA-256 hashes on every build.
 // A machine without egress to these hosts will FAIL in prepare-deb;
 // each download site also logs its URL in the debian files above.
 function prepareDebPackage(arch: string) {
@@ -158,7 +159,7 @@ function prepareDebPackage(arch: string) {
 	const destination = path.join(root, '.build/linux/deb/' + debArch + '/' + product.applicationName + '-' + debArch);
 
 	return async function () {
-		console.log(`[prepare-deb] NETWORK DEPENDENCY (W3-08): this task downloads from api.github.com (VS Code sysroot release + asset, plus Chromium sysroots.json + dpkg-shlibdeps.pl via the contents API using curl; GITHUB_TOKEN used when set, anonymous otherwise) and msftelectronbuild.z5.web.core.windows.net (Chromium sysroot tarball) — see build/linux/debian/install-sysroot.ts and build/linux/debian/calculate-deps.ts. No egress to these hosts will fail this task.`);
+		console.log(`[prepare-deb] NETWORK DEPENDENCY (W3-08): this task downloads from api.github.com (VS Code sysroot release + asset; GITHUB_TOKEN used when set, anonymous otherwise) and msftelectronbuild.z5.web.core.windows.net (Chromium sysroot tarball). sysroots.json and dpkg-shlibdeps.pl are vendored in build/linux/debian/vendor/ and are not downloaded — see build/linux/debian/install-sysroot.ts and build/linux/debian/calculate-deps.ts. No egress to these hosts will fail this task.`);
 		assertDebTools('prepare-deb', debPrepareTools);
 		// Fail-fast for the build stage too (W27 (d) item 3 / W39): check
 		// the build-deb tools now, at the head of prepare-deb, instead of
