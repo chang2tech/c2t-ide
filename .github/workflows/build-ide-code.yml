@@ -291,8 +291,17 @@ jobs:
           echo "Verifying $DEB"
           dpkg-deb --info "$DEB"
           [ -n "$(dpkg-deb -f "$DEB" Depends)" ] || { echo "::error::$DEB has an empty Depends field" >&2; exit 1; }
-          dpkg-deb --contents "$DEB" | grep -q 'usr/share/ide-code/ide-code$' || { echo "::error::$DEB is missing usr/share/ide-code/ide-code" >&2; exit 1; }
-          dpkg-deb --contents "$DEB" | grep -q 'usr/share/ide-code/resources/app/' || { echo "::error::$DEB is missing usr/share/ide-code/resources/app/" >&2; exit 1; }
+          # List the contents to a file first, then grep the file. Piping
+          # dpkg-deb straight into `grep -q` false-fails under this step's
+          # `bash -eo pipefail`: grep exits on the first (early) match, the
+          # closed pipe SIGPIPEs dpkg-deb's tar subprocess, and pipefail
+          # surfaces dpkg-deb's exit 2 as a bogus "missing payload" error
+          # (alpha.29 run 39718978197; BUILD-QA-B deb-verify investigation).
+          DEB_CONTENTS=$(mktemp)
+          dpkg-deb --contents "$DEB" > "$DEB_CONTENTS"
+          grep -q 'usr/share/ide-code/ide-code$' "$DEB_CONTENTS" || { echo "::error::$DEB is missing usr/share/ide-code/ide-code" >&2; exit 1; }
+          grep -q 'usr/share/ide-code/resources/app/' "$DEB_CONTENTS" || { echo "::error::$DEB is missing usr/share/ide-code/resources/app/" >&2; exit 1; }
+          rm -f "$DEB_CONTENTS"
           echo "Verified: $DEB (Depends non-empty, payload present)"
 
       - name: Build AppImage
