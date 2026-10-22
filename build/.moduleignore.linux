@@ -29,3 +29,9 @@ node-pty/prebuilds/darwin-*/**
 # NOTE: this file is arch-blind; if an arm64 Linux build is added to the
 # matrix, this exclusion must become arch-conditional.
 node-pty/prebuilds/linux-arm64/**
+# @vscode/deviceid's only native artifact is the Windows binding
+# (build/Release/windows.node); the base .moduleignore re-includes every
+# build/Release/*.node, so the Windows file leaks into the Linux package,
+# lands in node_modules.asar.unpacked and fails prepare-deb:
+# dpkg-shlibdeps returns no 'shlibs:Depends=' line for it (alpha.38).
+@vscode/deviceid/build/Release/windows.node
