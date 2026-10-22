@@ -285,7 +285,7 @@ function createTscCompileTask(watch: boolean) {
 					}
 				}
 			});
-			child.on('exit', resolve);
+			child.on('exit', code => code === 0 ? resolve(code) : reject(new Error(`monaco tsc exited with code ${code}`)));
 			child.on('error', reject);
 		});
 	};

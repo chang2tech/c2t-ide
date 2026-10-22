@@ -78,11 +78,15 @@ const acquireBuiltOpenSSL = (callback: (err?: unknown) => void) => {
 	const dir = path.join(tmpdir(), 'vscode-openssl-download');
 	mkdirSync(dir, { recursive: true });
 
-	cp.spawnSync(
+	const packResult = cp.spawnSync(
 		process.platform === 'win32' ? 'npm.cmd' : 'npm',
 		['pack', '@vscode/openssl-prebuilt'],
 		{ stdio: ['ignore', 'ignore', 'inherit'], cwd: dir }
 	);
+	if (packResult.error || packResult.status !== 0) {
+		callback(packResult.error ?? new Error(`npm pack @vscode/openssl-prebuilt failed with exit code ${packResult.status}`));
+		return;
+	}
 
 	gulp.src('*.tgz', { cwd: dir })
 		.pipe(gunzip())

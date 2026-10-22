@@ -155,6 +155,9 @@ function calculatePackageDeps(binaryPath: string, arch: DebianArchString, chromi
 	// Refs https://github.com/microsoft/vscode/issues/188881.
 	// TODO(deepak1556): remove this workaround in favor of computing the
 	// versions from build container for native modules.
+	if (!depsStr) {
+		throw new Error(`dpkg-shlibdeps produced no 'shlibs:Depends=' line for ${binaryPath}. stdout:\n${dpkgShlibdepsResult.stdout}`);
+	}
 	const filteredDeps = depsStr.split(', ').filter(dependency => {
 		return !dependency.startsWith('libgcc-s1');
 	}).sort();
