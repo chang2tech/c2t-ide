@@ -310,6 +310,22 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 				'node_modules/zod/**'
 			], 'node_modules.asar'));
 
+		// Bundled OpenCode engine (engine-packaging-spec-v1.md §1/§6): staged
+		// by build/engine/stage-engine.sh into .build/engine-staged (CI step
+		// 'Stage engine'; ENGINE_STAGED_DIR overrides the location, e.g. for
+		// local runs). It MUST travel as its own stream, outside `deps`:
+		// `deps` is piped through createAsar into node_modules.asar, but the
+		// engine is spawned by the bundled bun runtime, which has no ASAR
+		// resolution hook, so its files must land as real files under
+		// resources/app/engine/. Fail closed when staging is missing, like
+		// the ensure* platform-package helpers above.
+		const engineStagedDir = process.env['ENGINE_STAGED_DIR'] ?? '.build/engine-staged';
+		if (!fs.existsSync(path.resolve(root, engineStagedDir, 'ENGINE-MANIFEST.json'))) {
+			throw new Error(`[packageTask] Bundled engine staging not found: '${engineStagedDir}/ENGINE-MANIFEST.json' is missing. Run the engine staging step first (CI: 'Stage engine'; local: bash build/engine/stage-engine.sh --src <ide-code checkout> --out .build/engine-staged --platform ${platform}-${arch}).`);
+		}
+		const engine = gulp.src(`${engineStagedDir}/**`, { base: engineStagedDir, dot: true })
+			.pipe(rename(function (p) { p.dirname = (!p.dirname || p.dirname === '.') ? 'engine' : `engine/${p.dirname}`; }));
+
 		const mergeStreams = [
 			packageJsonStream,
 			productJsonStream,
@@ -317,7 +333,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			api,
 			telemetry,
 			sources,
-			deps
+			deps,
+			engine
 		];
 		let all = es.merge(...mergeStreams);
 
@@ -564,13 +581,18 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
 
 	return async () => {
 		const versionedResourcesFolder = util.getVersionedResourcesFolder('win32', commit!);
+		// The bundled engine (resources/app/engine/**) is excluded from every
+		// glob below: its .node files and binaries are third-party payload
+		// shipped verbatim, and rcedit-stamping them can corrupt them or fail
+		// this task (engine-packaging-spec-v1.md §1, risk (ii)). '**/engine/**'
+		// matches at any depth, with or without a versioned resources folder.
 		const deps = (await Promise.all([
-			glob('**/*.node', { cwd, ignore: 'extensions/node_modules/@parcel/watcher/**' }),
-			glob('**/rg.exe', { cwd }),
-			glob('**/tgrep.exe', { cwd }),
-			glob('**/*explorer_command*.dll', { cwd }),
+			glob('**/*.node', { cwd, ignore: ['extensions/node_modules/@parcel/watcher/**', '**/engine/**'] }),
+			glob('**/rg.exe', { cwd, ignore: '**/engine/**' }),
+			glob('**/tgrep.exe', { cwd, ignore: '**/engine/**' }),
+			glob('**/*explorer_command*.dll', { cwd, ignore: '**/engine/**' }),
 			// TODO@anthonykim1 Remove once @github/copilot ships OneAuthInterop.dll with complete version information.
-			glob('**/OneAuthInterop.dll', { cwd }),
+			glob('**/OneAuthInterop.dll', { cwd, ignore: '**/engine/**' }),
 		])).flatMap(o => o);
 		const packageJson = JSON.parse(await fs.promises.readFile(path.join(cwd, versionedResourcesFolder, 'resources', 'app', 'package.json'), 'utf8'));
 		const product = JSON.parse(await fs.promises.readFile(path.join(cwd, versionedResourcesFolder, 'resources', 'app', 'product.json'), 'utf8'));

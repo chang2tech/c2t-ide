@@ -41,6 +41,17 @@ permissions:
 env:
   VSCODE_ARCH: x64
   NPM_ARCH: x64
+  # ENGINE_REF: full commit SHA of chang2tech/ide-code (the OpenCode engine
+  # source) that is staged and bundled into the installer as
+  # resources/app/engine/ (engine-packaging-spec-v1.md §6, phuong an A: the
+  # engine repo is public, so actions/checkout needs no extra secret).
+  # PLACEHOLDER on purpose: the SHA may only be pinned once lane A has
+  # landed the two engine prerequisites from spec §3 in the engine repo
+  # (relative Solid preload in the root bunfig.toml; @effect/platform-node
+  # moved into @opencode/core dependencies) — a SHA without them produces
+  # an engine closure that does not boot. Never put a branch or tag here:
+  # the pin must be a full 40-char commit SHA so builds are reproducible.
+  ENGINE_REF: 'b2d9f88258fc6fded77674880588bac61101b0fe'
 
 jobs:
   build-linux-x64:
@@ -51,6 +62,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-depth: 1
+
+      - name: Checkout engine source (chang2tech/ide-code @ ENGINE_REF)
+        uses: actions/checkout@v4
+        with:
+          repository: chang2tech/ide-code
+          ref: ${{ env.ENGINE_REF }}
+          path: .build/engine-src
           fetch-depth: 1
 
       - name: Setup Node.js
@@ -268,6 +287,12 @@ jobs:
 
 
 
+      - name: Stage engine (subset + bun 1.4.2)
+        shell: bash
+        run: |
+          set -e
+          bash build/engine/stage-engine.sh --src .build/engine-src --out .build/engine-staged --platform linux-x64 --engine-ref ${{ env.ENGINE_REF }}
+
       - name: Package Electron app (VSCode-linux-x64)
         shell: bash
         run: |
@@ -320,6 +345,18 @@ jobs:
           grep -q 'usr/share/ide-code/resources/app/' "$DEB_CONTENTS" || { echo "::error::$DEB is missing usr/share/ide-code/resources/app/" >&2; exit 1; }
           rm -f "$DEB_CONTENTS"
           echo "Verified: $DEB (Depends non-empty, payload present)"
+
+      - name: Verify engine payload in .deb
+        shell: bash
+        run: |
+          set -e
+          DEB=$(ls .build/linux/deb/amd64/deb/*.deb)
+          rm -rf .build/engine-verify
+          mkdir -p .build/engine-verify
+          dpkg-deb -x "$DEB" .build/engine-verify
+          # The script expects the app root: the directory that contains
+          # resources/app/engine/. Any failed assert fails the job.
+          bash build/engine/verify-engine-payload.sh .build/engine-verify/usr/share/ide-code
 
       - name: Build AppImage
         env:
@@ -429,6 +466,18 @@ jobs:
           Write-Host "Longest checkout path: $($longest.Length) chars (limit $limit, MAX_PATH 260)"
           Write-Host $longest
           if ($longest.Length -gt $limit) { throw "Path too long: $($longest.Length) > $limit - shorten the test/fixture name or move it shallower" }
+
+      # The engine checkout deliberately sits AFTER the MAX_PATH guard
+      # above: the guard recurses the whole workspace, and the engine
+      # tree's deep paths are not part of the IDE checkout it protects.
+      # It is still before every build/compile step of this job.
+      - name: Checkout engine source (chang2tech/ide-code @ ENGINE_REF)
+        uses: actions/checkout@v4
+        with:
+          repository: chang2tech/ide-code
+          ref: ${{ env.ENGINE_REF }}
+          path: .build/engine-src
+          fetch-depth: 1
 
       - name: Sanity check - Git Bash and Windows SDK
         shell: powershell
@@ -677,6 +726,12 @@ jobs:
           if (-not $sdk) { throw "signtool.exe not found in Windows SDK" }
           Add-Content -Path $env:GITHUB_PATH -Value $sdk
 
+      - name: Stage engine (subset + bun 1.4.2)
+        shell: bash
+        run: |
+          set -e
+          bash build/engine/stage-engine.sh --src .build/engine-src --out .build/engine-staged --platform win32-x64 --engine-ref ${{ env.ENGINE_REF }}
+
       - name: Package Electron app (VSCode-win32-x64)
         shell: bash
         run: |
@@ -712,6 +767,18 @@ jobs:
           ls -la .build/win32-x64/system-setup/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify engine payload in packaged tree
+        shell: bash
+        run: |
+          set -e
+          # The Inno installer recursively packages ../VSCode-win32-x64
+          # (build/win32/code.iss, Source: "*"), and this workflow has no
+          # Inno extractor, so verifying that packaged tree verifies the
+          # installer payload. The script expects the app root: the
+          # directory that contains resources/app/engine/. Any failed
+          # assert fails the job.
+          bash build/engine/verify-engine-payload.sh ../VSCode-win32-x64
 
       - name: Resolve package version
         id: ver
