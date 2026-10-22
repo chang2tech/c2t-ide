@@ -1760,12 +1760,12 @@ begin
 #endif
 end;
 
-; FIX-APPX-REMOVE (A3-P1-1): this #ifdef block no longer registers anything.
-; It only contains the lookup helper and RemoveAppxPackage, which exist to
-; clean up sparse-package registrations left behind by previous versions.
-; The AppxPackageName definition must therefore be kept in
-; build/gulpfile.vscode.win32.ts until that cleanup is no longer needed,
-; even though the package itself is no longer shipped (see [Files]).
+// FIX-APPX-REMOVE (A3-P1-1): this #ifdef block no longer registers anything.
+// It only contains the lookup helper and RemoveAppxPackage, which exist to
+// clean up sparse-package registrations left behind by previous versions.
+// The AppxPackageName definition must therefore be kept in
+// build/gulpfile.vscode.win32.ts until that cleanup is no longer needed,
+// even though the package itself is no longer shipped (see [Files]).
 #ifdef AppxPackageName
 var
   AppxPackageFullname: String;
@@ -1796,28 +1796,28 @@ begin
   Log('Get-AppxPackage result: name=' + name + ', installed=' + BoolToStr(Result) + ', resultCode=' + IntToStr(ResultCode) + ', packageFullName=' + AppxPackageFullname);
 end;
 
-; FIX-APPX-REMOVE (A3-P1-1): the registration procedure was deleted
-; entirely. The installer must never register the sparse package again: it
-; is unsigned and Windows rejects its registration deterministically
-; (CERT_E_UNTRUSTEDROOT, 0x800B0109). There is intentionally no remaining
-; package-registration cmdlet call anywhere in this file.
-; RemoveAppxPackage is kept ONLY to clean up registrations left behind by
-; previous versions (upgrade + uninstall). Unlike the previous version, a
-; failed removal is NOT swallowed by Log(): it is reported with an error
-; MsgBox in interactive sessions (silent/background sessions cannot show UI
-; and keep the detailed Log entry). Setup is not aborted: trapping the user
-; in a failed install/uninstall over removal of an optional Explorer
-; context-menu package would be worse than continuing with a visible error.
+// FIX-APPX-REMOVE (A3-P1-1): the registration procedure was deleted
+// entirely. The installer must never register the sparse package again: it
+// is unsigned and Windows rejects its registration deterministically
+// (CERT_E_UNTRUSTEDROOT, 0x800B0109). There is intentionally no remaining
+// package-registration cmdlet call anywhere in this file.
+// RemoveAppxPackage is kept ONLY to clean up registrations left behind by
+// previous versions (upgrade + uninstall). Unlike the previous version, a
+// failed removal is NOT swallowed by Log(): it is reported with an error
+// MsgBox in interactive sessions (silent/background sessions cannot show UI
+// and keep the detailed Log entry). Setup is not aborted: trapping the user
+// in a failed install/uninstall over removal of an optional Explorer
+// context-menu package would be worse than continuing with a visible error.
 
-; FIX-APPX-F1 (QA-F1): RemoveAppxPackage runs in two different Inno
-; contexts -- the installer (CurStepChanged) and the uninstaller
-; (CurUninstallStepChanged) -- and each context has its own silent-mode
-; query: WizardSilent() belongs to Setup, UninstallSilent() to the
-; uninstaller. Asking the Setup query from the uninstaller can raise (or
-; answer for the wrong program), and the try/except guarding the error
-; dialog in RemoveAppxPackage would swallow that, reducing an interactive
-; uninstall failure to a Log-only entry. Branch on IsUninstaller() first
-; so only the query that belongs to the running program is ever evaluated.
+// FIX-APPX-F1 (QA-F1): RemoveAppxPackage runs in two different Inno
+// contexts -- the installer (CurStepChanged) and the uninstaller
+// (CurUninstallStepChanged) -- and each context has its own silent-mode
+// query: WizardSilent() belongs to Setup, UninstallSilent() to the
+// uninstaller. Asking the Setup query from the uninstaller can raise (or
+// answer for the wrong program), and the try/except guarding the error
+// dialog in RemoveAppxPackage would swallow that, reducing an interactive
+// uninstall failure to a Log-only entry. Branch on IsUninstaller() first
+// so only the query that belongs to the running program is ever evaluated.
 function ShouldShowAppxRemoveError(): Boolean;
 begin
   if IsUninstaller() then

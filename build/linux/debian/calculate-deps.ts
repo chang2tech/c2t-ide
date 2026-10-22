@@ -4,22 +4,119 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { spawnSync } from 'child_process';
-import { constants, statSync } from 'fs';
+import { createHash } from 'crypto';
+import { constants, existsSync, readFileSync, statSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import manifests from '../../../cgmanifest.json' with { type: 'json' };
 import { additionalDeps } from './dep-lists.ts';
 import type { DebianArchString } from './types.ts';
 
+// Download hardening for dpkg-shlibdeps.pl (alpha.33; z3 §4 + lane-B
+// corrections DC-1..DC-5). The previous bare `curl` had no `--fail`, so it
+// exited 0 on an HTTP error page: a GitHub 429 page was written to disk and
+// handed to perl, which died with a misleading syntax error (the alpha.32
+// prepare-deb failure, 2/2 attempts). The download below therefore never
+// trusts curl's exit code alone (DC-5): it reads the real HTTP status and
+// Retry-After from the dumped headers on every attempt (DC-1), validates the
+// downloaded content (DC-2) and verifies a pinned SHA-256 (DC-3).
+const DPKG_SHLIBDEPS_SHA256 = '71b61bee790bf06797c901334f60b916c41f8346f9f8c333f9fa378d7e3b05bd';
+// ^ SHA-256 of dpkg-shlibdeps.pl at the Chromium pin in cgmanifest.json
+// (version 150.0.7871.250, commitHash f916f1b7136907af19d96b95b891533d091d932a;
+// hash verified from two independent sources by lane B). Update this pin
+// together with the cgmanifest Chromium registration.
+const DPKG_SHLIBDEPS_MIN_SIZE = 4096; // real script: 31,983 bytes; captured HTTP 429 page: 313 bytes
+const DOWNLOAD_MAX_ATTEMPTS = 5;
+const DOWNLOAD_BASE_BACKOFF_MS = [5000, 10000, 20000, 40000];
+const DOWNLOAD_BACKOFF_CAP_MS = 60000;
+
+const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms: number): void {
+	// Synchronous sleep: calculatePackageDeps and its callers are sync.
+	Atomics.wait(sleepBuffer, 0, 0, ms);
+}
+
+function parseHttpStatus(headers: string): number | undefined {
+	const match = headers.match(/^HTTP\/[\d.]+ (\d+)/m);
+	return match ? Number(match[1]) : undefined;
+}
+
+function parseRetryAfterMs(headers: string): number {
+	const match = headers.match(/^Retry-After:\s*(\d+)/im);
+	return match ? Number(match[1]) * 1000 : 0;
+}
+
+function readHeaderDump(headerFile: string): string {
+	return existsSync(headerFile) ? readFileSync(headerFile, 'utf8') : '';
+}
+
+// Returns a problem description, or undefined when the file is acceptable.
+function validateDpkgShlibdeps(scriptLocation: string): string | undefined {
+	const size = statSync(scriptLocation).size;
+	if (size < DPKG_SHLIBDEPS_MIN_SIZE) {
+		return `size ${size} below floor ${DPKG_SHLIBDEPS_MIN_SIZE}`;
+	}
+	const head = readFileSync(scriptLocation, 'utf8').slice(0, 512);
+	const firstLine = head.split('\n')[0];
+	if (!/^#!.*perl/.test(firstLine)) {
+		return `first line is not a perl shebang: ${JSON.stringify(firstLine.slice(0, 60))}`;
+	}
+	if (!head.includes('dpkg-shlibdeps')) {
+		return `head does not contain 'dpkg-shlibdeps'`;
+	}
+	const sha256 = createHash('sha256').update(readFileSync(scriptLocation)).digest('hex');
+	if (sha256 !== DPKG_SHLIBDEPS_SHA256) {
+		return `SHA-256 mismatch: expected ${DPKG_SHLIBDEPS_SHA256}, actual ${sha256}`;
+	}
+	return undefined;
+}
+
+function downloadDpkgShlibdeps(url: string, scriptLocation: string): void {
+	const headerFile = `${scriptLocation}.headers`;
+	let lastProblem = 'unknown';
+	for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+		const result = spawnSync('curl', ['--fail', '--silent', '--show-error', '-D', headerFile, url, '-o', scriptLocation]);
+		const headers = readHeaderDump(headerFile);
+		const status = parseHttpStatus(headers);
+		if (result.status === 0) {
+			const problem = validateDpkgShlibdeps(scriptLocation);
+			if (!problem) {
+				return;
+			}
+			lastProblem = `downloaded content from ${url} failed validation: ${problem}`;
+		} else {
+			// With --fail, an HTTP error (e.g. 429) makes curl exit non-zero;
+			// the status parsed from the header dump is the authoritative
+			// cause and is what the final error reports (DC-1/DC-5).
+			lastProblem = `HTTP ${status ?? '?'} from ${url} (curl exit ${result.status})`;
+		}
+		if (attempt < DOWNLOAD_MAX_ATTEMPTS) {
+			const retryAfterMs = parseRetryAfterMs(headers);
+			const wait = Math.min(DOWNLOAD_BACKOFF_CAP_MS, Math.max(DOWNLOAD_BASE_BACKOFF_MS[attempt - 1] ?? 40000, retryAfterMs));
+			sleepSync(wait);
+		}
+	}
+	throw new Error(`Cannot retrieve dpkg-shlibdeps after ${DOWNLOAD_MAX_ATTEMPTS} attempts: ${lastProblem}`);
+}
+
 export function generatePackageDeps(files: string[], arch: DebianArchString, chromiumSysroot: string, vscodeSysroot: string): Set<string>[] {
-	const dependencies: Set<string>[] = files.map(file => calculatePackageDeps(file, arch, chromiumSysroot, vscodeSysroot));
+	// DC-4: download and validate dpkg-shlibdeps.pl exactly once here (the
+	// only caller chain is dependencies-generator.ts -> generatePackageDeps)
+	// and pass the path down, instead of re-downloading it for every binary.
+	const chromiumManifest = manifests.registrations.filter(registration => {
+		return registration.component.type === 'git' && registration.component.git!.name === 'chromium';
+	});
+	const dpkgShlibdepsUrl = `https://raw.githubusercontent.com/chromium/chromium/${chromiumManifest[0].version}/third_party/dpkg-shlibdeps/dpkg-shlibdeps.pl`;
+	const dpkgShlibdepsScriptLocation = `${tmpdir()}/dpkg-shlibdeps.pl`;
+	downloadDpkgShlibdeps(dpkgShlibdepsUrl, dpkgShlibdepsScriptLocation);
+	const dependencies: Set<string>[] = files.map(file => calculatePackageDeps(file, arch, chromiumSysroot, vscodeSysroot, dpkgShlibdepsScriptLocation));
 	const additionalDepsSet = new Set(additionalDeps);
 	dependencies.push(additionalDepsSet);
 	return dependencies;
 }
 
 // Based on https://source.chromium.org/chromium/chromium/src/+/main:chrome/installer/linux/debian/calculate_package_deps.py.
-function calculatePackageDeps(binaryPath: string, arch: DebianArchString, chromiumSysroot: string, vscodeSysroot: string): Set<string> {
+function calculatePackageDeps(binaryPath: string, arch: DebianArchString, chromiumSysroot: string, vscodeSysroot: string, dpkgShlibdepsScriptLocation: string): Set<string> {
 	try {
 		if (!(statSync(binaryPath).mode & constants.S_IXUSR)) {
 			throw new Error(`Binary ${binaryPath} needs to have an executable bit set.`);
@@ -37,16 +134,8 @@ function calculatePackageDeps(binaryPath: string, arch: DebianArchString, chromi
 		return new Set<string>();
 	}
 
-	// Get the Chromium dpkg-shlibdeps file.
-	const chromiumManifest = manifests.registrations.filter(registration => {
-		return registration.component.type === 'git' && registration.component.git!.name === 'chromium';
-	});
-	const dpkgShlibdepsUrl = `https://raw.githubusercontent.com/chromium/chromium/${chromiumManifest[0].version}/third_party/dpkg-shlibdeps/dpkg-shlibdeps.pl`;
-	const dpkgShlibdepsScriptLocation = `${tmpdir()}/dpkg-shlibdeps.pl`;
-	const result = spawnSync('curl', [dpkgShlibdepsUrl, '-o', dpkgShlibdepsScriptLocation]);
-	if (result.status !== 0) {
-		throw new Error('Cannot retrieve dpkg-shlibdeps. Stderr:\n' + result.stderr);
-	}
+	// dpkg-shlibdeps.pl was downloaded and validated once by
+	// generatePackageDeps (DC-4) and is only consumed here.
 	const cmd = [dpkgShlibdepsScriptLocation, '--ignore-weak-undefined', '--ignore-missing-info'];
 	switch (arch) {
 		case 'amd64':

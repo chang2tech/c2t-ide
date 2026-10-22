@@ -149,13 +149,87 @@ export async function getVSCodeSysroot(arch: DebianArchString, isMusl: boolean =
 	return result;
 }
 
+// Download hardening for sysroots.json (alpha.33; z3 §4 item 5, same class
+// as the dpkg-shlibdeps.pl fix in calculate-deps.ts). The previous bare
+// `curl` had no `--fail`, so it exited 0 on an HTTP error page and a 429
+// page would only surface later as a misleading JSON.parse error. The
+// download below never trusts curl's exit code alone: it reads the real
+// HTTP status and Retry-After from the dumped headers on every attempt
+// (outer retry loop, max 5 attempts, Retry-After wins over the base
+// backoff) and validates the content before the caller parses it.
+//
+// Magic-check decision for the JSON dict: the 4,096-byte floor used for
+// the perl script is NOT applied here — the real size of sysroots.json is
+// not pinned in evidence and a hard floor could reject a valid dict.
+// Instead the structural equivalent is used: the content must be a JSON
+// object (first non-whitespace character '{', parses as JSON, top level
+// is a non-null object). No SHA-256 pin is applied because no verified
+// hash for sysroots.json exists in evidence (unlike dpkg-shlibdeps.pl).
+const SYSROOT_DICT_MAX_ATTEMPTS = 5;
+const SYSROOT_DICT_BASE_BACKOFF_MS = [5000, 10000, 20000, 40000];
+const SYSROOT_DICT_BACKOFF_CAP_MS = 60000;
+
+const sleepBuffer = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms: number): void {
+	Atomics.wait(sleepBuffer, 0, 0, ms);
+}
+
+function parseHttpStatus(headers: string): number | undefined {
+	const match = headers.match(/^HTTP\/[\d.]+ (\d+)/m);
+	return match ? Number(match[1]) : undefined;
+}
+
+function parseRetryAfterMs(headers: string): number {
+	const match = headers.match(/^Retry-After:\s*(\d+)/im);
+	return match ? Number(match[1]) * 1000 : 0;
+}
+
+// Returns a problem description, or undefined when the file is acceptable.
+function validateSysrootsDict(dictLocation: string): string | undefined {
+	const content = fs.readFileSync(dictLocation, 'utf8');
+	if (!content.trimStart().startsWith('{')) {
+		return `content does not start with '{' (first bytes: ${JSON.stringify(content.slice(0, 60))})`;
+	}
+	try {
+		const parsed = JSON.parse(content);
+		if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+			return 'top-level JSON value is not an object';
+		}
+	} catch (e) {
+		return `content is not valid JSON: ${e instanceof Error ? e.message : String(e)}`;
+	}
+	return undefined;
+}
+
+function downloadSysrootsDict(url: string, dictLocation: string): void {
+	const headerFile = `${dictLocation}.headers`;
+	let lastProblem = 'unknown';
+	for (let attempt = 1; attempt <= SYSROOT_DICT_MAX_ATTEMPTS; attempt++) {
+		const result = spawnSync('curl', ['--fail', '--silent', '--show-error', '-D', headerFile, url, '-o', dictLocation]);
+		const headers = fs.existsSync(headerFile) ? fs.readFileSync(headerFile, 'utf8') : '';
+		const status = parseHttpStatus(headers);
+		if (result.status === 0) {
+			const problem = validateSysrootsDict(dictLocation);
+			if (!problem) {
+				return;
+			}
+			lastProblem = `downloaded content from ${url} failed magic check: ${problem}`;
+		} else {
+			lastProblem = `HTTP ${status ?? '?'} from ${url} (curl exit ${result.status})`;
+		}
+		if (attempt < SYSROOT_DICT_MAX_ATTEMPTS) {
+			const retryAfterMs = parseRetryAfterMs(headers);
+			const wait = Math.min(SYSROOT_DICT_BACKOFF_CAP_MS, Math.max(SYSROOT_DICT_BASE_BACKOFF_MS[attempt - 1] ?? 40000, retryAfterMs));
+			sleepSync(wait);
+		}
+	}
+	throw new Error(`Cannot retrieve sysroots.json after ${SYSROOT_DICT_MAX_ATTEMPTS} attempts: ${lastProblem}`);
+}
+
 export async function getChromiumSysroot(arch: DebianArchString): Promise<string> {
 	const sysrootJSONUrl = `https://raw.githubusercontent.com/electron/electron/v${getElectronVersion().electronVersion}/script/sysroots.json`;
 	const sysrootDictLocation = `${tmpdir()}/sysroots.json`;
-	const result = spawnSync('curl', [sysrootJSONUrl, '-o', sysrootDictLocation]);
-	if (result.status !== 0) {
-		throw new Error('Cannot retrieve sysroots.json. Stderr:\n' + result.stderr);
-	}
+	downloadSysrootsDict(sysrootJSONUrl, sysrootDictLocation);
 	const sysrootInfo = JSON.parse(fs.readFileSync(sysrootDictLocation, 'utf8'));
 	const sysrootArch = `bullseye_${arch}`;
 	const sysrootDict: SysrootDictEntry = sysrootInfo[sysrootArch];
