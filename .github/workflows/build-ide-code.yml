@@ -298,12 +298,16 @@ jobs:
           # file exists. Parse the .deb with dpkg-deb and require a non-empty
           # Depends plus the real payload inside the archive. `set -e` above
           # makes any failing check fail the whole step (red build).
-          DEB_COUNT=$(ls .build/linux/deb/amd64/deb/*.deb | wc -l)
+          shopt -s nullglob
+          DEB_FILES=(.build/linux/deb/amd64/deb/*.deb)
+          DEB_COUNT=${#DEB_FILES[@]}
           [ "$DEB_COUNT" -eq 1 ] || { echo "::error::expected exactly 1 .deb, found $DEB_COUNT" >&2; exit 1; }
-          DEB=$(ls .build/linux/deb/amd64/deb/*.deb)
+          DEB="${DEB_FILES[0]}"
+          shopt -u nullglob
           echo "Verifying $DEB"
           dpkg-deb --info "$DEB"
-          [ -n "$(dpkg-deb -f "$DEB" Depends)" ] || { echo "::error::$DEB has an empty Depends field" >&2; exit 1; }
+          DEB_DEPENDS=$(dpkg-deb -f "$DEB" Depends) || { echo "::error::dpkg-deb -f failed on $DEB (corrupt archive or unreadable control section)" >&2; exit 1; }
+          [ -n "$DEB_DEPENDS" ] || { echo "::error::$DEB has an empty Depends field" >&2; exit 1; }
           # List the contents to a file first, then grep the file. Piping
           # dpkg-deb straight into `grep -q` false-fails under this step's
           # `bash -eo pipefail`: grep exits on the first (early) match, the
