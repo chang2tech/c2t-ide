@@ -726,6 +726,14 @@ jobs:
           if (-not $sdk) { throw "signtool.exe not found in Windows SDK" }
           Add-Content -Path $env:GITHUB_PATH -Value $sdk
 
+      - name: Probe runner tools (diagnostic, G0 condition)
+        shell: bash
+        continue-on-error: true
+        run: |
+          command -v python3 unzip sha256sum tar rsync bun || true
+          tar --version || true
+          python3 --version || true
+
       - name: Stage engine (subset + bun 1.4.2)
         shell: bash
         run: |

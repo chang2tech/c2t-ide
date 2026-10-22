@@ -19,12 +19,18 @@
 #                   --platform <linux-x64|win32-x64|darwin-x64|darwin-arm64> \
 #                   [--engine-ref <sha>] [--skip-install]
 #
-# Yêu cầu môi trường: bash, rsync, python3, curl, unzip, sha256sum, và `bun` trên PATH
-# (đúng 1.4.2; dùng để cài production — binary bun ĐI KÈM installer được fetch riêng bởi fetch-bun.sh).
-# Biến môi trường tuỳ chọn: BUN_BIN (đường dẫn bun dùng cho install, mặc định "bun").
+# Yêu cầu môi trường: bash, tar, python3, curl, unzip, sha256sum (KHÔNG cần rsync —
+# copy closure dùng tar-pipe portable, vòng BUILD-VERIFY-30). `bun` trên PATH KHÔNG
+# còn bắt buộc: nếu BUN_BIN chưa đặt, script tự tải bun đúng 1.4.2 cho HOST qua chính
+# fetch-bun.sh (verify checksum 2 lớp) trước khi cài production ở mục [c]; binary bun
+# ĐI KÈM installer vẫn được fetch riêng ở mục [d] như cũ.
+# Biến môi trường tuỳ chọn: BUN_BIN (đường dẫn bun dùng cho install; caller đặt sẵn
+# thì giữ nguyên hợp đồng cũ — không thấy binary là thoát 2; để trống thì tự bootstrap).
+# Thư mục chứa binary bun được prepend vào PATH CHỈ cho invocation install ở [c]:
+# postinstall của engine gọi `bun` theo tên qua PATH (xem chi tiết tại [c]).
 #
 # Mã thoát: 0 ok | 2 tham số/môi trường | 10 thiếu entry bắt buộc | 11 thiếu sửa tiên quyết §3.2 (cổng cứng)
-#           | 12 bun install lỗi | 13 fetch-bun lỗi
+#           | 12 bun install lỗi | 13 fetch-bun lỗi (gồm lỗi bootstrap bun cho host ở [c] khi BUN_BIN chưa đặt)
 #           | 14 thiếu file preload @opentui/solid trong cây staging sau cài production (cổng cứng N1)
 
 set -euo pipefail
@@ -35,8 +41,14 @@ BUN_VERSION="1.4.2"
 # Closure production tối thiểu từ @opencode/cli — đúng 17 package (spec §2, W1 vòng 7 kiểm lại từ package.json thật).
 CLOSURE_PKGS=(ai cli client codemode core latex merman plugin plugin-browser protocol schema server simulation theme tui ui util)
 
-# Mẫu loại trừ khi copy source (nguyên văn báo cáo W1 vòng 7 §2 — loại test/fixtures/docs):
-RSYNC_EXCLUDES=(
+# Mẫu loại trừ khi copy source (nguyên văn báo cáo W1 vòng 7 §2 — loại test/fixtures/docs).
+# Dạng pattern cho GNU tar: giữ NGUYÊN tên/glob trần như bản rsync cũ (không tiền tố '*/').
+# Semantics đã CHỨNG MINH bằng fixture (vòng BUILD-VERIFY-30, hồ sơ engine-impl-prep/
+# w30-runner-fix/fixture/): GNU tar khớp pattern không chứa '/' theo từng thành phần
+# đường dẫn ở MỌI cấp (kể cả khi thành phần đó là FILE thường) và '*' trong '*.test.ts'
+# bắc qua '/' nên glob cũng ăn ở mọi cấp — cây đích của tar-pipe khớp TUYỆT ĐỐI với
+# rsync -a (snapshot type/mode/path/symlink + sha256 mọi file) trên cây fixture đủ mẫu.
+TAR_EXCLUDES=(
   --exclude='node_modules' --exclude='test' --exclude='tests' --exclude='__tests__'
   --exclude='fixtures' --exclude='fixture' --exclude='docs'
   --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude='*.spec.tsx'
@@ -58,12 +70,50 @@ case "$PLATFORM" in
   linux-x64|win32-x64|darwin-x64|darwin-arm64) ;;
   *) echo "stage-engine: platform không hỗ trợ: $PLATFORM" >&2; exit 2 ;;
 esac
-for tool in rsync python3 curl unzip sha256sum; do
+for tool in tar python3 curl unzip sha256sum; do
   command -v "$tool" >/dev/null || { echo "stage-engine: thiếu công cụ: $tool" >&2; exit 2; }
 done
 [ -d "$SRC" ] || { echo "stage-engine: --src không tồn tại: $SRC" >&2; exit 2; }
 SRC="$(cd "$SRC" && pwd)"
-BUN_BIN="${BUN_BIN:-bun}"
+# BUN_BIN: caller đặt sẵn (khác rỗng) -> giữ nguyên hợp đồng cũ ở mục [c] (không thấy
+# binary = exit 2). Chưa đặt -> để trống tại đây; mục [c] tự bootstrap bun cho host
+# qua fetch-bun.sh, và CHỈ khi thật sự cài (SKIP_INSTALL=1 thì không bootstrap).
+BUN_BIN="${BUN_BIN:-}"
+
+# Bootstrap bun cho HOST khi BUN_BIN chưa được caller đặt (vòng BUILD-VERIFY-30):
+# runner GitHub-hosted không có bun trên PATH (run tag alpha.36 chết exit 2 tại [c]).
+# Platform suy từ uname của HOST — không phải platform đích --platform: binary này
+# chỉ để CHẠY bun install ngay trên host; payload đi kèm installer ở mục [d] không đổi.
+# Tải qua fetch-bun.sh (verify checksum 2 lớp như payload) -> lỗi tải = exit 13,
+# cùng lớp lỗi fetch-bun ở mục [d]. Host ngoài bảng -> exit 2 kèm thông điệp rõ.
+BOOTSTRAP_DIR=""
+cleanup_bootstrap() { if [ -n "$BOOTSTRAP_DIR" ]; then rm -rf "$BOOTSTRAP_DIR"; fi; }
+trap cleanup_bootstrap EXIT
+bootstrap_bun() {
+  local host_platform="" bin_name="bun"
+  case "$(uname -s)" in
+    Linux)
+      if [ "$(uname -m)" = "x86_64" ]; then host_platform="linux-x64"; fi ;;
+    Darwin)
+      case "$(uname -m)" in
+        x86_64) host_platform="darwin-x64" ;;
+        arm64)  host_platform="darwin-arm64" ;;
+      esac ;;
+    MINGW*|MSYS*|CYGWIN*)
+      host_platform="win32-x64"; bin_name="bun.exe" ;;
+  esac
+  if [ -z "$host_platform" ]; then
+    echo "stage-engine: không xác định được platform của host để bootstrap bun (uname -s=$(uname -s), uname -m=$(uname -m)) — hãy đặt BUN_BIN thủ công" >&2
+    exit 2
+  fi
+  BOOTSTRAP_DIR="$(mktemp -d)"
+  echo "   BUN_BIN chưa đặt — bootstrap bun $BUN_VERSION cho host ($host_platform) qua fetch-bun.sh"
+  "$SCRIPT_DIR/fetch-bun.sh" --platform "$host_platform" --out "$BOOTSTRAP_DIR/bin" \
+    || { echo "stage-engine: bootstrap bun qua fetch-bun LỖI" >&2; exit 13; }
+  BUN_BIN="$BOOTSTRAP_DIR/bin/$bin_name"
+  [ -f "$BUN_BIN" ] || { echo "stage-engine: fetch-bun xong nhưng không thấy binary bootstrap: $BUN_BIN" >&2; exit 13; }
+  echo "   BUN_BIN (bootstrap cho host) = $BUN_BIN"
+}
 
 fail_prereq() {
   echo "stage-engine: ENGINE_REF chưa chứa sửa tiên quyết §3 — $1" >&2
@@ -109,6 +159,18 @@ then
 fi
 echo "   sửa §3.2 (@effect/platform-node trong dependencies của @opencode/core): OK"
 
+# Copy nội dung 1 thư mục bằng tar-pipe portable (thay rsync -a, vòng BUILD-VERIFY-30:
+# Git Bash trên Windows runner không có rsync — run tag alpha.36 chết exit 2 ở tiền kiểm).
+# Giữ symlink (tar tạo archive không dereference) + giữ quyền (extract -p).
+# --no-same-owner: bỏ khôi phục owner — cây đích thuộc user chạy extract, đúng như
+# rsync -a của user thường trên runner; dạng trần -xpf đã có bằng chứng chết exit 2
+# trên host có filesystem không cho chown về owner nguồn (fixture tar-xpf-plain-failure.log).
+# Lỗi ở bất kỳ vế nào của pipeline đều dừng script (pipefail), như khi rsync lỗi trước đây.
+copy_tree_tar() {
+  local src_dir="$1" dst_dir="$2"; shift 2
+  ( cd "$src_dir" && tar -cf - "$@" . ) | ( mkdir -p "$dst_dir" && tar -xpf - --no-same-owner -C "$dst_dir" )
+}
+
 # ============ b. COPY CLOSURE ============
 echo "== [b] Copy closure 17 package -> $OUT"
 if [ -e "$OUT" ] && [ -n "$(ls -A "$OUT" 2>/dev/null)" ]; then
@@ -117,11 +179,11 @@ fi
 mkdir -p "$OUT/packages"
 for pkg in "${CLOSURE_PKGS[@]}"; do
   [ -d "$SRC/packages/$pkg" ] || { echo "stage-engine: THIẾU package closure: packages/$pkg" >&2; exit 10; }
-  rsync -a "${RSYNC_EXCLUDES[@]}" "$SRC/packages/$pkg/" "$OUT/packages/$pkg/"
+  copy_tree_tar "$SRC/packages/$pkg" "$OUT/packages/$pkg" "${TAR_EXCLUDES[@]}"
 done
 # File gốc đi kèm (W1 vòng 7 §2): patches/ (cho patchedDependencies), bunfig.toml gốc, tsconfig.json gốc.
 # KHÔNG copy bun.lock gốc (chứa toàn monorepo) — bun resolve tươi cho subset, đúng phương pháp W1.
-rsync -a --exclude='node_modules' "$SRC/patches/" "$OUT/patches/"
+copy_tree_tar "$SRC/patches" "$OUT/patches" --exclude='node_modules'
 cp "$SRC/bunfig.toml" "$OUT/bunfig.toml"
 cp "$SRC/tsconfig.json" "$OUT/tsconfig.json"
 # Điều kiện C-2/S1: chép LICENSE gốc của engine vào GỐC cây staging (đích cuối:
@@ -168,10 +230,29 @@ if [ "$SKIP_INSTALL" = "1" ]; then
   echo "== [c] BỎ QUA cài production (--skip-install) — cây staging CHƯA chạy được, chỉ để soi cấu trúc"
 else
   echo "== [c] Cài production cô lập (bun install --production) trong cây staging"
-  command -v "$BUN_BIN" >/dev/null || { echo "stage-engine: không thấy bun trên PATH (BUN_BIN=$BUN_BIN)" >&2; exit 2; }
+  if [ -n "$BUN_BIN" ]; then
+    # Caller đặt sẵn BUN_BIN: giữ nguyên hợp đồng cũ — không thấy binary = exit 2.
+    command -v "$BUN_BIN" >/dev/null || { echo "stage-engine: không thấy bun trên PATH (BUN_BIN=$BUN_BIN)" >&2; exit 2; }
+  else
+    # BUN_BIN chưa đặt: tự bootstrap bun cho host qua fetch-bun.sh (runner không có bun sẵn).
+    bootstrap_bun
+  fi
   HOST_BUN_VERSION="$("$BUN_BIN" --version)"
   [ "$HOST_BUN_VERSION" = "$BUN_VERSION" ] || echo "   LƯU Ý: bun dùng để install = $HOST_BUN_VERSION, kỳ vọng $BUN_VERSION (số đo vòng 7 dùng đúng $BUN_VERSION)"
-  ( cd "$OUT" && "$BUN_BIN" install --production ) || { echo "stage-engine: bun install --production LỖI" >&2; exit 12; }
+  # Suy ra thư mục chứa binary bun THẬT để prepend vào PATH cho lượt install:
+  # postinstall của engine gọi `bun` theo tên qua PATH (package.json gốc:
+  # "bun run --cwd packages/core fix-node-pty", và fix-node-pty tự nó là
+  # "bun run script/fix-node-pty.ts") — chỉ trỏ BUN_BIN tuyệt đối cho lệnh
+  # install là KHÔNG đủ, tiến trình con vẫn 127 khi PATH không có bun
+  # (bằng chứng rehearsal vòng 30, STAGE_EXIT=12). Prepend CHỈ áp cho
+  # invocation install dưới đây (env truyền xuống mọi tiến trình con gồm
+  # postinstall); PATH toàn cục của script và các cổng khác không đổi.
+  case "$BUN_BIN" in
+    */*) BUN_DIR="$(dirname "$BUN_BIN")" ;;
+    *)   BUN_DIR="$(dirname "$(command -v "$BUN_BIN")")" ;;
+  esac
+  echo "   PATH cho lượt install: prepend $BUN_DIR (thư mục chứa bun) để postinstall resolve được 'bun' theo tên qua PATH"
+  ( cd "$OUT" && PATH="$BUN_DIR:$PATH" "$BUN_BIN" install --production ) || { echo "stage-engine: bun install --production LỖI" >&2; exit 12; }
 
   # Prune biến thể native của platform KHÁC: bun install (isolated linker) nạp MỌI biến thể
   # platform vào kho node_modules/.bun (W1 vòng 7 §3: cả glibc+musl, mọi OS/arch — ~23MB+ trọng lượng chết).
