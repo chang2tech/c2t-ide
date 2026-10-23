@@ -327,13 +327,16 @@ echo "  spawn argv: $BIN_PATH serve --port $PORT --hostname 127.0.0.1 (PATH prep
 
 (
   cd "$WORK_DIR/cwd" || exit 99
+  # Git Bash (Git for Windows) khong co setsid (util-linux) -> spawn truc tiep nen.
+  # $! + trap cleanup_server van hoat dong; kill theo group (-PID) chi co tren host POSIX that.
+  if command -v setsid >/dev/null 2>&1; then _SPAWN=setsid; else _SPAWN=; fi
   HOME="$WORK_DIR/home" \
   XDG_DATA_HOME="$WORK_DIR/home/.local/share" \
   XDG_CONFIG_HOME="$WORK_DIR/home/.config" \
   XDG_CACHE_HOME="$WORK_DIR/home/.cache" \
   OPENCODE_PASSWORD="$TEST_PASSWORD" \
   PATH="$ENGINE_DIR:$PATH" \
-  setsid "$BIN_PATH" serve --port "$PORT" --hostname 127.0.0.1 >"$ENGINE_LOG" 2>&1 &
+  ${_SPAWN} "$BIN_PATH" serve --port "$PORT" --hostname 127.0.0.1 >"$ENGINE_LOG" 2>&1 &
   echo $! >"$WORK_DIR/server.pid"
 )
 sleep 1
