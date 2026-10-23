@@ -15,7 +15,8 @@
 #                             đích nhúng trong binary — cổng [e] kiểm TRƯỚC)
 #   rg | rg.exe               ripgrep 15.1.0 file thật từ release chính thức,
 #                             sha256 ghim 2 lớp (archive + binary, xem [b2])
-#   LICENSE                   LICENSE gốc của engine (chép nguyên byte)
+#   LICENSE                   LICENSE gốc của engine (chuẩn hoá LF khi
+#                             staging — F-E1; no-op nếu đầu vào đã LF)
 #   ENGINE-VERSION.json       bản tương thích (version/engineRef/bunVersion…)
 #   ENGINE-MANIFEST.json      schema MỚI binary-v1 (xem mục [g] + w3 §3)
 #
@@ -292,7 +293,16 @@ fi
 mkdir -p "$OUT"
 safe_place "$COMPILED_BIN" "$OUT/$BIN_NAME"
 safe_place "$RG_STAGED" "$OUT/$RG_NAME"
-cp "$SRC/LICENSE" "$OUT/LICENSE"
+# F-E1 (AI-31 FAIL): checkout engine trên runner Windows theo autocrlf
+# biến LICENSE thành CRLF (1.086 B, sha b5c625d1…bbdd) — lệch canonical
+# LF (1.065 B, sha 625f0f61…cb6b) mà F-E1 nghiệm thu. Chuẩn hoá LF ngay
+# tại staging, MỌI platform: strip mọi CR khi ghi LICENSE (ghi qua file
+# tạm cùng thư mục rồi mv, đúng kỷ luật safe_place). Phép này IDEMPOTENT:
+# đầu vào đã LF thì là no-op byte-exact (linux alpha.40 staging vốn LF —
+# đối chứng D6-3 PASS; B4 của AI-32 kiểm đúng tính chất này).
+tr -d '\r' < "$SRC/LICENSE" > "$OUT/.LICENSE.tmp-cb3-$$"
+mv -f "$OUT/.LICENSE.tmp-cb3-$$" "$OUT/LICENSE"
+echo "   LICENSE: đã chuẩn hoá LF (strip CR) -> $(stat -c %s "$OUT/LICENSE") byte, sha256 $(sha256sum "$OUT/LICENSE" | awk '{print $1}')"
 if [ "$PLATFORM" = "linux-x64" ]; then chmod +x "$OUT/$BIN_NAME" "$OUT/$RG_NAME"; fi
 STAGED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 python3 - "$OUT/ENGINE-VERSION.json" "$ENGINE_VERSION" "${ENGINE_REF:-}" "$BUN_VERSION" "$PLATFORM" "$STAGED_AT" <<'PYEOF'

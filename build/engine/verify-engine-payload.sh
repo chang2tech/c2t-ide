@@ -78,6 +78,13 @@
 
 set -u
 
+# CI Windows: stdout của runner là cp1252 — các heredoc python3 bên dưới in
+# chữ Việt (ớ U+1EDB, đ, …). Ép stdio của python sang UTF-8 để không
+# UnicodeEncodeError (run alpha.40 Windows từng đỏ ở gate (b) vì ký tự này).
+# PYTHONIOENCODING chỉ đổi stdio, không đổi fs encoding — an toàn cho mọi
+# heredoc hiện tại và sau này trong file này.
+export PYTHONIOENCODING=utf-8
+
 EXIT_USAGE=2
 EXIT_PAYLOAD=11
 EXIT_FORMAT=12
