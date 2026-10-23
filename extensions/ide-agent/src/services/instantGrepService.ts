@@ -58,9 +58,10 @@ interface EngineCliInvocation {
 function engineCliInvocation(): EngineCliInvocation | undefined {
   const cfg = vscode.workspace.getConfiguration("ide.agent");
   const resolved = resolveEnginePath(cfg.get<string>("enginePath", ""));
-  if (!resolved.enginePath || resolved.source === "none") {
-    // "none" = broken bundled engine: degrade to [] like every other
-    // unavailable-engine case (the adapter surfaces the diagnostic).
+  if (!resolved.enginePath || resolved.source === "none" || resolved.layout === "binary") {
+    // "none" = broken bundled engine; "binary" = compiled engine (the
+    // indexing CLI source file does not exist in that layout). Both
+    // degrade to [] like every other unavailable-engine case.
     return undefined;
   }
   return {

@@ -1140,15 +1140,18 @@ export class InlineEditService implements vscode.Disposable {
       return undefined;
     }
     const output = vscode.window.createOutputChannel("IDE Agent Inline Edit");
+    // ENGINE PACKAGING (D2): the one resolver — see services/enginePath.ts.
     const resolvedEngine = resolveEnginePath(cfg.get<string>("enginePath", ""));
+    const enginePath = resolvedEngine.enginePath;
     const adapter = new IdeCodeEngineAdapter({
-      enginePath: resolvedEngine.enginePath,
+      enginePath,
       bunPath: resolveBunPath(resolvedEngine, undefined, (candidate) =>
         output.appendLine(
           `[ide-agent] bundled bun missing at ${candidate}; falling back to bun on PATH`,
         ),
       ),
       engineSource: resolvedEngine.source,
+      engineLayout: resolvedEngine.layout,
       engineCwd: resolveEngineCwd(resolvedEngine, this.context.globalStorageUri.fsPath),
       enginePathDiagnostic: resolvedEngine.bundledBroken
         ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)

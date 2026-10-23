@@ -2552,7 +2552,7 @@ export function activate(context: vscode.ExtensionContext): { cursor: CursorApi 
       // KeyY) weight 410, no when-clause — i.e. focus the follow-up
       // input of the active chat). DEV-GAPS-81: the core binding now
       // matches the binary verbatim (weight 410, no when, mac chord —
-      // see `newFollowupKeybindingWeight` in composerActions.ts; at 410
+      // see `newFollowupKeybindingWeight` in composerActionsBase.ts; at 410
       // with no when it outranks editor Redo's CtrlCmd+KeyY at
       // EditorCore weight, exactly Cursor's resolution).
       // This command previously fell into the
@@ -3897,6 +3897,7 @@ export function activate(context: vscode.ExtensionContext): { cursor: CursorApi 
         return;
       }
       const output = vscode.window.createOutputChannel("IDE Agent Chat Participant");
+      // ENGINE PACKAGING (D2): the one resolver — see services/enginePath.ts.
       const resolvedEngine = resolveEnginePath(engineCfg.get<string>("enginePath", ""));
       const adapter = new IdeCodeEngineAdapter({
         enginePath: resolvedEngine.enginePath,
@@ -3906,6 +3907,7 @@ export function activate(context: vscode.ExtensionContext): { cursor: CursorApi 
           ),
         ),
         engineSource: resolvedEngine.source,
+        engineLayout: resolvedEngine.layout,
         engineCwd: resolveEngineCwd(resolvedEngine, context.globalStorageUri.fsPath),
         enginePathDiagnostic: resolvedEngine.bundledBroken
           ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)

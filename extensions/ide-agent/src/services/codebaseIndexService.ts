@@ -58,9 +58,12 @@ interface EngineCliInvocation {
 function engineCliInvocation(): EngineCliInvocation | undefined {
   const cfg = vscode.workspace.getConfiguration("ide.agent");
   const resolved = resolveEnginePath(cfg.get<string>("enginePath", ""));
-  if (!resolved.enginePath || resolved.source === "none") {
+  if (!resolved.enginePath || resolved.source === "none" || resolved.layout === "binary") {
     // "none" = broken bundled engine: degrade to [] like every other
     // unavailable-engine case (the adapter surfaces the diagnostic).
+    // "binary" = compiled engine: the one-shot indexing CLI is a source
+    // file that does not exist in the binary layout — the serve engine
+    // still indexes/searches internally; this bridge degrades to [].
     return undefined;
   }
   // Slim one-shot indexing CLI (see module docstring): avoids the ~5s

@@ -7,7 +7,13 @@ import * as net from "net";
 import * as os from "os";
 import * as path from "path";
 import { EngineAdapter, EngineModelInfo, ModelRef, TurnContext } from "./agentService";
-import { bundledServePreloadPath } from "./enginePath";
+import {
+  BUNDLED_RIPGREP_FILE,
+  bundledBinaryPath,
+  bundledServePreloadPath,
+  type EngineLayout,
+  type EnginePathSource,
+} from "./enginePath";
 import { contextTokenLimitFromEngineModel } from "./modelService";
 import { ApprovalResult, ApprovalDetails } from "./humanReviewService";
 import { TERMINAL_ACTIONS } from "./permissionsFileService";
@@ -73,6 +79,9 @@ import {
  * translates its HTTP/SSE wire protocol into TurnEvents for the chat UI:
  *
  *   spawn:  bun <enginePath>/packages/cli/src/index.ts serve --port <free> --hostname 127.0.0.1
+ *           (binary-layout bundled engine, compile path B:
+ *            <enginePath>/opencode[.exe] serve --port <free> --hostname 127.0.0.1
+ *            spawned directly — no bun, no --preload; see startServer)
  *   wire:   POST /api/session            → create/reuse session
  *           POST /api/session/:id/prompt → send user turn { text }
  *           GET  /api/event              → SSE stream of session/message/permission events
@@ -164,12 +173,20 @@ export interface IdeCodeEngineOptions {
    * first, `bun` on PATH as fallback). Default: "bun" (PATH lookup).
    */
   bunPath?: string;
-  /** ENGINE PACKAGING: where enginePath came from (diagnostics + cwd branch). */
-  engineSource?: "setting" | "bundled" | "dev" | "none";
+  /** ENGINE PACKAGING: where enginePath came from (diagnostics + cwd/preload branches). */
+  engineSource?: EnginePathSource;
   /**
-   * ENGINE PACKAGING (spec §4, BRANCH B): writable spawn-cwd override for
-   * bundled engines (user-data `engine-runtime` dir). Undefined = spawn
-   * with cwd = enginePath, as before.
+   * ENGINE PACKAGING (compile path B): on-disk layout of enginePath as
+   * detected by the resolver (services/enginePath.ts). "binary" spawns
+   * the compiled `opencode[.exe]` at the engine root directly; "tree"
+   * (the default when unset — every pre-packaging caller and test) keeps
+   * the bun + entry spawn exactly as before.
+   */
+  engineLayout?: EngineLayout;
+  /**
+   * ENGINE PACKAGING (spec §4 / D5, BRANCH B): writable spawn-cwd
+   * override for bundled engines (user-data `engine-runtime` dir).
+   * Undefined = spawn with cwd = enginePath, as before.
    */
   engineCwd?: string;
   /**
@@ -1450,14 +1467,33 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
       throw new Error(this.opts.enginePathDiagnostic);
     }
     const enginePath = this.opts.enginePath;
+    // ENGINE PACKAGING (compile path B): the spawn branch is chosen by
+    // the layout the resolver detected on disk. Unset layout (every
+    // pre-packaging caller/test) means "tree" — behavior unchanged.
+    const engineLayout: EngineLayout = this.opts.engineLayout ?? "tree";
     // P0 (QA-03): validate enginePath before spawning — must exist and contain
     // the expected engine entry point. Defense in depth alongside machine-scoped config.
-    const entry = path.join(enginePath, "packages", "cli", "src", "index.ts");
-    if (!fs.existsSync(entry)) {
-      throw new Error(
-        `[ide-agent] Invalid enginePath: ${enginePath} does not contain packages/cli/src/index.ts. ` +
-        `Check the ide.agent.enginePath setting (machine scope).`
-      );
+    // Tree layout validates the serve entry; binary layout validates the
+    // compiled binary file instead (fail-closed, same bundled-incomplete
+    // family as the resolver diagnostic).
+    let entry = "";
+    let binaryPath = "";
+    if (engineLayout === "binary") {
+      binaryPath = bundledBinaryPath(enginePath);
+      if (!fs.existsSync(binaryPath)) {
+        throw new Error(
+          `[ide-agent] Bundled engine is incomplete: ${enginePath} does not contain the compiled engine binary ${binaryPath}. ` +
+          `Reinstall the app, or set the ide.agent.enginePath setting (machine scope) to a valid engine checkout.`
+        );
+      }
+    } else {
+      entry = path.join(enginePath, "packages", "cli", "src", "index.ts");
+      if (!fs.existsSync(entry)) {
+        throw new Error(
+          `[ide-agent] Invalid enginePath: ${enginePath} does not contain packages/cli/src/index.ts. ` +
+          `Check the ide.agent.enginePath setting (machine scope).`
+        );
+      }
     }
     this.port = await freePort();
 
@@ -1475,7 +1511,11 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
     // P1 (QA-03): generate a random token; the sidecar requires it via
     // OPENCODE_PASSWORD (HTTP Basic auth, username "opencode").
     this.authToken = crypto.randomBytes(32).toString("hex");
-    this.opts.output.appendLine(`[ide-agent] starting engine: ${this.opts.bunPath ?? "bun"} ${entry} serve --port ${this.port}`);
+    if (engineLayout === "binary") {
+      this.opts.output.appendLine(`[ide-agent] starting engine: ${binaryPath} serve --port ${this.port}`);
+    } else {
+      this.opts.output.appendLine(`[ide-agent] starting engine: ${this.opts.bunPath ?? "bun"} ${entry} serve --port ${this.port}`);
+    }
     // DEV-GAPS-40 (subagent-nested): Cursor allows one nested subagent
     // level (main → subagent → sub-subagent); the engine's default
     // (experimental.subagent_depth = 1) forbids it. Inject the Cursor-parity
@@ -1506,41 +1546,74 @@ export class IdeCodeEngineAdapter implements EngineAdapter {
         `[ide-agent] engine default: experimental.subagent_depth=2 (Cursor one-level nesting)`,
       );
     }
-    // ENGINE PACKAGING (spec §4, BRANCH B): bundled engines spawn from a
-    // writable user-data dir (install tree may be read-only); the dir is
-    // created here, immediately before spawn.
+    // ENGINE PACKAGING (spec §4 / D5, BRANCH B): bundled engines spawn
+    // from a writable user-data dir (install tree may be read-only); the
+    // dir is created here, immediately before spawn.
     if (this.opts.engineCwd) {
       fs.mkdirSync(this.opts.engineCwd, { recursive: true });
     }
-    // ENGINE PACKAGING — F-W4-1 delta (adjudication N1,
-    // w6-f-w4-1-experiment.md §6.1): Bun only loads bunfig.toml at the
-    // exact spawn cwd, so the relative Solid preload in the engine root
-    // bunfig never fires when a bundled engine spawns from the user-data
-    // cwd above — serve dies with "Cannot find module
-    // 'react/jsx-dev-runtime'". Bundled spawns therefore pass the
-    // closure's preload script as an absolute `--preload` argument
-    // BEFORE the entry. Dev/setting spawns keep the plain argv (they run
-    // inside the monorepo, where bunfig/hoisting applies). A bundled
-    // tree without the preload file is a broken package: throw the
-    // bundled-incomplete diagnostic instead of spawning blind.
-    const serveArgs = [entry, "serve", "--port", String(this.port), "--hostname", "127.0.0.1"];
-    if (this.opts.engineSource === "bundled") {
-      const preloadPath = bundledServePreloadPath(enginePath);
-      if (!fs.existsSync(preloadPath)) {
-        throw new Error(
-          `[ide-agent] Bundled engine is incomplete: ${enginePath} exists but ` +
-            `packages/cli/node_modules/@opentui/solid/scripts/preload.js is missing. ` +
-            `Reinstall the app, or set the ide.agent.enginePath setting (machine scope) to a valid engine checkout.`,
+    const spawnCwd = this.opts.engineCwd ?? enginePath;
+    if (engineLayout === "binary") {
+      // ENGINE PACKAGING — binary branch (compile path B): spawn the
+      // compiled binary DIRECTLY with the same serve argv the tree
+      // branch hands to bun. No bun (the binary is self-contained) and
+      // NO `--preload` (adjudication N1 scopes the Solid preload to
+      // bun/tree spawns; the compiled binary already embeds it).
+      // The engine locates ripgrep by searching PATH (engine
+      // packages/core/src/ripgrep/binary.ts: `which(rg, …, global.bin)`),
+      // and the staged `rg[.exe]` sits NEXT TO the binary — so the
+      // engine root is prepended to the child's PATH, or the engine
+      // would fall back to downloading rg from GitHub at runtime.
+      const pathKey = Object.keys(spawnEnv).find((k) => k.toLowerCase() === "path") ?? "PATH";
+      const existingPath = spawnEnv[pathKey];
+      spawnEnv[pathKey] = existingPath ? enginePath + path.delimiter + existingPath : enginePath;
+      if (!fs.existsSync(path.join(enginePath, BUNDLED_RIPGREP_FILE))) {
+        this.opts.output.appendLine(
+          `[ide-agent] bundled binary engine: no ${BUNDLED_RIPGREP_FILE} next to ${binaryPath}; the engine will use a system rg if one is on PATH, else try to download it`,
         );
       }
-      serveArgs.unshift("--preload", preloadPath);
-      this.opts.output.appendLine(`[ide-agent] bundled engine: bun --preload ${preloadPath} (F-W4-1/N1)`);
+      if (!this.opts.engineCwd) {
+        this.opts.output.appendLine(
+          `[ide-agent] bundled binary engine: no writable runtime cwd was provided; spawning with cwd = engine dir (install tree may be read-only)`,
+        );
+      }
+      this.serverProc = childProcess.spawn(binaryPath, ["serve", "--port", String(this.port), "--hostname", "127.0.0.1"], {
+        cwd: spawnCwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: spawnEnv,
+      });
+    } else {
+      // ENGINE PACKAGING — F-W4-1 delta (adjudication N1,
+      // w6-f-w4-1-experiment.md §6.1): Bun only loads bunfig.toml at the
+      // exact spawn cwd, so the relative Solid preload in the engine
+      // root bunfig never fires when a bundled TREE engine spawns from
+      // the user-data cwd above — serve dies with "Cannot find module
+      // 'react/jsx-dev-runtime'". Bundled tree spawns therefore pass
+      // the closure's preload script as an absolute `--preload`
+      // argument BEFORE the entry. Dev/setting spawns keep the plain
+      // argv (they run inside the monorepo, where bunfig/hoisting
+      // applies). A bundled tree without the preload file is a broken
+      // package: throw the bundled-incomplete diagnostic instead of
+      // spawning blind.
+      const serveArgs = [entry, "serve", "--port", String(this.port), "--hostname", "127.0.0.1"];
+      if (this.opts.engineSource === "bundled") {
+        const preloadPath = bundledServePreloadPath(enginePath);
+        if (!fs.existsSync(preloadPath)) {
+          throw new Error(
+            `[ide-agent] Bundled engine is incomplete: ${enginePath} exists but ` +
+              `packages/cli/node_modules/@opentui/solid/scripts/preload.js is missing. ` +
+              `Reinstall the app, or set the ide.agent.enginePath setting (machine scope) to a valid engine checkout.`,
+          );
+        }
+        serveArgs.unshift("--preload", preloadPath);
+        this.opts.output.appendLine(`[ide-agent] bundled engine: bun --preload ${preloadPath} (F-W4-1/N1)`);
+      }
+      this.serverProc = childProcess.spawn(this.opts.bunPath ?? "bun", serveArgs, {
+        cwd: spawnCwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: spawnEnv,
+      });
     }
-    this.serverProc = childProcess.spawn(this.opts.bunPath ?? "bun", serveArgs, {
-      cwd: this.opts.engineCwd ?? enginePath,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: spawnEnv,
-    });
     this.serverProc.on("error", (err) => {
       const bunPath = this.opts.bunPath ?? "bun";
       this.opts.output.appendLine(

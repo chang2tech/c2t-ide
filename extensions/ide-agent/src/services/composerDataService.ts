@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { ModeName, TurnEvent, TurnSettled } from "../model";
+import { ModeName, TurnEvent } from "../model";
 import { ComposerBubbleSetStore } from "../stores/bubbleStore";
 import { ModeService, MODES, wrapPlanPrompt, wrapDebugPrompt, wrapMultitaskPrompt, shouldSuggestDebugMode } from "./modeService";
 import type {
@@ -264,9 +264,6 @@ export type ComposerEvent =
    * webview to clear the badge.
    */
   | { kind: "customModeChanged"; active: CustomModeSession | null; exitedLabel: string | null }
-  // DD-AR-9 (turnSettled protocol): the adapter reported how the turn ended —
-  // COMPLETED | FAILED | INTERRUPTED (+ interruptedBy / stopReason).
-  | { kind: "turnSettled"; bubbleId: string; settled: TurnSettled }
   // Context ring (cursor.com/docs/agent/prompting): the real 8-category
   // token breakdown, recomputed after every settled turn — drives the
   // webview's {type:'ctxUsage'} tray with live data. GAPS-183:
@@ -500,6 +497,9 @@ export class ComposerDataService {
       );
     }
     if (mode === "sidecar") {
+      // ENGINE PACKAGING (D2): the one resolver — setting > bundled
+      // (binary or tree layout) > dev fallback; a broken bundled engine
+      // resolves to source "none" and the adapter throws its diagnostic.
       const resolvedEngine = resolveEnginePath(cfg.get<string>("enginePath", ""));
       const output = vscode.window.createOutputChannel("IDE Agent");
       const adapter = new IdeCodeEngineAdapter({
@@ -510,6 +510,7 @@ export class ComposerDataService {
           ),
         ),
         engineSource: resolvedEngine.source,
+        engineLayout: resolvedEngine.layout,
         engineCwd: resolveEngineCwd(resolvedEngine, context?.globalStorageUri?.fsPath),
         enginePathDiagnostic: resolvedEngine.bundledBroken
           ? bundledIncompleteDiagnostic(resolvedEngine.bundledBroken)
@@ -1042,30 +1043,6 @@ export class ComposerDataService {
   }
 
   /**
-   * DEV-GAPS-10 (agent-git-branch-reminder): post a REAL system-role bubble
-   * into the transcript — visible in chat as a "System" message, part of the
-   * conversation (the webview renders role "system" generically). Used for
-   * branch-change reminders and similar agent-loop notices. This is a normal
-   * data-service mutation: the store updates and a bubblesChanged event
-   * fires so the webview syncs — never a console.log.
-   *
-   * Returns the new bubble id.
-   */
-  postSystemMessage(text: string): string {
-    const bubbleId = this.bubbles.newClientBubbleId();
-    this.bubbles.setBubbleData({
-      bubbleId,
-      role: "system",
-      mode: this.modes.getMode(),
-      text,
-      toolCalls: [],
-      createdAt: Date.now(),
-    });
-    this.emitter.fire({ kind: "bubblesChanged", ids: [bubbleId] });
-    return bubbleId;
-  }
-
-  /**
    * DEV-HOOKS: `beforeSubmitPrompt` gate (Cursor parity, matcher "UserPromptSubmit").
    * Exit code 2 blocks the submission — the turn never starts. Hook stdout
    * flows into the turn's context via drainContextAdditions().
@@ -1103,7 +1080,11 @@ export class ComposerDataService {
         // queue caps are gone — enqueue()/enqueueFront() are unbounded), but
         // keep the catch so a synchronous throw can never escape as an
         // unhandled promise rejection through `void submitWithHooks(...)`.
-        void err;
+        // The failure is logged, not swallowed (F-955-3, §3.1): without
+        // this line the user's message would vanish without a trace.
+        this.log?.(
+          `[ide-agent] routeSubmit failed for a message submitted while a turn was running: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
       return;
     }
@@ -2216,14 +2197,16 @@ export class ComposerDataService {
         break;
       }
       // DD-AR-9 (turnSettled protocol): record how the turn ended on the
-      // bubble instead of inferring it; the webview can render the outcome.
+      // bubble instead of inferring it. The outcome is only recorded on
+      // the bubble and forces a context-usage refresh below — no
+      // ComposerEvent is emitted for it (GAPS-972, F-955-2: the former
+      // turnSettled ComposerEvent kind had no consumer).
       case "turnSettled": {
         const bubble = this.bubbles.getBubbleData(event.bubbleId);
         if (bubble) {
           bubble.turnOutcome = event.outcome;
           this.bubbles.setBubbleData(bubble);
         }
-        this.emitter.fire({ kind: "turnSettled", bubbleId: event.bubbleId, settled: event });
         // Context ring: every settled turn pushes a fresh real-data breakdown
         // so the tray is live, never stale.
         this.emitContextUsage(true);
@@ -2603,39 +2586,49 @@ export class ComposerDataService {
    * not Cursor's (HONEST DIVERGENCE).
    */
   private async resolvePlanFile(plan: PendingPlan): Promise<string | null> {
+    // F-QA957R-1 (GAPS-967): this channel is used ONLY inside this method
+    // (the emit closure below), so it is deliberately NOT registered in
+    // ownedOutputChannels — it is disposed here, on every exit, instead
+    // of accumulating one channel per accepted plan until the tab closes.
     const output = vscode.window.createOutputChannel("IDE Agent");
-    const usable = async (p: string): Promise<boolean> => {
-      try {
-        const content = await fs.readFile(p, "utf-8");
-        // A zero-byte file is "corrupt" — treat like missing and recreate.
-        return content.trim().length > 0;
-      } catch {
-        return false;
-      }
-    };
-    const outcome = await resolvePlanFilePath(
-      { savedPath: plan.savedPath, text: plan.text },
-      {
-        fileUsable: usable,
-        homedir: os.homedir,
-        workspaceRoots: () => (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
-        recreate: (text) => savePlanFile(text),
-        emit: (event, source, reason) => {
-          this.planFileTelemetry.push({ event, source, reason, at: Date.now() });
-          output.appendLine(
-            `[ide-agent] ${event} source=${source}${reason ? ` reason=${reason}` : ""}`,
-          );
+    try {
+      const usable = async (p: string): Promise<boolean> => {
+        try {
+          const content = await fs.readFile(p, "utf-8");
+          // A zero-byte file is "corrupt" — treat like missing and recreate.
+          return content.trim().length > 0;
+        } catch {
+          return false;
+        }
+      };
+      const outcome = await resolvePlanFilePath(
+        { savedPath: plan.savedPath, text: plan.text },
+        {
+          fileUsable: usable,
+          homedir: os.homedir,
+          workspaceRoots: () => (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath),
+          recreate: (text) => savePlanFile(text),
+          emit: (event, source, reason) => {
+            this.planFileTelemetry.push({ event, source, reason, at: Date.now() });
+            output.appendLine(
+              `[ide-agent] ${event} source=${source}${reason ? ` reason=${reason}` : ""}`,
+            );
+          },
         },
-      },
-    );
-    if (outcome.path) {
-      plan.savedPath = outcome.path;
-      return outcome.path;
+      );
+      if (outcome.path) {
+        plan.savedPath = outcome.path;
+        return outcome.path;
+      }
+      void vscode.window.showErrorMessage(
+        "IDE Agent: could not resolve the plan file for the accepted plan — nothing was implemented.",
+      );
+      return null;
+    } finally {
+      // Runs after the last emit-closure use on every path (resolved,
+      // failed, or a throw out of resolvePlanFilePath).
+      output.dispose();
     }
-    void vscode.window.showErrorMessage(
-      "IDE Agent: could not resolve the plan file for the accepted plan — nothing was implemented.",
-    );
-    return null;
   }
 
   /** In-memory log of plan-file resolve/recreate/failure telemetry events. */
