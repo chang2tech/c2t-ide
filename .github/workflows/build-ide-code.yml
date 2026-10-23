@@ -287,11 +287,11 @@ jobs:
 
 
 
-      - name: Stage engine (subset + bun 1.4.2)
+      - name: Stage engine (binary compile, bun 1.4.2 build-time)
         shell: bash
         run: |
           set -e
-          bash build/engine/stage-engine.sh --src .build/engine-src --out .build/engine-staged --platform linux-x64 --engine-ref ${{ env.ENGINE_REF }}
+          bash build/engine/stage-engine-binary.sh --src .build/engine-src --out .build/engine-staged --platform linux-x64 --engine-ref ${{ env.ENGINE_REF }}
 
       - name: Package Electron app (VSCode-linux-x64)
         shell: bash
@@ -406,6 +406,12 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           /tmp/appimagetool "$APPDIR" "dist/IDE-Code-${VERSION}-linux-x64.AppImage"
           ls -la dist/*.AppImage
+
+      - name: D6 assert AppImage engine payload (binary)
+        shell: bash
+        run: |
+          set -e
+          bash build/engine/assert-appimage-engine-binary.sh "$(ls dist/*.AppImage)" --workdir .build/appimage-assert
 
       - name: Resolve package version
         id: ver
@@ -734,11 +740,11 @@ jobs:
           tar --version || true
           python3 --version || true
 
-      - name: Stage engine (subset + bun 1.4.2)
+      - name: Stage engine (binary compile, bun 1.4.2 build-time)
         shell: bash
         run: |
           set -e
-          bash build/engine/stage-engine.sh --src .build/engine-src --out .build/engine-staged --platform win32-x64 --engine-ref ${{ env.ENGINE_REF }}
+          bash build/engine/stage-engine-binary.sh --src .build/engine-src --out .build/engine-staged --platform win32-x64 --engine-ref ${{ env.ENGINE_REF }}
 
       - name: Package Electron app (VSCode-win32-x64)
         shell: bash
