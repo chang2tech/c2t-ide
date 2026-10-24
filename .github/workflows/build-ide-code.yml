@@ -24,8 +24,12 @@
 #
 # Triggers: manual (workflow_dispatch) or pushing a v* tag.
 #
-# NOT needed: no secrets, no certs, no Apple/Windows signing for these
-# artifacts (unsigned; Windows SmartScreen will warn — expected for a first alpha).
+# Secrets: exactly one — ENGINE_CHECKOUT_TOKEN, a fine-grained PAT with
+# Contents: Read-only on chang2tech/ide-code ONLY, used by the two engine
+# checkout steps (the engine repo is private; a token-based checkout also
+# works while it is public, so flipping visibility needs no workflow
+# change). No certs, no Apple/Windows signing for these artifacts
+# (unsigned; Windows SmartScreen will warn — expected for a first alpha).
 
 name: Build IDE Code
 
@@ -43,8 +47,11 @@ env:
   NPM_ARCH: x64
   # ENGINE_REF: full commit SHA of chang2tech/ide-code (the OpenCode engine
   # source) that is staged and bundled into the installer as
-  # resources/app/engine/ (engine-packaging-spec-v1.md §6, phuong an A: the
-  # engine repo is public, so actions/checkout needs no extra secret).
+  # resources/app/engine/ (engine-packaging-spec-v1.md §6). The engine
+  # repo is PRIVATE: the two engine checkout steps below authenticate
+  # with the ENGINE_CHECKOUT_TOKEN secret (fine-grained PAT, Contents:
+  # Read-only on chang2tech/ide-code only). This workflow's own job
+  # token is scoped to the IDE repo and cannot read the engine repo.
   # PLACEHOLDER on purpose: the SHA may only be pinned once lane A has
   # landed the two engine prerequisites from spec §3 in the engine repo
   # (relative Solid preload in the root bunfig.toml; @effect/platform-node
@@ -71,6 +78,8 @@ jobs:
           ref: ${{ env.ENGINE_REF }}
           path: .build/engine-src
           fetch-depth: 1
+          token: ${{ secrets.ENGINE_CHECKOUT_TOKEN }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -484,6 +493,8 @@ jobs:
           ref: ${{ env.ENGINE_REF }}
           path: .build/engine-src
           fetch-depth: 1
+          token: ${{ secrets.ENGINE_CHECKOUT_TOKEN }}
+          persist-credentials: false
 
       - name: Sanity check - Git Bash and Windows SDK
         shell: powershell
